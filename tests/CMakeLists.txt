@@ -1,3 +1,10 @@
+if(TARGET sentinel_desktop_portal)
+    qt_add_executable(test_portal_shortcuts desktop/test_portal_shortcuts.cpp)
+    target_link_libraries(test_portal_shortcuts PRIVATE sentinel_desktop_portal Qt6::Test)
+    add_test(NAME test_portal_shortcuts COMMAND $<TARGET_FILE:test_portal_shortcuts>)
+    set_tests_properties(test_portal_shortcuts PROPERTIES TIMEOUT 60)
+endif()
+
 function(add_sentinel_core_test target source)
     if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${source}")
         message(FATAL_ERROR "Registered test source does not exist: ${source}")
