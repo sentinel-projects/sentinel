@@ -101,7 +101,7 @@ jobs:
             qt6-qtmultimedia-devel qt6-qttools-devel \
             mesa-libGL-devel vulkan-loader-devel \
             rpm-build cpio desktop-file-utils appstream python3 \
-            bubblewrap google-noto-sans-fonts
+            bubblewrap dbus-daemon google-noto-sans-fonts
       - name: Prepare source RPM
         run: packaging/linux/fedora-kde/build_copr.sh
       - name: Build binary RPM and run spec checks
@@ -156,7 +156,7 @@ jobs:
             qt6-qtbase-devel qt6-qtdeclarative-devel \
             qt6-qtmultimedia-devel qt6-qttools-devel \
             mesa-libGL-devel vulkan-loader-devel \
-            bubblewrap google-noto-sans-fonts
+            bubblewrap dbus-daemon google-noto-sans-fonts
       - name: Configure
         run: cmake --preset tests
       - name: Build

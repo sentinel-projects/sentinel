@@ -19,6 +19,7 @@ BuildRequires:  appstream
 BuildRequires:  python3
 # %check runs the full CTest suite, which exercises the Linux sandbox backend.
 BuildRequires:  bubblewrap
+BuildRequires:  dbus-daemon
 
 Requires:       qt6-qtbase >= 6.5.0
 Requires:       qt6-qtdeclarative >= 6.5.0
@@ -33,6 +34,7 @@ Recommends:     avahi-tools
 # Required for approved tool execution on Linux; without it the sandbox
 # backend reports unavailable and launch is denied rather than unsandboxed.
 Recommends:     bubblewrap
+Recommends:     xdg-desktop-portal
 
 %description
 Sentinel is a cross-platform, local-first AI desktop assistant application
