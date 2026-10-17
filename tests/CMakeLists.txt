@@ -451,3 +451,9 @@ add_sentinel_core_test(test_resource_policy_review core/test_resource_policy_rev
 
 # P4-04: read-only telemetry → policy-input adapter translation.
 add_sentinel_core_test(test_resource_policy_adapter core/test_resource_policy_adapter.cpp)
+
+# P4-05: non-production calibration fixtures for proposed profiles.
+add_sentinel_core_test(test_resource_policy_calibration core/test_resource_policy_calibration.cpp)
+
+# P4-05: disabled-by-default observational shadow evaluation.
+add_sentinel_core_test(test_resource_policy_shadow core/test_resource_policy_shadow.cpp)
