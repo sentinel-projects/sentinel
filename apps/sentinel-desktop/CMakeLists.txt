@@ -508,7 +508,7 @@ if(UNIX AND NOT APPLE)
     )
 
     install(FILES ${CMAKE_SOURCE_DIR}/packaging/linux/systemd/sentinel-desktop.service
-        DESTINATION ${CMAKE_INSTALL_PREFIX}/lib/systemd/user
+        DESTINATION lib/systemd/user
     )
 endif()
 

@@ -7,22 +7,23 @@ License:        GPL-3.0-or-later
 URL:            https://sentinel.dev
 Source0:        %{name}-%{version}.tar.gz
 
-BuildRequires:  cmake >= 3.24
+BuildRequires:  cmake >= 3.27
 BuildRequires:  gcc-c++
 BuildRequires:  ninja-build
 BuildRequires:  qt6-qtbase-devel >= 6.5.0
 BuildRequires:  qt6-qtdeclarative-devel >= 6.5.0
-BuildRequires:  qt6-qtsql-devel >= 6.5.0
 BuildRequires:  qt6-qtmultimedia-devel >= 6.5.0
 BuildRequires:  qt6-qttools-devel >= 6.5.0
 BuildRequires:  desktop-file-utils
 BuildRequires:  appstream
+BuildRequires:  python3
 # %check runs the full CTest suite, which exercises the Linux sandbox backend.
 BuildRequires:  bubblewrap
 
 Requires:       qt6-qtbase >= 6.5.0
 Requires:       qt6-qtdeclarative >= 6.5.0
-Requires:       qt6-qtsql >= 6.5.0
+Requires:       qt6-qtbase-gui >= 6.5.0
+Requires:       (qt6-qtwayland >= 6.5.0 or qt6-qtbase-gui >= 6.11.0)
 Requires:       qt6-qtmultimedia >= 6.5.0
 Requires:       hicolor-icon-theme
 Recommends:     libnotify
@@ -44,14 +45,16 @@ companionship while ensuring privacy and explicit user control.
 
 %build
 %cmake -G Ninja \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DSENTINEL_BUILD_NUMBER="%{release}"
+    -DCMAKE_BUILD_TYPE=Release
 %cmake_build
 
 %install
 %cmake_install
 
 %check
+python3 tools/packaging/check_packaging_consistency.py
+python3 tools/packaging/check_install_manifest.py --image "%{buildroot}" \
+    --manifest "%{_vpath_builddir}/install_manifest.txt"
 desktop-file-validate %{buildroot}%{_datadir}/applications/dev.sentinel.Sentinel.desktop
 if command -v appstreamcli >/dev/null 2>&1; then
     appstreamcli validate --no-net %{buildroot}%{_datadir}/metainfo/dev.sentinel.Sentinel.metainfo.xml
@@ -79,8 +82,6 @@ fi
 %{_bindir}/gtk-update-icon-cache %{_datadir}/icons/hicolor &>/dev/null || :
 
 %files
-%license LICENSE
-%doc README.md
 %{_bindir}/sentinel-desktop
 %{_bindir}/sentinel-daemon
 %{_bindir}/sentinel-cli
@@ -99,10 +100,11 @@ fi
 %{_datadir}/metainfo/dev.sentinel.Sentinel.metainfo.xml
 # Runtime assets installed by CMake outside the usual metadata paths.
 %{_datadir}/sentinel
-%{_datadir}/licenses/sentinel
-%{_datadir}/doc/Sentinel
+%license %{_datadir}/licenses/sentinel
+%doc %{_datadir}/doc/Sentinel
 # systemd user units live in <prefix>/lib/systemd/user on Fedora, not <libdir>.
 %{_prefix}/lib/systemd/user/sentinel-desktop.service
+%dir %{_sysconfdir}/sentinel
 %config(noreplace) %{_sysconfdir}/sentinel/config.json.template
 
 %changelog
