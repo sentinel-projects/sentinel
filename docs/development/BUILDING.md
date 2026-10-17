@@ -2,6 +2,14 @@
 
 Sentinel requires CMake 3.27+ (presets), Ninja, a C++20 compiler, and Qt 6.5+ with Core, Gui, Quick, Qml, Sql, Test, Network, Widgets, LinguistTools, Multimedia, and Concurrent. CI currently installs Qt 6.11 on Linux, macOS, and Windows.
 
+Linux Desktop also requires Qt DBus. Global Quick Panel shortcuts require an available
+`org.freedesktop.portal.GlobalShortcuts` session-bus backend (version 1 or newer) and a
+portal-confirmed binding. The portal owns consent and shortcut assignment. Missing runtime
+support is reported as unavailable. Portal contract tests start an isolated `dbus-daemon`;
+they do not connect to the user's desktop portal. On macOS these tests are enabled when
+the optional Qt DBus module is installed. See the [P6-04 result](../audits/P6_04_KDE_WAYLAND_NATIVE_INTEGRATION_RESULT.md)
+for native verification limits.
+
 ```bash
 cmake --preset debug
 cmake --build --preset debug
