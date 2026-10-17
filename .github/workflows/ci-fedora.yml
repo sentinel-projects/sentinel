@@ -78,7 +78,7 @@ jobs:
           systemd-analyze verify "$unit"
 
   build-package:
-    name: Fedora 44 package-ready build
+    name: Fedora 44 RPM construction
     runs-on: ubuntu-latest
     container:
       image: registry.fedoraproject.org/fedora:44
@@ -97,32 +97,41 @@ jobs:
           set -euxo pipefail
           dnf -y install --setopt=install_weak_deps=False \
             cmake ninja-build gcc-c++ \
-            qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtsql-devel \
+            qt6-qtbase-devel qt6-qtdeclarative-devel \
             qt6-qtmultimedia-devel qt6-qttools-devel \
-            mesa-libGL-devel vulkan-loader-devel
-      - name: Configure
-        run: cmake --preset package-ready
-      - name: Build
-        run: cmake --build --preset package-ready
-      - name: Stage installation
-        run: cmake --install build/package-ready --prefix "$PWD/dist"
-      - name: Verify staged layout and binary parity
+            mesa-libGL-devel vulkan-loader-devel \
+            rpm-build cpio desktop-file-utils appstream python3 \
+            bubblewrap google-noto-sans-fonts
+      - name: Prepare source RPM
+        run: packaging/linux/fedora-kde/build_copr.sh
+      - name: Build binary RPM and run spec checks
         run: |
           set -euxo pipefail
-          # Every binary the RPM specs ship must exist in the staged prefix.
-          for binary in sentinel-desktop sentinel-daemon sentinel-cli sentinel-plugin-host; do
-            test -x "dist/bin/$binary"
-          done
-          test -f dist/share/applications/dev.sentinel.Sentinel.desktop
-          test -f dist/share/metainfo/dev.sentinel.Sentinel.metainfo.xml
-          test -f dist/share/icons/hicolor/scalable/apps/dev.sentinel.Sentinel.svg
-          test -f dist/lib/systemd/user/sentinel-desktop.service
-          test -f dist/etc/sentinel/config.json.template
-          test -d dist/share/sentinel/core-warden
-          test -d dist/share/licenses/sentinel
-          for size in 16 22 24 32 48 64 128 256 512; do
-            test -f "dist/share/icons/hicolor/${size}x${size}/apps/dev.sentinel.Sentinel.png"
-          done
+          rpmbuild --rebuild --define "_topdir $PWD/build-copr" \
+            --define 'dist .fc44' build-copr/SRPMS/*.src.rpm
+      - name: Verify RPM payload and version
+        run: |
+          set -euxo pipefail
+          rpm_file="$(find build-copr/RPMS -name 'sentinel-desktop-[0-9]*.rpm' -print -quit)"
+          test -n "$rpm_file"
+          expected="$(sed -n 's/^Version:[[:space:]]*//p' packaging/linux/rpm/sentinel-desktop.spec)"
+          test "$(rpm -qp --qf '%{VERSION}' "$rpm_file")" = "$expected"
+          test "$(rpm -qp --qf '%{RELEASE}' "$rpm_file")" = '1.fc44'
+          rpm -qp --requires "$rpm_file"
+          image="$RUNNER_TEMP/sentinel-rpm-image"
+          mkdir -p "$image"
+          rpm2cpio "$rpm_file" | (cd "$image" && cpio -idm --quiet)
+          python3 tools/packaging/check_install_manifest.py --image "$image"
+          canonical="$(sed -n 's/^set(SENTINEL_APP_VERSION "\([^"]*\)".*/\1/p' CMakeLists.txt)"
+          "$image/usr/bin/sentinel-daemon" --version | grep -F "$canonical"
+      - name: Preserve unsigned RPM build evidence
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: fedora-44-rpm-evidence
+          path: |
+            build-copr/RPMS/**/*.rpm
+            build-copr/SRPMS/*.src.rpm
+          if-no-files-found: error
 
   test:
     name: Fedora 44 build and test
@@ -144,7 +153,7 @@ jobs:
           set -euxo pipefail
           dnf -y install --setopt=install_weak_deps=False \
             cmake ninja-build gcc-c++ \
-            qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtsql-devel \
+            qt6-qtbase-devel qt6-qtdeclarative-devel \
             qt6-qtmultimedia-devel qt6-qttools-devel \
             mesa-libGL-devel vulkan-loader-devel \
             bubblewrap google-noto-sans-fonts
