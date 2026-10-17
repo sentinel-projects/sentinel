@@ -2,6 +2,7 @@
 #include "sentinel/desktop/NativeCompanionAdapter.h"
 #include "sentinel/core/app/AppSettings.h"
 #include "sentinel/desktop/DesktopShellViewModel.h"
+#include "sentinel/desktop/GlobalShortcutBackend.h"
 #include "sentinel/desktop/QuickPanelController.h"
 #include <QApplication>
 #include <QCloseEvent>
@@ -14,14 +15,17 @@
 #include <QKeyEvent>
 #include <QMenu>
 #include <QMouseEvent>
-#include <QQuickWindow>
 #include <QQuickItem>
+#include <QQuickWindow>
 #include <QSaveFile>
 #include <QScreen>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QSystemTrayIcon>
 #include <QWindow>
+#ifdef Q_OS_LINUX
+#include "sentinel/desktop/PortalShortcutBackend.h"
+#endif
 #ifdef Q_OS_MACOS
 #include "sentinel/desktop/MacNativeNotifications.h"
 #include <Carbon/Carbon.h>
@@ -38,10 +42,11 @@ bool headless() {
            QGuiApplication::platformName() == "minimal";
 }
 } // namespace
-NativeCompanionAdapter::NativeCompanionAdapter(DesktopShellViewModel& vm,
-                                               core::AppSettings& settings, QObject* root,
-                                               QObject* parent)
-    : QObject(parent), viewModel_(vm), settings_(settings) {
+NativeCompanionAdapter::NativeCompanionAdapter(
+    DesktopShellViewModel& vm, core::AppSettings& settings, QObject* root, QObject* parent,
+    std::unique_ptr<GlobalShortcutBackend> shortcutBackend)
+    : QObject(parent), shortcutBackend_(std::move(shortcutBackend)), viewModel_(vm),
+      settings_(settings) {
     startupStatus_ = settings_.quickPanelStartAtLogin()
                          ? "Enabled preference; OS registration has not been checked"
                          : "Disabled";
@@ -56,9 +61,46 @@ NativeCompanionAdapter::NativeCompanionAdapter(DesktopShellViewModel& vm,
 #ifdef Q_OS_WIN
     qApp->installNativeEventFilter(this);
 #endif
+#ifdef Q_OS_LINUX
+    if (!shortcutBackend_ && !headless())
+        shortcutBackend_ = std::make_unique<PortalShortcutBackend>(QDBusConnection::sessionBus(),
+                                                                   QGuiApplication::platformName());
+#endif
+    if (shortcutBackend_) {
+        connect(shortcutBackend_.get(), &GlobalShortcutBackend::statusChanged, this, [this] {
+            shortcutStatus_ = shortcutBackend_->status();
+            emit shortcutChanged();
+        });
+        connect(shortcutBackend_.get(), &GlobalShortcutBackend::activated, this,
+                [this](const QString& token) {
+                    if (!shortcutBackend_->registered() || !settings_.companionEnabled())
+                        return;
+                    const bool applyToken =
+                        QGuiApplication::platformName().startsWith("wayland") && !token.isEmpty();
+                    const auto previous = qgetenv("XDG_ACTIVATION_TOKEN");
+                    const bool wasSet = qEnvironmentVariableIsSet("XDG_ACTIVATION_TOKEN");
+                    if (applyToken)
+                        qputenv("XDG_ACTIVATION_TOKEN", token.toUtf8());
+                    togglePanel();
+                    if (!applyToken)
+                        return;
+                    if (wasSet)
+                        qputenv("XDG_ACTIVATION_TOKEN", previous);
+                    else
+                        qunsetenv("XDG_ACTIVATION_TOKEN");
+                });
+        connect(qApp, &QCoreApplication::aboutToQuit, this,
+                [this] { shortcutBackend_->shutdown(); });
+        connect(&settings_, &core::AppSettings::quickPanelShortcutChanged, this,
+                &NativeCompanionAdapter::registerShortcut);
+        connect(&settings_, &core::AppSettings::companionEnabledChanged, this,
+                &NativeCompanionAdapter::registerShortcut);
+        registerShortcut();
+    }
     if (headless()) {
         viewModel_.setCompanionNativeAvailable(false);
-        shortcutStatus_ = "Unavailable on headless platform";
+        if (!shortcutBackend_)
+            shortcutStatus_ = "Unavailable on headless platform";
         return;
     }
 #ifdef Q_OS_MACOS
@@ -116,11 +158,14 @@ NativeCompanionAdapter::NativeCompanionAdapter(DesktopShellViewModel& vm,
     });
     connect(&settings_, &core::AppSettings::companionEnabledChanged, this,
             &NativeCompanionAdapter::refreshVisibility);
-    connect(&settings_, &core::AppSettings::quickPanelShortcutChanged, this,
-            &NativeCompanionAdapter::registerShortcut);
+    if (!shortcutBackend_)
+        connect(&settings_, &core::AppSettings::quickPanelShortcutChanged, this,
+                &NativeCompanionAdapter::registerShortcut);
     refreshVisibility();
 }
 NativeCompanionAdapter::~NativeCompanionAdapter() {
+    if (shortcutBackend_)
+        shortcutBackend_->shutdown();
     unregisterShortcut();
 #ifdef Q_OS_MACOS
     notifications_.reset();
@@ -203,8 +248,10 @@ void NativeCompanionAdapter::togglePanel() {
             panel = candidate;
             break;
         }
-    if (!panel)
+    if (!panel) {
+        openSentinel();
         return;
+    }
     panel->installEventFilter(this);
     if (panel->isVisible()) {
         panelOpenTimer_.invalidate();
@@ -243,10 +290,12 @@ void NativeCompanionAdapter::togglePanel() {
     int y = anchor.isEmpty() || anchor.center().y() < area.center().y()
                 ? qMax(area.top() + 8, anchor.bottom() + 8)
                 : anchor.top() - panel->height() - 8;
-    panel->setPosition(qBound(area.left() + 8, x, area.right() - panel->width() - 8),
-                       qBound(area.top() + 8, y, area.bottom() - panel->height() - 8));
+    if (!QGuiApplication::platformName().startsWith("wayland"))
+        panel->setPosition(qBound(area.left() + 8, x, area.right() - panel->width() - 8),
+                           qBound(area.top() + 8, y, area.bottom() - panel->height() - 8));
     panel->show();
-    panel->raise();
+    if (!QGuiApplication::platformName().startsWith("wayland"))
+        panel->raise();
 #ifdef Q_OS_MACOS
     if (!headless())
         activateMacQuickPanelApplication();
@@ -256,8 +305,10 @@ void NativeCompanionAdapter::togglePanel() {
 }
 void NativeCompanionAdapter::openSentinel() {
     if (window_) {
-        window_->show();
-        window_->raise();
+        window_->setWindowStates(window_->windowStates() & ~Qt::WindowMinimized);
+        window_->setVisible(true);
+        if (!QGuiApplication::platformName().startsWith("wayland"))
+            window_->raise();
         window_->requestActivate();
     }
 }
@@ -383,6 +434,8 @@ void NativeCompanionAdapter::setShortcut(const QString& sequence) {
     settings_.setQuickPanelShortcut(sequence);
 }
 void NativeCompanionAdapter::unregisterShortcut() {
+    if (shortcutBackend_)
+        shortcutBackend_->setShortcut({});
 #ifdef Q_OS_MACOS
     if (hotKey_)
         UnregisterEventHotKey(static_cast<EventHotKeyRef>(hotKey_));
@@ -395,6 +448,12 @@ void NativeCompanionAdapter::unregisterShortcut() {
     hotKey_ = hotKeyHandler_ = nullptr;
 }
 void NativeCompanionAdapter::registerShortcut() {
+    if (shortcutBackend_) {
+        shortcutBackend_->setShortcut(settings_.companionEnabled() ? shortcut() : QString{});
+        shortcutStatus_ = shortcutBackend_->status();
+        emit shortcutChanged();
+        return;
+    }
     unregisterShortcut();
     shortcutStatus_ = "Disabled";
     if (settings_.companionEnabled() && !headless() && !shortcut().isEmpty() &&

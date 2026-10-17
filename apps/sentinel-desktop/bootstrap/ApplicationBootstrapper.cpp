@@ -110,6 +110,7 @@ ApplicationBootstrapper::ApplicationBootstrapper(int argc, char* argv[], QObject
     QGuiApplication::setApplicationVersion(sentinel::core::AppMetadata::version());
     QGuiApplication::setDesktopFileName(sentinel::core::AppMetadata::appId());
     QGuiApplication::setWindowIcon(QIcon(QStringLiteral(":/icons/dev.sentinel.Sentinel.png")));
+    QGuiApplication::setDesktopFileName(QStringLiteral("dev.sentinel.Sentinel"));
 
     // The display name doubles as the Qt application name, so renaming the
     // product also renames every per-application storage root. Move pre-rename
