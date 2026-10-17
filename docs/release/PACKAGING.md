@@ -11,3 +11,6 @@ The tagged release workflow builds the `package-ready` preset and currently publ
 | Windows | EXE and MSI |
 
 CPack is also configured for platform-native package generation. Flatpak and Snap files are packaging sources, not automatically published by the GitHub release workflow. See [Release process](RELEASE_PROCESS.md).
+
+For Fedora source/RPM construction, payload checks, upgrade/removal semantics and the confirmed
+Ro-ASD producer boundary, see [Fedora RPM and Ro-ASD integration](FEDORA_RPM_ROASD.md).
