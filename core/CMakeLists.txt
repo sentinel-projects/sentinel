@@ -32,6 +32,8 @@ add_library(sentinel_core STATIC
     include/sentinel/core/agent/NullAgentRuntime.h
     include/sentinel/core/agent/StaticAgentRegistry.h
     include/sentinel/core/policy/ResourcePolicy.h
+    include/sentinel/core/policy/ResourcePolicyCalibration.h
+    include/sentinel/core/policy/ResourcePolicyShadowEvaluation.h
     include/sentinel/core/policy/ResourcePolicyTelemetryAdapter.h
     include/sentinel/core/app/ApplicationController.h
     include/sentinel/core/app/AgentInspectorService.h
@@ -345,6 +347,8 @@ add_library(sentinel_core STATIC
     src/agent/StaticAgentRegistry.cpp
     src/agent/SubagentService.cpp
     src/policy/ResourcePolicy.cpp
+    src/policy/ResourcePolicyCalibration.cpp
+    src/policy/ResourcePolicyShadowEvaluation.cpp
     src/policy/ResourcePolicyTelemetryAdapter.cpp
     src/app/ApplicationController.cpp
     src/app/AgentInspectorService.cpp
