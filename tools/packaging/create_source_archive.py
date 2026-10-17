@@ -35,7 +35,9 @@ def archive(root: Path, output: Path, ref: str = "HEAD") -> tuple[Path, Path]:
     )
     canonical = APP_VERSION_RE.search(cmake)
     if canonical is None or rpm_version(canonical.group(1)) != version:
-        raise ValueError("Committed spec version does not match the committed canonical version")
+        raise ValueError(
+            "Committed spec version does not match the committed canonical version"
+        )
     if not re.fullmatch(r"[A-Za-z0-9+_.~-]+", name + version):
         raise ValueError("Unsafe source archive identity")
     output.mkdir(parents=True, exist_ok=True)
