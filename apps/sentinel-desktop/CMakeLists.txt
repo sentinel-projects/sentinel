@@ -1,3 +1,17 @@
+add_library(sentinel_desktop_shortcuts STATIC
+    include/sentinel/desktop/GlobalShortcutBackend.h)
+target_include_directories(sentinel_desktop_shortcuts PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(sentinel_desktop_shortcuts PUBLIC Qt6::Core)
+
+if(TARGET Qt6::DBus)
+    add_library(sentinel_desktop_portal STATIC
+        include/sentinel/desktop/PortalShortcutBackend.h
+        src/PortalShortcutBackend.cpp)
+    target_include_directories(sentinel_desktop_portal PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(sentinel_desktop_portal PUBLIC sentinel_desktop_shortcuts Qt6::DBus)
+    sentinel_apply_compiler_flags(sentinel_desktop_portal)
+endif()
+
 add_library(sentinel_desktop_ipc STATIC
     include/sentinel/desktop/DaemonClient.h
     src/DaemonClient.cpp
@@ -50,6 +64,10 @@ add_library(sentinel_desktop_startup STATIC
     include/sentinel/desktop/WindowStatePersistence.h
     src/WindowStatePersistence.cpp
 )
+target_link_libraries(sentinel_desktop_viewmodels PUBLIC sentinel_desktop_shortcuts)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(sentinel_desktop_viewmodels PUBLIC sentinel_desktop_portal)
+endif()
 
 target_include_directories(sentinel_desktop_startup
     PUBLIC
