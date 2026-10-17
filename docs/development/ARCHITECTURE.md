@@ -28,4 +28,12 @@ Persistence remains split: settings use `ISettingsStore`; memory uses `IMemorySt
 
 The concurrency model uses Qt signals/events for UI and provider integration; agent execution scheduling and loop events keep active work observable and cancellable. See [Agent Runtime](../concepts/AGENT_RUNTIME.md) for run semantics. These components are implemented; reliable real-model task completion remains unaccepted.
 
+Built-in provider identity and static registration metadata live in the immutable `ProviderRegistry`
+descriptor table. ModelService composes its existing runtime factories from those descriptors and
+continues to own selection, binding, endpoint/credential resolution, health and capability merging.
+Discovery dispatch consults the same descriptors; transport, catalog parsing and cancellation remain
+in their existing owners. Provider defaults carry `ProviderDefault` provenance and are not live
+model verification. See the [P2-M05 audit](../audits/P2_M05_PROVIDER_REGISTRY_DISCOVERY_RESULT.md)
+for facade compatibility, discovery limitations and remaining adapter extraction work.
+
 Hardware capability facts and model-fit estimates exist, but a continuous CPU/RAM/GPU pressure-driven adaptive resource policy is not implemented. Linux global Quick Panel shortcuts use the session-bus GlobalShortcuts portal when the backend confirms a binding; unavailable portals and refused bindings remain unavailable. Native KDE/Wayland registration and focus acceptance remain unverified (see the [P6-04 report](../audits/P6_04_KDE_WAYLAND_NATIVE_INTEGRATION_RESULT.md)). Daemon clipboard tools require a GUI and are unavailable in the headless process; Linux application launching is explicitly unsupported. Native platform behavior remains subject to acceptance, including Rust Windows named-pipe transport, which is not implemented. Public distribution blockers remain in the [SEC-P1 register](SEC_P1_4_GITHUB_HARDENING_REPORT.md#5-consolidated-blocker-register).
