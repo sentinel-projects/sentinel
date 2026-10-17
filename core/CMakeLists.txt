@@ -261,6 +261,7 @@ add_library(sentinel_core STATIC
     include/sentinel/core/cache/IPromptCacheService.h
     include/sentinel/core/cache/PromptCacheService.h
     include/sentinel/core/provider/ProviderMessageNormalizer.h
+    include/sentinel/core/provider/ProviderRegistry.h
     include/sentinel/core/provider/ProviderErrorClassifier.h
     include/sentinel/core/provider/protocols/openai_compatible/OpenAiCompatibleProtocol.h
     include/sentinel/core/provider/protocols/anthropic_messages/AnthropicMessagesProtocol.h
@@ -467,6 +468,7 @@ add_library(sentinel_core STATIC
     src/acp/AcpService.cpp
     src/cache/PromptCacheService.cpp
     src/provider/ProviderMessageNormalizer.cpp
+    src/provider/ProviderRegistry.cpp
     src/provider/ProviderErrorClassifier.cpp
     src/provider/protocols/openai_compatible/OpenAiCompatibleProtocol.cpp
     src/provider/protocols/anthropic_messages/AnthropicMessagesProtocol.cpp
