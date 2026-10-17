@@ -72,11 +72,27 @@ def check(root: Path) -> list[str]:
     if not NUMERIC_PREFIX_RE.match(canonical):
         errors.append(f"CMakeLists.txt: SENTINEL_APP_VERSION {canonical!r} has no major.minor.patch prefix")
     expected_rpm = rpm_version(canonical)
+    desktop_cmake = read(root, "apps/sentinel-desktop/CMakeLists.txt")
+    if "DESTINATION ${CMAKE_INSTALL_PREFIX}/lib/systemd/user" in desktop_cmake:
+        errors.append("User unit destination must respect the staged install prefix")
+    rust_version = re.search(r'^version\s*=\s*"([^"]+)"', read(root, "cli/Cargo.toml"), re.MULTILINE)
+    if not rust_version or rust_version.group(1) != canonical:
+        errors.append("cli/Cargo.toml: workspace version differs from the canonical version")
+    cpack = read(root, "cmake/SentinelCPack.cmake")
+    if 'string(REPLACE "-" "~" CPACK_RPM_PACKAGE_VERSION "${SENTINEL_APP_VERSION}")' not in cpack:
+        errors.append("CPack RPM must derive the pre-release version from SENTINEL_APP_VERSION")
 
     for spec in RPM_SPECS:
         text = read(root, spec)
         version_match = SPEC_VERSION_RE.search(text)
         release_match = SPEC_RELEASE_RE.search(text)
+        if "qt6-qtsql" in text:
+            errors.append(f"{spec}: Qt SQL is supplied by Fedora qt6-qtbase, not qt6-qtsql")
+        for required in ("%{_bindir}/sentinel-plugin-host", "%dir %{_sysconfdir}/sentinel",
+                         "%license %{_datadir}/licenses/sentinel", "%doc %{_datadir}/doc/Sentinel",
+                         "qt6-qtbase-gui", "qt6-qtwayland"):
+            if required not in text:
+                errors.append(f"{spec}: missing packaging contract entry {required}")
         if not version_match or version_match.group(1) != expected_rpm:
             actual = version_match.group(1) if version_match else "<missing>"
             errors.append(f"{spec}: Version {actual!r} != expected {expected_rpm!r}")
