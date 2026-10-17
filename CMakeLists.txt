@@ -59,6 +59,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Quick Qml Sql Test Network Widgets LinguistTools Multimedia Concurrent
     OPTIONAL_COMPONENTS Pdf)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_package(Qt6 6.5 REQUIRED COMPONENTS DBus)
+elseif(APPLE)
+    find_package(Qt6 6.5 QUIET COMPONENTS DBus)
+endif()
 
 qt_standard_project_setup(REQUIRES 6.5)
 

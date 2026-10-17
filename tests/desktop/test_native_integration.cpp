@@ -13,9 +13,94 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QWindow>
+class FakeShortcutBackend final : public sentinel::desktop::GlobalShortcutBackend {
+public:
+    QString sequence;
+    bool active = false;
+    int* shutdownCount;
+    explicit FakeShortcutBackend(int* count) : shutdownCount(count) {}
+    void setShortcut(const QString& value) override {
+        sequence = value;
+        active = !value.isEmpty() && value != "Disabled";
+        emit statusChanged();
+    }
+    void shutdown() override {
+        ++*shutdownCount;
+        active = false;
+    }
+    QString status() const override {
+        return active ? "Registered fixture" : "Disabled";
+    }
+    bool registered() const override {
+        return active;
+    }
+};
 class NativeIntegrationTest final : public QObject {
     Q_OBJECT
 private slots:
+    void shortcutActivationSurvivesDaemonDisconnect() {
+        QTemporaryDir directory;
+        sentinel::core::AppSettings settings(
+            std::make_unique<sentinel::core::InMemorySettingsStore>(),
+            sentinel::core::inMemoryTestCredentialStore());
+        settings.setCompanionEnabled(true);
+        settings.setQuickPanelShortcut("Ctrl+Alt+Space");
+        sentinel::core::ModeManager modes;
+        sentinel::desktop::DaemonClient transport(directory.filePath("absent.sock"), 50, 50);
+        sentinel::desktop::DesktopRuntimeClient runtime(transport);
+        sentinel::desktop::DesktopShellViewModel shell(runtime, modes, settings);
+        sentinel::desktop::QuickPanelController panel(runtime);
+        QWindow window;
+        QWindow quickWindow;
+        quickWindow.setObjectName("sentinelQuickPanel");
+        int shutdowns = 0;
+        auto backend = std::make_unique<FakeShortcutBackend>(&shutdowns);
+        auto* controlled = backend.get();
+        {
+            sentinel::desktop::NativeCompanionAdapter native(shell, settings, &window, nullptr,
+                                                             std::move(backend));
+            native.bindQuickPanel(&panel);
+            QCOMPARE(native.shortcutStatus(), QString("Registered fixture"));
+            const auto windows = QGuiApplication::allWindows().size();
+            emit controlled->activated("fixture-token");
+            QVERIFY(quickWindow.isVisible());
+            emit controlled->activated("fixture-token");
+            QVERIFY(!quickWindow.isVisible());
+            QTest::qWait(150);
+            emit controlled->activated("fixture-token");
+            QVERIFY(quickWindow.isVisible());
+            QCOMPARE(QGuiApplication::allWindows().size(), windows);
+            settings.setCompanionEnabled(false);
+            quickWindow.hide();
+            emit controlled->activated("fixture-token");
+            QVERIFY(!quickWindow.isVisible());
+            settings.setCompanionEnabled(true);
+            QVERIFY(controlled->registered());
+            native.setShortcut("Disabled");
+            QVERIFY(!controlled->registered());
+            native.setShortcut("Ctrl+Alt+S");
+            QCOMPARE(controlled->sequence, QString("Ctrl+Alt+S"));
+        }
+        QCOMPARE(shutdowns, 1);
+    }
+    void activationRestoresExistingMainWindow() {
+        sentinel::core::AppSettings settings(
+            std::make_unique<sentinel::core::InMemorySettingsStore>(),
+            sentinel::core::inMemoryTestCredentialStore());
+        settings.setCompanionEnabled(true);
+        sentinel::core::ModeManager modes;
+        QTemporaryDir directory;
+        sentinel::desktop::DaemonClient transport(directory.filePath("absent.sock"), 500, 1000);
+        sentinel::desktop::DesktopRuntimeClient runtime(transport);
+        sentinel::desktop::DesktopShellViewModel shell(runtime, modes, settings);
+        QWindow window;
+        sentinel::desktop::NativeCompanionAdapter native(shell, settings, &window);
+        window.setWindowStates(Qt::WindowMinimized | Qt::WindowMaximized);
+        native.togglePanel();
+        QVERIFY(window.isVisible());
+        QVERIFY(!(window.windowStates() & Qt::WindowMinimized));
+        QVERIFY(window.windowStates() & Qt::WindowMaximized);
+    }
     void settingsActionsAndUnavailableRegistration() {
         QTemporaryDir directory;
         sentinel::core::AppSettings settings(
@@ -61,10 +146,12 @@ private slots:
         QVERIFY(!quickWindow.isVisible());
         native.togglePanel();
         QVERIFY(quickWindow.isVisible());
-        QMouseEvent popupClick(QEvent::MouseButtonPress, QPointF(1, 1), outside, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QMouseEvent popupClick(QEvent::MouseButtonPress, QPointF(1, 1), outside, Qt::LeftButton,
+                               Qt::LeftButton, Qt::NoModifier);
         QCoreApplication::sendEvent(&dropdown, &popupClick);
         QVERIFY(quickWindow.isVisible());
-        QMouseEvent outsideClick(QEvent::MouseButtonPress, QPointF(1, 1), outside, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QMouseEvent outsideClick(QEvent::MouseButtonPress, QPointF(1, 1), outside, Qt::LeftButton,
+                                 Qt::LeftButton, Qt::NoModifier);
         QCoreApplication::sendEvent(&window, &outsideClick);
         QVERIFY(!quickWindow.isVisible());
         native.togglePanel();

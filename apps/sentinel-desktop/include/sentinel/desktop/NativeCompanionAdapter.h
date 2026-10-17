@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "sentinel/desktop/GlobalShortcutBackend.h"
 #include <QElapsedTimer>
 #include <QObject>
 #include <QPointer>
@@ -36,7 +37,8 @@ public:
         return notificationStatus_;
     }
     NativeCompanionAdapter(DesktopShellViewModel&, core::AppSettings&, QObject* rootWindow,
-                           QObject* parent = nullptr);
+                           QObject* parent = nullptr,
+                           std::unique_ptr<GlobalShortcutBackend> shortcutBackend = {});
     ~NativeCompanionAdapter() override;
     void bindQuickPanel(QuickPanelController*);
     void setWindow(QObject* window);
@@ -65,6 +67,7 @@ protected:
     bool eventFilter(QObject*, QEvent*) override;
 
 private:
+    std::unique_ptr<GlobalShortcutBackend> shortcutBackend_;
     QString notificationStatus_;
 #ifdef Q_OS_MACOS
     std::unique_ptr<MacNativeNotifications> notifications_;
