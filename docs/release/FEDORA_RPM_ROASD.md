@@ -34,6 +34,31 @@ reproducibility, not bit-for-bit binary RPM reproducibility across toolchains.
 Snapshot regression tests run in checkout CI; their Git-dependent case is explicitly skipped in
 source RPM builds, which intentionally omit `.git`. Staged-payload tests still run there.
 
+After maintainer review and commit, validate the exact candidate rather than assuming HEAD archives
+include working-tree edits. On a provisioned Fedora 44 builder, with no prior `build-copr` output:
+
+```bash
+candidate_sha="$(git rev-parse HEAD)"
+test -z "$(git status --porcelain)"
+python3 tools/packaging/create_source_archive.py --ref "$candidate_sha" \
+  --output "$PWD/build-copr/SOURCES"
+mkdir -p build-copr/SPECS
+mv build-copr/SOURCES/sentinel-desktop.spec build-copr/SPECS/
+sha256sum build-copr/SOURCES/*.tar.gz
+rpmspec -P build-copr/SPECS/sentinel-desktop.spec > /dev/null
+rpmbuild -ba --define "_topdir $PWD/build-copr" --define 'dist .fc44' \
+  build-copr/SPECS/sentinel-desktop.spec
+find build-copr/RPMS build-copr/SRPMS -name '*.rpm' -exec rpm -qp \
+  --qf '%{NAME} %{VERSION} %{RELEASE} %{ARCH}\n' {} \;
+```
+
+Record the SHA, archive hash, RPM/SRPM hashes and full build/check logs. Inspect the archive's spec
+against `git show "$candidate_sha:packaging/linux/rpm/sentinel-desktop.spec"`; run rpmlint and the
+payload extraction/check commands in the Fedora workflow. Finally install, upgrade and remove in
+an authorized disposable Fedora/Ro-ASD environment. No signing, publishing or automatic service
+activation is part of this procedure. The commands above are instructions, not native evidence
+from the macOS finalization run.
+
 The RPM builds all four C++ binaries: desktop, daemon, legacy CLI and plugin host. Its `%check`
 compares the staged Linux tree with the RPM ownership rules and the CMake install manifest,
 validates desktop/AppStream metadata, and runs CTest. The Fedora CI binary job builds the SRPM,
@@ -76,9 +101,11 @@ allow rule or sandbox relaxation is installed. Native enforcing-mode tests must 
 socket access, user namespaces, approved tool execution and any device/GPU access affected by the
 service's existing PrivateDevices setting.
 
-This P7-02B branch starts at main without P6-04. Installing Wayland libraries does not add its
-portal shortcut implementation or establish AC-P6-07 acceptance. Integrating that separate
-feature and verifying KDE consent/focus remain explicit release-candidate checks.
+The reconciled P7-02B branch includes current main's P6-04 portal backend. Qt DBus is supplied by
+qtbase; the RPM and Fedora CI declare dbus-daemon for its isolated contract tests. The runtime
+recommends xdg-desktop-portal without forcing a KDE backend onto other desktop environments.
+Registration still requires a capable desktop portal and consent. Native KDE consent/focus
+and AC-P6-07 acceptance remain explicit release-candidate checks.
 
 ## Confirmed Ro-ASD contract and proposals
 
