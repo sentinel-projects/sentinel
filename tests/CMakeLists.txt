@@ -23,6 +23,10 @@ function(add_sentinel_core_test target source)
     add_test(NAME ${target} COMMAND $<TARGET_FILE:${target}>)
 endfunction()
 
+# Measurement-only private composition; never linked into production entry points.
+qt_add_executable(resource_benchmark_probe helpers/resource_benchmark_probe.cpp)
+target_link_libraries(resource_benchmark_probe PRIVATE sentinel_daemon_service Qt6::Test)
+
 # Opt-in live request probe; never registered with CTest or run by the build.
 qt_add_executable(observation_request_probe EXCLUDE_FROM_ALL helpers/observation_request_probe.cpp)
 target_link_libraries(observation_request_probe PRIVATE sentinel_core)
@@ -387,6 +391,8 @@ endif()
 # Canonical IPC models are checked in so normal C++ builds need no generator runtime.
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME test_resource_benchmark_runner COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/performance/test_benchmark.py)
+    set_tests_properties(test_resource_benchmark_runner PROPERTIES TIMEOUT 30)
     add_test(NAME test_verification_desktop_daemon COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/verification/test_desktop_daemon.py)
     set_tests_properties(test_verification_desktop_daemon PROPERTIES TIMEOUT 30)
     add_test(NAME test_verification_registry
