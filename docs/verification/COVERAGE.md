@@ -68,3 +68,14 @@ remain Blocked; their supporting component/IPC probes do not close those scopes.
 and duplicate-event tests remain available in `test_agent_reliability_ipc`; they are not a daemon
 process crash test. No AC status or feature verification level is promoted. All 43 features and
 65 historical criteria remain intact. See the QA-02A audit for actual execution outcomes and gaps.
+
+## QA-02B provider-driven fixture chain
+
+E2E-02 now maps to `test_provider_agent_e2e::providerDrivenChain`: scripted IChatProvider,
+production LLM planner, AgentLoop, gateway, real filesystem executor, and separate SQLite
+conversation/run/projection stores. Seven rows cover authorized write/read/final, denial,
+cancellation awaiting approval, out-of-workspace resource, malformed arguments, rejected final
+after a successful write, and old-generation approval replay. The collector requires every
+row's independently checked SHA-256 manifest and persisted counters. This closes the bounded
+fixture chain gap only; E2E-05 and E2E-07 remain Blocked. Historical feature and acceptance
+statuses are unchanged. See the QA-02B audit for exact execution evidence and QA-02C scope.
