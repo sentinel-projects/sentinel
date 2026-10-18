@@ -42,6 +42,7 @@ Rectangle {
                 hoverEnabled: true
                 Accessible.name: modelData.label
                 checkable: true
+                autoExclusive: true // Selecting the current page must keep its indicator checked.
                 checked: rail.currentPage === modelData.page
                 onClicked: rail.pageRequested(modelData.page)
                 ToolTip.visible: hovered || activeFocus
