@@ -341,6 +341,8 @@ class AgentReliabilityIpcTest final : public QObject {
 private slots:
     void initTestCase();
     void cleanupTestCase();
+    void e2eDeniedOrCancelledMutation_data();
+    void e2eDeniedOrCancelledMutation();
     void cor17_disconnectReattachDuringActiveRun();
     void cor18_staleDuplicateForeignEventsIgnored_data();
     void cor18_staleDuplicateForeignEventsIgnored();
@@ -358,6 +360,57 @@ void AgentReliabilityIpcTest::cleanupTestCase() {
         if (QDir(path).exists())
             QVERIFY(QDir(path).removeRecursively());
     }
+}
+void AgentReliabilityIpcTest::e2eDeniedOrCancelledMutation_data() {
+    QTest::addColumn<bool>("cancel");
+    QTest::newRow("denied") << false;
+    QTest::newRow("cancelled") << true;
+}
+void AgentReliabilityIpcTest::e2eDeniedOrCancelledMutation() {
+    QFETCH(bool, cancel);
+    Fixture fixture;
+    QVERIFY(fixture.start());
+    DaemonClient client(fixture.path, deadlineMs, 10000);
+    client.connectToDaemon();
+    QTRY_VERIFY(client.daemonReachable());
+    const auto created = call(client, DaemonClient::Command::session_create, {{"title", "QA-02A"}});
+    QVERIFY(created.ok);
+    const auto session = created.payload.value("session_id").toString();
+    QSignalSpy events(&client, &DaemonClient::eventReceived);
+    QVERIFY(call(client, DaemonClient::Command::agent_start,
+                 {{"session_id", session}, {"text", "Apply prescribed fixture mutation"}})
+                .ok);
+    QTRY_VERIFY(!wireEvent(events, "approval.requested").isEmpty());
+    const auto approval = wireEvent(events, "approval.requested");
+    const auto run = approval.value("run_id");
+    if (cancel) {
+        QVERIFY(call(client, DaemonClient::Command::run_cancel, {{"run_id", run}}).ok);
+    } else {
+        QVERIFY(
+            call(
+                client, DaemonClient::Command::approval_respond,
+                {{"run_id", run}, {"approval_id", approval.value("approval_id")}, {"allow", false}})
+                .ok);
+    }
+    QTRY_COMPARE(terminalCount(events), 1);
+    QVERIFY(wireEvent(events, "run.completed").isEmpty());
+    QVERIFY(
+        !call(client, DaemonClient::Command::approval_respond,
+              {{"run_id", run}, {"approval_id", approval.value("approval_id")}, {"allow", true}})
+             .ok);
+    DaemonClient fresh(fixture.path, deadlineMs, 10000);
+    fresh.connectToDaemon();
+    QTRY_VERIFY(fresh.daemonReachable());
+    const auto snapshot =
+        call(fresh, DaemonClient::Command::session_attach, {{"session_id", session}});
+    QVERIFY(snapshot.ok);
+    QCOMPARE(snapshot.payload.value("state").toString(),
+             cancel ? QString("cancelled") : QString("failed"));
+    QCOMPARE(manifest(fixture.root), fixture.before);
+    QCOMPARE(fixture.executor->calls.load(), 0);
+    QCOMPARE(fixture.executor->unauthorized.load(), 0);
+    QVERIFY(fixture.controller->persistentPermissionGrants().isEmpty());
+    QCOMPARE(terminalCount(events), 1);
 }
 void AgentReliabilityIpcTest::cor17_disconnectReattachDuringActiveRun() {
     Fixture fixture;
