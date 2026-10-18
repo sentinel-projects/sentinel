@@ -13,6 +13,12 @@ using namespace sentinel::test;
 class EndpointAdapterCharacterizationTest final : public QObject {
     Q_OBJECT
 private slots:
+    void nativePreflightGuards();
+    void nativeNormalizationGolden_data();
+    void nativeNormalizationGolden();
+    void nativeResponseEdges_data();
+    void nativeResponseEdges();
+
     void adapterStreamingOutcome_data() {
         QTest::addColumn<QString>("outcome");
         QTest::newRow("fragmented-success") << QString("success");
@@ -203,6 +209,197 @@ private slots:
         QCOMPARE(service.providerHealth(providerId), ProviderHealth::Available);
     }
 };
+
+// Additional post-extraction coverage for unchanged adapter policy boundaries.
+void EndpointAdapterCharacterizationTest::nativePreflightGuards() {
+    AppSettings settings(std::make_unique<InMemorySettingsStore>(), inMemoryTestCredentialStore());
+    ModelService service(&settings);
+    auto state = std::make_shared<ScriptedTransportState>();
+    service.setProviderNetworkFactoryForTesting(std::make_shared<ScriptedNetworkFactory>(state));
+    ModelBinding binding{"lm-studio", "fixture-model"};
+    binding.capabilities.nativeToolCalling = CapabilitySupport::Supported;
+    binding.capabilities.structuredOutput = CapabilitySupport::Supported;
+    binding.capabilities.streaming = CapabilitySupport::Supported;
+    auto client = service.constructProvider(binding);
+    ChatRequestOptions options;
+    options.nativeToolCalling = true;
+    options.structuredOutput = true;
+    options.structuredSchemaName = "fixture";
+    options.structuredSchema = {{"type", "object"}};
+    // Individually supported capabilities do not imply combined support.
+    for (const auto combined : {CapabilitySupport::Unknown, CapabilitySupport::Unsupported}) {
+        binding.capabilities.combinedToolsAndStructuredOutput = combined;
+        client = service.constructProvider(binding);
+        const auto rejected = client->sendRequest("fixture", options);
+        QCOMPARE(rejected.category, ChatProviderErrorCategory::CapabilityUnsupported);
+        QCOMPARE(rejected.error, ChatProviderReply::Error::CapabilityRejected);
+    }
+    const auto streamRejected = client->sendMessageStreaming("fixture", {}, {}, options);
+    QCOMPARE(streamRejected.category, ChatProviderErrorCategory::CapabilityUnsupported);
+    options.nativeToolCalling = false;
+    options.structuredSchemaName.clear();
+    const auto schemaRejected = client->sendRequest("fixture", options);
+    QCOMPARE(schemaRejected.errorMessage, QString("Structured planner schema is missing."));
+    QCOMPARE(schemaRejected.category, ChatProviderErrorCategory::MalformedResponse);
+    options.structuredOutput = false;
+    options.nativeToolCalling = true;
+    options.priorToolCalls = {{"call", "fixture", {}}};
+    auto continuationRejected = client->sendRequest("fixture", options);
+    QCOMPARE(continuationRejected.errorMessage, QString("Native tool results are incomplete."));
+    options.toolResults = {{"foreign", "fixture"}};
+    continuationRejected = client->sendRequest("fixture", options);
+    QCOMPARE(continuationRejected.errorMessage, QString("Native tool result IDs do not match."));
+    QCOMPARE(state->requests.size(), 0);
+}
+
+// P2-M07: frozen against d4e8da6a before production extraction.
+void EndpointAdapterCharacterizationTest::nativeNormalizationGolden_data() {
+    QTest::addColumn<QString>("mode");
+    QTest::addColumn<QByteArray>("expected");
+    const QByteArray tools =
+        R"(,"tool_choice":"auto","tools":[{"function":{"description":"fixture description","name":"read-file","parameters":{"properties":{"path":{"description":"fixture path","type":"string"}},"required":["path"],"type":"object"}},"type":"function"}])";
+    QTest::newRow("fallback-tool-schema")
+        << QString("tools")
+        << QByteArray(
+               R"({"max_tokens":32,"messages":[{"content":"fixture prompt","role":"user"}],"model":"fixture-model","stream":false)") +
+               tools + '}';
+    QTest::newRow("strict-structured")
+        << QString("structured")
+        << QByteArray(
+               R"({"max_tokens":32,"messages":[{"content":"fixture prompt","role":"user"}],"model":"fixture-model","response_format":{"json_schema":{"name":"fixture","schema":{"type":"object"},"strict":true},"type":"json_schema"},"stream":false})");
+    QTest::newRow("continuation-truncation")
+        << QString("continuation")
+        << QByteArray(
+               R"({"max_tokens":32,"messages":[{"content":"fixture prompt","role":"user"},{"role":"assistant","tool_calls":[{"function":{"arguments":"{\"path\":\"fixture.txt\"}","name":"read-file"},"id":"call-1","type":"function"}]},{"content":")") +
+               QByteArray(6800, 'x') +
+               R"(","role":"tool","tool_call_id":"call-1"}],"model":"fixture-model","stream":false)" +
+               tools + '}';
+}
+
+void EndpointAdapterCharacterizationTest::nativeNormalizationGolden() {
+    QFETCH(QString, mode);
+    QFETCH(QByteArray, expected);
+    AppSettings settings(std::make_unique<InMemorySettingsStore>(), inMemoryTestCredentialStore());
+    ModelService service(&settings);
+    auto state = std::make_shared<ScriptedTransportState>();
+    state->responder = [](const RecordedProviderRequest&) {
+        return ScriptedHttpResponse::body(R"({"choices":[{"message":{"content":"{}"}}]})");
+    };
+    service.setProviderNetworkFactoryForTesting(std::make_shared<ScriptedNetworkFactory>(state));
+    ModelBinding binding{"lm-studio", "fixture-model"};
+    binding.capabilities.nativeToolCalling = CapabilitySupport::Supported;
+    binding.capabilities.structuredOutput = CapabilitySupport::Supported;
+    binding.capabilities.maxOutputTokens = 32;
+    const auto client = service.constructProvider(binding);
+    ChatRequestOptions options;
+    options.deadlineMs = 500;
+    options.maxOutputTokens = 64;
+    ToolDescriptor tool;
+    tool.id = "read-file";
+    tool.description = "fixture description";
+    tool.parameters = {{"path", "fixture path", true}};
+    options.tools = {tool};
+    auto hidden = tool;
+    hidden.id = "hidden";
+    hidden.exposedToModel = false;
+    options.tools.append(hidden);
+    options.nativeToolCalling = mode != "structured";
+    options.structuredOutput = mode == "structured";
+    options.structuredSchemaName = "fixture";
+    options.structuredSchema = {{"type", "object"}};
+    options.strictStructuredOutput = true;
+    if (mode == "continuation") {
+        options.priorToolCalls = {{"call-1", "read-file", {{"path", "fixture.txt"}}}};
+        options.toolResults = {{"call-1", QString(6801, 'x')}};
+    }
+    const auto reply = client->sendRequest("fixture prompt", options);
+    QVERIFY2(reply.success, qPrintable(reply.errorMessage));
+    QCOMPARE(state->requests.size(), 1);
+    QCOMPARE(state->requests.first().body, expected);
+    QCOMPARE(state->requests.first().method, QByteArray("POST"));
+    QCOMPARE(state->requests.first().url, QUrl("http://127.0.0.1:1234/v1/chat/completions"));
+    QCOMPARE(reply.lifecycle, ChatRequestLifecycle::Completed);
+    QCOMPARE(service.providerHealth("lm-studio"), ProviderHealth::Available);
+}
+
+void EndpointAdapterCharacterizationTest::nativeResponseEdges_data() {
+    QTest::addColumn<QByteArray>("body");
+    QTest::addColumn<QString>("outcome");
+    QTest::newRow("whitespace-id-preserved")
+        << QByteArray(
+               R"({"choices":[{"message":{"tool_calls":[{"id":" ","function":{"name":"read-file","arguments":"{}"}}]}}]})")
+        << QString("tool");
+    QTest::newRow("object-arguments-not-decoded")
+        << QByteArray(
+               R"({"choices":[{"message":{"tool_calls":[{"id":"c","function":{"name":"read-file","arguments":{}}}]}}]})")
+        << QString("invalid-tool");
+    QTest::newRow("length-before-tool-validation")
+        << QByteArray(R"({"choices":[{"finish_reason":"length","message":{"tool_calls":[{}]}}]})")
+        << QString("length");
+    QTest::newRow("empty-content")
+        << QByteArray(R"({"choices":[{"message":{}}]})") << QString("empty");
+    QTest::newRow("first-choice-not-object")
+        << QByteArray(R"({"choices":[7]})") << QString("empty");
+    QTest::newRow("structured-array")
+        << QByteArray(R"({"choices":[{"message":{"content":"[]"}}]})") << QString("structured");
+    QTest::newRow("allowlisted-metadata")
+        << QByteArray(
+               R"({"choices":[{"finish_reason":"private-reason","message":{"content":"ok"}}],"usage":{"prompt_tokens":3,"completion_tokens":-1,"total_tokens":"secret","completion_tokens_details":{"reasoning_tokens":2}},"secret":"private"})")
+        << QString("metadata");
+}
+
+void EndpointAdapterCharacterizationTest::nativeResponseEdges() {
+    QFETCH(QByteArray, body);
+    QFETCH(QString, outcome);
+    AppSettings settings(std::make_unique<InMemorySettingsStore>(), inMemoryTestCredentialStore());
+    ModelService service(&settings);
+    auto state = std::make_shared<ScriptedTransportState>();
+    state->responder = [body](const RecordedProviderRequest&) {
+        return ScriptedHttpResponse::body(body);
+    };
+    service.setProviderNetworkFactoryForTesting(std::make_shared<ScriptedNetworkFactory>(state));
+    ModelBinding binding{"lm-studio", "fixture-model"};
+    binding.capabilities.nativeToolCalling = CapabilitySupport::Supported;
+    binding.capabilities.structuredOutput = CapabilitySupport::Supported;
+    auto client = service.constructProvider(binding);
+    ChatRequestOptions options;
+    options.deadlineMs = 500;
+    options.nativeToolCalling = outcome != "structured";
+    options.structuredOutput = !options.nativeToolCalling;
+    options.structuredSchemaName = "fixture";
+    options.structuredSchema = {{"type", "object"}};
+    ToolDescriptor tool;
+    tool.id = "read-file";
+    // Legacy response matching uses the supplied descriptors, without filtering exposure.
+    tool.exposedToModel = false;
+    options.tools = {tool};
+    auto reply = client->sendRequest("fixture prompt", options);
+    QCOMPARE(state->requests.size(), 1);
+    if (outcome == "tool") {
+        QVERIFY(reply.success);
+        QCOMPARE(reply.toolCalls.first().callId, QString(" "));
+        QCOMPARE(reply.toolCalls.first().toolId, QString("read-file"));
+    } else if (outcome == "metadata") {
+        QVERIFY(reply.success);
+        QCOMPARE(reply.message, QString("ok"));
+        QCOMPARE(reply.diagnostics.value("finish_reason").toString(), QString("other"));
+        QCOMPARE(reply.diagnostics.value("prompt_tokens").toInt(), 3);
+        QCOMPARE(reply.diagnostics.value("reasoning_tokens").toInt(), 2);
+        QVERIFY(!reply.diagnostics.contains("completion_tokens"));
+        QVERIFY(!reply.diagnostics.contains("total_tokens"));
+        QVERIFY(!QJsonDocument(reply.diagnostics).toJson().contains("private"));
+    } else {
+        QVERIFY(!reply.success);
+        QCOMPARE(reply.category, outcome == "length"
+                                     ? ChatProviderErrorCategory::RequestRejected
+                                     : ChatProviderErrorCategory::MalformedResponse);
+        QCOMPARE(reply.error, ChatProviderReply::Error::InvalidResponse);
+        QCOMPARE(reply.lifecycle, ChatRequestLifecycle::Failed);
+        QCOMPARE(reply.httpStatus, 200);
+        QVERIFY(!reply.requestId.isEmpty());
+        QVERIFY(reply.toolCalls.isEmpty());
+    }
+}
 
 QTEST_GUILESS_MAIN(EndpointAdapterCharacterizationTest)
 #include "test_endpoint_adapter_characterization.moc"
