@@ -9,6 +9,7 @@
 #include "sentinel/core/chat/OllamaChatProvider.h"
 #include "sentinel/core/memory/JsonSettingsStore.h"
 #include "sentinel/core/model/IModelRouter.h"
+#include "sentinel/core/provider/ProviderRegistry.h"
 #include "sentinel/core/provider/protocols/anthropic_messages/AnthropicMessagesProtocol.h"
 #include "sentinel/core/provider/protocols/gemini_generate_content/GeminiGenerateContentProtocol.h"
 #include "sentinel/core/provider/protocols/openai_compatible/OpenAiCompatibleProtocol.h"
@@ -973,11 +974,8 @@ QString normalizedProviderId(const QString& providerId) {
 }
 
 bool isCloudProviderId(const QString& providerId) {
-    static const QStringList cloudIds{
-        QStringLiteral("cloud-api"), QStringLiteral("openai"), QStringLiteral("openai-compatible"),
-        QStringLiteral("claude"),    QStringLiteral("gemini"), QStringLiteral("deepseek"),
-        QStringLiteral("groq"),      QStringLiteral("mistral")};
-    return cloudIds.contains(providerId);
+    const auto* descriptor = ProviderRegistry::builtins().find(providerId);
+    return descriptor && descriptor->kind == ProviderKind::Cloud;
 }
 
 QString defaultProviderId() {
@@ -1078,9 +1076,11 @@ ModelService::ModelService(AppSettings* settings, QObject* parent)
         connect(settings_, &AppSettings::cloudApiKeysChanged, this, [this] {
             {
                 std::lock_guard lock(providerHealthRegistry_->mutex);
-                for (const auto& id : {"cloud-api", "openai", "openai-compatible", "claude",
-                                       "gemini", "deepseek", "groq", "mistral"})
-                    providerHealthRegistry_->catalogs.remove(QString::fromLatin1(id));
+                for (const auto& descriptor : ProviderRegistry::builtins().descriptors()) {
+                    if (descriptor.kind == ProviderKind::Cloud) {
+                        providerHealthRegistry_->catalogs.remove(descriptor.id);
+                    }
+                }
             }
             emit providerRegistryChanged();
         });
@@ -1096,43 +1096,27 @@ ModelService::ModelService(AppSettings* settings, QObject* parent)
         selection_.providerId = defaultProviderId();
     }
 
-    ModelCapabilities ollamaCapabilities;
-    ollamaCapabilities.streaming = CapabilitySupport::Supported;
-    ollamaCapabilities.structuredOutput = CapabilitySupport::Unsupported;
-    ollamaCapabilities.nativeToolCalling = CapabilitySupport::Unsupported;
-    registerProvider(
-        defaultProviderId(),
-        [this](const ModelBinding& binding) {
-            auto provider = std::make_shared<OllamaChatProvider>(
-                OllamaConfig::fromEndpoint(ollamaEndpoint_), localInferenceTimeoutMs_);
-            provider->setSelectedModel(binding.modelId);
-            provider->setDiscoverySnapshot(ollamaDiscovery());
-            return std::shared_ptr<IChatProvider>(std::move(provider));
-        },
-        ollamaCapabilities);
-    static const QStringList endpointProviderIds{
-        QStringLiteral("lm-studio"),        QStringLiteral("openai-compatible-local"),
-        QStringLiteral("llama-cpp-server"), QStringLiteral("cloud-api"),
-        QStringLiteral("openai"),           QStringLiteral("openai-compatible"),
-        QStringLiteral("claude"),           QStringLiteral("gemini"),
-        QStringLiteral("deepseek"),         QStringLiteral("groq"),
-        QStringLiteral("mistral")};
-    for (const auto& providerId : endpointProviderIds) {
-        ModelCapabilities endpointCapabilities;
-        endpointCapabilities.streaming = CapabilitySupport::Supported;
-        endpointCapabilities.structuredOutput = CapabilitySupport::Unsupported;
-        endpointCapabilities.nativeToolCalling = CapabilitySupport::Unsupported;
-        if (providerId == QLatin1String("claude") || providerId == QLatin1String("gemini")) {
-            endpointCapabilities.nativeToolCalling = CapabilitySupport::Supported;
-            endpointCapabilities.structuredOutput = CapabilitySupport::Unknown;
+    for (const auto& descriptor : ProviderRegistry::builtins().descriptors()) {
+        if (descriptor.adapter == ProviderAdapter::Ollama) {
+            registerProvider(
+                descriptor.id,
+                [this](const ModelBinding& binding) {
+                    auto provider = std::make_shared<OllamaChatProvider>(
+                        OllamaConfig::fromEndpoint(ollamaEndpoint_), localInferenceTimeoutMs_);
+                    provider->setSelectedModel(binding.modelId);
+                    provider->setDiscoverySnapshot(ollamaDiscovery());
+                    return std::shared_ptr<IChatProvider>(std::move(provider));
+                },
+                descriptor.declaredCapabilities);
+        } else {
+            registerProvider(
+                descriptor.id,
+                [this](const ModelBinding& binding) {
+                    return std::make_shared<SelectedEndpointChatProvider>(
+                        binding, providerConfig(binding), localInferenceTimeoutMs_);
+                },
+                descriptor.declaredCapabilities);
         }
-        registerProvider(
-            providerId,
-            [this](const ModelBinding& binding) {
-                return std::make_shared<SelectedEndpointChatProvider>(
-                    binding, providerConfig(binding), localInferenceTimeoutMs_);
-            },
-            endpointCapabilities);
     }
 }
 
@@ -1690,42 +1674,37 @@ LMStudioConfig ModelService::providerConfig(const ModelBinding& binding) const {
     LMStudioConfig config;
     const QString cloudProv = liveSettings->selectedCloudProvider().toLower().trimmed();
 
-    if (binding.providerId == QStringLiteral("claude") ||
-        (binding.providerId == QStringLiteral("cloud-api") &&
-         cloudProv == QStringLiteral("claude"))) {
-        config.endpoint = QUrl(QStringLiteral("https://api.anthropic.com"));
-        config.apiKey = liveSettings->claudeApiKey();
-    } else if (binding.providerId == QStringLiteral("gemini") ||
-               (binding.providerId == QStringLiteral("cloud-api") &&
-                cloudProv == QStringLiteral("gemini"))) {
-        config.endpoint = QUrl(QStringLiteral("https://generativelanguage.googleapis.com"));
-        config.apiKey = liveSettings->geminiApiKey();
-    } else if (binding.providerId == QStringLiteral("deepseek") ||
-               (binding.providerId == QStringLiteral("cloud-api") &&
-                cloudProv == QStringLiteral("deepseek"))) {
-        config.endpoint = QUrl(QStringLiteral("https://api.deepseek.com"));
-        config.apiKey = liveSettings->deepseekApiKey();
-    } else if (binding.providerId == QStringLiteral("groq") ||
-               (binding.providerId == QStringLiteral("cloud-api") &&
-                cloudProv == QStringLiteral("groq"))) {
-        config.endpoint = QUrl(QStringLiteral("https://api.groq.com/openai"));
-        config.apiKey = liveSettings->groqApiKey();
-    } else if (binding.providerId == QStringLiteral("mistral") ||
-               (binding.providerId == QStringLiteral("cloud-api") &&
-                cloudProv == QStringLiteral("mistral"))) {
-        config.endpoint = QUrl(QStringLiteral("https://api.mistral.ai"));
-        config.apiKey = liveSettings->mistralApiKey();
-    } else if (binding.providerId == QStringLiteral("openai") ||
-               binding.providerId == QStringLiteral("openai-compatible") ||
-               binding.providerId == QStringLiteral("cloud-api")) {
-        config.endpoint = QUrl(QStringLiteral("https://api.openai.com"));
-        config.apiKey = liveSettings->openAiApiKey();
-    } else if (binding.providerId == QStringLiteral("llama-cpp-server")) {
-        config.endpoint = QUrl(llamaCppEndpoint_);
-    } else if (binding.providerId == QStringLiteral("openai-compatible-local")) {
-        config.endpoint = QUrl(QStringLiteral("http://127.0.0.1:8000"));
-    } else {
-        config.endpoint = QUrl(lmStudioEndpoint_);
+    const auto* descriptor =
+        ProviderRegistry::builtins().endpointDescriptor(binding.providerId, cloudProv);
+    config.endpoint = descriptor && !descriptor->baseEndpoint.isEmpty()
+                          ? QUrl(descriptor->baseEndpoint)
+                          : QUrl(lmStudioEndpoint_);
+    if (descriptor) {
+        switch (descriptor->endpoint) {
+        case ProviderEndpoint::Anthropic:
+            config.apiKey = liveSettings->claudeApiKey();
+            break;
+        case ProviderEndpoint::Gemini:
+            config.apiKey = liveSettings->geminiApiKey();
+            break;
+        case ProviderEndpoint::DeepSeek:
+            config.apiKey = liveSettings->deepseekApiKey();
+            break;
+        case ProviderEndpoint::Groq:
+            config.apiKey = liveSettings->groqApiKey();
+            break;
+        case ProviderEndpoint::Mistral:
+            config.apiKey = liveSettings->mistralApiKey();
+            break;
+        case ProviderEndpoint::OpenAi:
+            config.apiKey = liveSettings->openAiApiKey();
+            break;
+        case ProviderEndpoint::LlamaCpp:
+            config.endpoint = QUrl(llamaCppEndpoint_);
+            break;
+        default:
+            break;
+        }
     }
     config.networkFactory = providerNetworkFactory_;
     return config;

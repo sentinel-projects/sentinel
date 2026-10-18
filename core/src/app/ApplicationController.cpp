@@ -6,14 +6,13 @@
 #include "sentinel/core/chat/ChatContentRepresentation.h"
 
 #include "sentinel/core/agent/AgentRuntime.h"
-#include "sentinel/core/security/SQLitePermissionGrantStore.h"
 #include "sentinel/core/agent/LlmAgentRuntime.h"
 #include "sentinel/core/agent/SQLiteAgentRunStore.h"
 #include "sentinel/core/agent/StaticAgentRegistry.h"
 #include "sentinel/core/app/AppSettings.h"
-#include "sentinel/core/app/WorkspaceService.h"
 #include "sentinel/core/app/ControlledTaskService.h"
 #include "sentinel/core/app/StaticTaskPlanner.h"
+#include "sentinel/core/app/WorkspaceService.h"
 #include "sentinel/core/chat/InMemoryConversationStore.h"
 #include "sentinel/core/chat/OllamaChatProvider.h"
 #include "sentinel/core/memory/InMemoryMemoryCandidateStore.h"
@@ -23,11 +22,13 @@
 #include "sentinel/core/model/ModelOperationService.h"
 #include "sentinel/core/model/StaticModelRouter.h"
 #include "sentinel/core/model/StaticProviderCatalog.h"
+#include "sentinel/core/provider/ProviderRegistry.h"
 #include "sentinel/core/runtime/AlarmStore.h"
 #include "sentinel/core/runtime/LocalRuntime.h"
 #include "sentinel/core/runtime/NullToolExecutor.h"
 #include "sentinel/core/runtime/RealToolExecutor.h"
 #include "sentinel/core/security/AuthorizationResolver.h"
+#include "sentinel/core/security/SQLitePermissionGrantStore.h"
 #include "sentinel/core/security/StaticApprovalPolicy.h"
 #include "sentinel/core/security/StaticSandboxPolicy.h"
 
@@ -10193,53 +10194,50 @@ void ApplicationController::pollOllama() {
             ollamaDiscovery = NullOllamaRuntimeClient{}.discoverModels(token);
         }
 
-        if (provider == QStringLiteral("lm-studio")) {
+        const auto& registry = ProviderRegistry::builtins();
+        const auto* registration = registry.find(provider);
+        const auto strategy = registration ? registration->discovery : ProviderDiscovery::None;
+        if (strategy == ProviderDiscovery::OpenAiLocalModels &&
+            registration->endpoint == ProviderEndpoint::LmStudio) {
             const auto lmUrl = lmStudioEndpointSnapshot.isEmpty()
                                    ? QStringLiteral("http://127.0.0.1:1234/v1/models")
                                    : lmStudioEndpointSnapshot + QStringLiteral("/v1/models");
-            lmStudioModels = fetchOpenAiCompatibleModels(QUrl(lmUrl), 1000, {}, nullptr,
-                                                          token, &selectedOutcome);
-        } else if (provider == QStringLiteral("llama-cpp-server")) {
+            lmStudioModels = fetchOpenAiCompatibleModels(QUrl(lmUrl), 1000, {}, nullptr, token,
+                                                         &selectedOutcome);
+        } else if (strategy == ProviderDiscovery::LlamaCppModels) {
             const auto llamaUrl = llamaCppEndpointSnapshot.isEmpty()
                                       ? QStringLiteral("http://127.0.0.1:8080/v1/models")
                                       : llamaCppEndpointSnapshot + QStringLiteral("/v1/models");
             llamaCppModels = fetchLlamaCppModels(QUrl(llamaUrl), 1000, token, &selectedOutcome);
-        } else if (provider == QStringLiteral("openai-compatible-local")) {
-            openAiModels = fetchOpenAiCompatibleModels(
-                QUrl(QStringLiteral("http://127.0.0.1:8000/v1/models")), 1000,
-                {}, nullptr, token, &selectedOutcome);
-        } else if (provider == QStringLiteral("cloud-api") ||
-                   provider == QStringLiteral("openai") || provider == QStringLiteral("claude") ||
-                   provider == QStringLiteral("gemini") || provider == QStringLiteral("deepseek") ||
-                   provider == QStringLiteral("groq") || provider == QStringLiteral("mistral")) {
+        } else if (strategy == ProviderDiscovery::OpenAiLocalModels) {
+            openAiModels =
+                fetchOpenAiCompatibleModels(QUrl(QStringLiteral("http://127.0.0.1:8000/v1/models")),
+                                            1000, {}, nullptr, token, &selectedOutcome);
+        } else if (strategy == ProviderDiscovery::SelectedCloud ||
+                   strategy == ProviderDiscovery::OpenAiCloudModels ||
+                   strategy == ProviderDiscovery::AnthropicModels ||
+                   strategy == ProviderDiscovery::GeminiModels) {
             const QString settingsPath =
                 QDir(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation))
                     .filePath(QStringLiteral("settings.json"));
             AppSettings settings(std::make_unique<JsonSettingsStore>(settingsPath));
             const QString cloudProv = settings.selectedCloudProvider().toLower().trimmed();
 
-            const bool isGemini =
-                provider == QStringLiteral("gemini") ||
-                (provider == QStringLiteral("cloud-api") && cloudProv == QStringLiteral("gemini"));
-            const bool isClaude =
-                provider == QStringLiteral("claude") ||
-                (provider == QStringLiteral("cloud-api") && cloudProv == QStringLiteral("claude"));
-            const bool isDeepSeek = provider == QStringLiteral("deepseek") ||
-                                    (provider == QStringLiteral("cloud-api") &&
-                                     cloudProv == QStringLiteral("deepseek"));
-            const bool isGroq =
-                provider == QStringLiteral("groq") ||
-                (provider == QStringLiteral("cloud-api") && cloudProv == QStringLiteral("groq"));
-            const bool isMistral =
-                provider == QStringLiteral("mistral") ||
-                (provider == QStringLiteral("cloud-api") && cloudProv == QStringLiteral("mistral"));
-            const bool isOpenAi =
-                provider == QStringLiteral("openai") ||
-                (provider == QStringLiteral("cloud-api") && cloudProv == QStringLiteral("openai"));
+            const auto cloudStrategy = registry.discoveryStrategy(provider, cloudProv);
+            const auto* cloudRegistration = registry.endpointDescriptor(provider, cloudProv);
+            const bool isGemini = cloudStrategy == ProviderDiscovery::GeminiModels;
+            const bool isClaude = cloudStrategy == ProviderDiscovery::AnthropicModels;
+            const auto cloudEndpoint =
+                cloudRegistration ? cloudRegistration->endpoint : ProviderEndpoint::SelectedCloud;
+            const bool openAiCatalog = cloudStrategy == ProviderDiscovery::OpenAiCloudModels;
+            const bool isDeepSeek = openAiCatalog && cloudEndpoint == ProviderEndpoint::DeepSeek;
+            const bool isGroq = openAiCatalog && cloudEndpoint == ProviderEndpoint::Groq;
+            const bool isMistral = openAiCatalog && cloudEndpoint == ProviderEndpoint::Mistral;
+            const bool isOpenAi = openAiCatalog && cloudEndpoint == ProviderEndpoint::OpenAi;
 
             if (isGemini) {
-                cloudModels = fetchGeminiCloudModels(settings.geminiApiKey(), 4000, nullptr,
-                                                     token, &selectedOutcome);
+                cloudModels = fetchGeminiCloudModels(settings.geminiApiKey(), 4000, nullptr, token,
+                                                     &selectedOutcome);
             } else if (isClaude) {
                 cloudModels = fetchAnthropicCloudModels(settings.claudeApiKey(), 4000, nullptr,
                                                         token, &selectedOutcome);
