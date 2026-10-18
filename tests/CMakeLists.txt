@@ -366,6 +366,9 @@ endif()
 # Canonical IPC models are checked in so normal C++ builds need no generator runtime.
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME test_packaging_contract
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/packaging/test_packaging.py)
+    set_tests_properties(test_packaging_contract PROPERTIES TIMEOUT 120)
     add_test(NAME test_branding_sources
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/branding/check.py)
     add_test(NAME test_desktop_generated_contract
