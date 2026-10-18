@@ -435,6 +435,7 @@ target_link_libraries(test_provider_certification_root PRIVATE Qt6::Core)
 add_test(NAME test_provider_certification_root COMMAND test_provider_certification_root)
 
 add_sentinel_core_test(test_model_lifecycle_ownership core/test_model_lifecycle_ownership.cpp)
+add_sentinel_core_test(test_resource_lease_reference_contract core/test_resource_lease_reference_contract.cpp)
 
 # P3-02: real helper reconciliation with synthetic IO; no model/process starts.
 qt_add_executable(test_local_model_runtime desktop/test_local_model_runtime.cpp)
