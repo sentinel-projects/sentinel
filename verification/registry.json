@@ -1,0 +1,3295 @@
+{
+  "schema_version": "1",
+  "application_repository": "sentinel-projects/sentinel",
+  "max_age_days": 30,
+  "components": [
+    {
+      "id": "sentinel.runtime",
+      "repository": "sentinel-projects/sentinel",
+      "source_sha": "e639a0429baf35445daad84eb70a9d5e001cf082",
+      "dirty": false,
+      "dirty_digest": null,
+      "required": false,
+      "boundary": "Current application component; future repository split is not approved"
+    },
+    {
+      "id": "sentinel.desktop",
+      "repository": "sentinel-projects/sentinel",
+      "source_sha": "e639a0429baf35445daad84eb70a9d5e001cf082",
+      "dirty": false,
+      "dirty_digest": null,
+      "required": false,
+      "boundary": "Current application component; future repository split is not approved"
+    },
+    {
+      "id": "sentinel.terminal",
+      "repository": "sentinel-projects/sentinel",
+      "source_sha": "e639a0429baf35445daad84eb70a9d5e001cf082",
+      "dirty": false,
+      "dirty_digest": null,
+      "required": false,
+      "boundary": "Current application component; future repository split is not approved"
+    },
+    {
+      "id": "sentinel.protocol",
+      "repository": "sentinel-projects/sentinel",
+      "source_sha": "e639a0429baf35445daad84eb70a9d5e001cf082",
+      "dirty": false,
+      "dirty_digest": null,
+      "required": false,
+      "boundary": "Current application component; future repository split is not approved"
+    },
+    {
+      "id": "sentinel.extensions",
+      "repository": "sentinel-projects/sentinel",
+      "source_sha": "e639a0429baf35445daad84eb70a9d5e001cf082",
+      "dirty": false,
+      "dirty_digest": null,
+      "required": false,
+      "boundary": "Current application component; future repository split is not approved"
+    },
+    {
+      "id": "sentinel.packaging",
+      "repository": "sentinel-projects/sentinel",
+      "source_sha": "e639a0429baf35445daad84eb70a9d5e001cf082",
+      "dirty": false,
+      "dirty_digest": null,
+      "required": false,
+      "boundary": "Current application component; future repository split is not approved"
+    },
+    {
+      "id": "sentinel.verification",
+      "repository": "sentinel-projects/sentinel",
+      "source_sha": "e639a0429baf35445daad84eb70a9d5e001cf082",
+      "dirty": false,
+      "dirty_digest": null,
+      "required": false,
+      "boundary": "Current application component; future repository split is not approved"
+    },
+    {
+      "id": "roasd.packaging",
+      "repository": "sentinel-packaging",
+      "source_sha": null,
+      "dirty": false,
+      "dirty_digest": null,
+      "required": true,
+      "boundary": "External packaging responsibility; actual repository location and version not supplied"
+    }
+  ],
+  "criteria": [
+    {
+      "id": "AC-P0-01",
+      "phase": "P0",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P0-02",
+      "phase": "P0",
+      "status": "Ready for Validation",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P0-03",
+      "phase": "P0",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P0-04",
+      "phase": "P0",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P1-01",
+      "phase": "P1",
+      "status": "Unverified",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P1-02",
+      "phase": "P1",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P1-03",
+      "phase": "P1",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P1-04",
+      "phase": "P1",
+      "status": "Ready for Validation",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P1-05",
+      "phase": "P1",
+      "status": "Unverified",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P1-06",
+      "phase": "P1",
+      "status": "Unverified",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P1-07",
+      "phase": "P1",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P2-01",
+      "phase": "P2",
+      "status": "Unverified",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P2-02",
+      "phase": "P2",
+      "status": "Unverified",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P2-03",
+      "phase": "P2",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P2-04",
+      "phase": "P2",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P3-01",
+      "phase": "P3",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P3-02",
+      "phase": "P3",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P3-03",
+      "phase": "P3",
+      "status": "Unverified",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P4-01",
+      "phase": "P4",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P4-02",
+      "phase": "P4",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P4-03",
+      "phase": "P4",
+      "status": "Not Started",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P5-01",
+      "phase": "P5",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P5-02",
+      "phase": "P5",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P5-03",
+      "phase": "P5",
+      "status": "Unverified",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P5-04",
+      "phase": "P5",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P5-05",
+      "phase": "P5",
+      "status": "Unverified",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P6-01",
+      "phase": "P6",
+      "status": "Unverified",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P6-02",
+      "phase": "P6",
+      "status": "Unverified",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P6-03",
+      "phase": "P6",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P6-04",
+      "phase": "P6",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P6-05",
+      "phase": "P6",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P6-06",
+      "phase": "P6",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P6-07",
+      "phase": "P6",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P6-08",
+      "phase": "P6",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P7-01",
+      "phase": "P7",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P7-02",
+      "phase": "P7",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P8-01",
+      "phase": "P8",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P8-02",
+      "phase": "P8",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P8-03",
+      "phase": "P8",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P9-01",
+      "phase": "P9",
+      "status": "Not Started",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P9-02",
+      "phase": "P9",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P10-01",
+      "phase": "P10",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P10-02",
+      "phase": "P10",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P10-03",
+      "phase": "P10",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P11-01",
+      "phase": "P11",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P11-02",
+      "phase": "P11",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P11-03",
+      "phase": "P11",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P12-01",
+      "phase": "P12",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P12-02",
+      "phase": "P12",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P12-03",
+      "phase": "P12",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P12-04",
+      "phase": "P12",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P12-05",
+      "phase": "P12",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P12-06",
+      "phase": "P12",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P12-07",
+      "phase": "P12",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P12-08",
+      "phase": "P12",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P12-09",
+      "phase": "P12",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P12-10",
+      "phase": "P12",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P12-11",
+      "phase": "P12",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P12-12",
+      "phase": "P12",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P12-13",
+      "phase": "P12",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P12-14",
+      "phase": "P12",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P12-15",
+      "phase": "P12",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P12-16",
+      "phase": "P12",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P12-17",
+      "phase": "P12",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    },
+    {
+      "id": "AC-P12-18",
+      "phase": "P12",
+      "status": "Blocked",
+      "source": "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+    }
+  ],
+  "tests": [
+    {
+      "id": "TEST-BASELINE",
+      "runner": "ctest",
+      "source": "tests/core/test_provider_registry.cpp",
+      "scenario": "descriptorsMatchHistoricalOrderAndProtocols",
+      "scope": "Identity inventory is not product acceptance",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-DESKTOP",
+      "runner": "ctest",
+      "source": "tests/desktop/test_desktop_shell_state.cpp",
+      "scenario": "rejectsFullyOffscreenPosition",
+      "scope": "Offscreen geometry is not shipping bootstrap E2E",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-QUICK-PANEL",
+      "runner": "ctest",
+      "source": "tests/desktop/test_native_integration.cpp",
+      "scenario": "shortcutActivationSurvivesDaemonDisconnect",
+      "scope": "Injected shortcut backend; native focus and consent unverified",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-TRAY",
+      "runner": "ctest",
+      "source": "tests/helpers/settings_ui_certification_probe.cpp",
+      "scenario": "--tray-smoke",
+      "scope": "Harness tray flow does not prove native notification delivery",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-NATIVE",
+      "runner": "ctest",
+      "source": "tests/desktop/test_native_integration.cpp",
+      "scenario": "activationRestoresExistingMainWindow",
+      "scope": "Native KDE and other OS acceptance missing",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-CLI",
+      "runner": "rust",
+      "source": "cli/crates/sentinel-ipc/src/lib.rs",
+      "scenario": "handshake_event_order_and_immediate_close",
+      "scope": "Client protocol unit tests; installed CLI parity unverified",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-TUI",
+      "runner": "rust",
+      "source": "cli/crates/sentinel-tui/src/commands.rs",
+      "scenario": "unique_names_bindings_and_enforced_plan_refusal",
+      "scope": "Command refusal unit tests; native terminal matrix unverified",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-LEGACY-CLI",
+      "runner": "ctest",
+      "source": "tests/integration/test_legacy_cli_exit_codes.cpp",
+      "scenario": "modelPullFailureReturnsNonzero",
+      "scope": "Exit-code fixtures; PD-D05 disposition pending",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-IPC",
+      "runner": "ctest",
+      "source": "tests/desktop/test_agent_reliability_ipc.cpp",
+      "scenario": "cor19_eventSequenceMonotonicAndGenerationFencing",
+      "scope": "Generation fixtures; Windows transport and native multi-user scope open",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-CHAT",
+      "runner": "ctest",
+      "source": "tests/core/test_chat_mode_service.cpp",
+      "scenario": "lateSuccessfulCallbackAfterCancellationStaysCancelled",
+      "scope": "Late-callback cancellation fixture; no live LLM reliability claim",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-AGENT",
+      "runner": "ctest",
+      "source": "tests/core/test_agent_reliability_harness.cpp",
+      "scenario": "terminalRuntimeRejectsLateAndForeignCommands",
+      "scope": "COR fixtures do not certify real task success",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-TOOLS",
+      "runner": "ctest",
+      "source": "tests/core/test_tool_execution_gateway.cpp",
+      "scenario": "handlerTerminalCallbacksAreInvocationScopedAndIdempotent",
+      "scope": "Invocation rules do not imply every tool is available",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-APPROVAL",
+      "runner": "ctest",
+      "source": "tests/core/test_tool_execution_gateway.cpp",
+      "scenario": "asyncPathPreservesApprovalGate",
+      "scope": "Async gate fixture; complete native approval UX unverified",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-LOCAL-PROVIDERS",
+      "runner": "ctest",
+      "source": "tests/core/test_provider_contracts.cpp",
+      "scenario": "bindingAndEndpointRemainFrozenDuringRequest",
+      "scope": "Synthetic requests; real loaded models and tool quality unverified",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-CLOUD-PROVIDERS",
+      "runner": "ctest",
+      "source": "tests/core/test_native_provider_contract.cpp",
+      "scenario": "nativeRequestBodyByteEquivalence",
+      "scope": "Injected HTTPS transport; no paid or live certification",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-DISCOVERY",
+      "runner": "ctest",
+      "source": "tests/core/test_provider_registry.cpp",
+      "scenario": "preservesDiscoverySelectionAndFacadeAsymmetry",
+      "scope": "Static declarations do not prove runtime/model support",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-MODEL-STORAGE",
+      "runner": "ctest",
+      "source": "tests/core/test_model_lifecycle_ownership.cpp",
+      "scenario": "modelDeletionDoesNotInvalidateActiveRunBinding",
+      "scope": "D6 unfenced deletion witness, not safe delete-during-use",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-RESOURCES",
+      "runner": "ctest",
+      "source": "tests/core/test_resource_monitor_sampling.cpp",
+      "scenario": "samplingDoesNotAlterExecutionBudget",
+      "scope": "Fake sampling; calibration and native workload acceptance pending",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-SESSIONS",
+      "runner": "ctest",
+      "source": "tests/core/test_persistence_startup_certification.cpp",
+      "scenario": "forcedChildTerminationRecoversCommittedStores",
+      "scope": "Disposable store recovery; no private profile certification",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-MEMORY",
+      "runner": "ctest",
+      "source": "tests/core/test_context_assembly.cpp",
+      "scenario": "promptContextInjectionUsesOnlyCommittedMemory",
+      "scope": "Committed context fixture; retrieval quality and retention pending",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-BACKGROUND",
+      "runner": "ctest",
+      "source": "tests/core/test_background_job_persistence.cpp",
+      "scenario": "persistsAndRecoversTerminalMetadata",
+      "scope": "Terminal persistence only, not authorized unattended automation",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-SPEECH",
+      "runner": "ctest",
+      "source": "tests/core/test_voice.cpp",
+      "scenario": "nullSpeechToTextRefusesDeterministically",
+      "scope": "Refusal/runtime fixtures; microphone and voice quality unverified",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-MULTIMODAL",
+      "runner": "ctest",
+      "source": "tests/core/test_chat_attachments.cpp",
+      "scenario": "rejectsMissingBinaryAndOversizedInputs",
+      "scope": "Synthetic attachments; vision/PDF/OCR quality unverified",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-EXTENSIONS",
+      "runner": "ctest",
+      "source": "tests/core/test_mcp_integration.cpp",
+      "scenario": "realDenialSandboxCrashAndCancellation",
+      "scope": "Owned fixture server; remote and third-party compatibility unverified",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-DIAGNOSTICS",
+      "runner": "ctest",
+      "source": "tests/core/test_static_orchestration_diagnostics.cpp",
+      "scenario": "reportsCloudProvidersNotConfiguredAsInfo",
+      "scope": "Metadata diagnostics only; no observability/privacy acceptance",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-SECURITY",
+      "runner": "ctest",
+      "source": "tests/core/test_static_sandbox_policy.cpp",
+      "scenario": "approvedButNotCapableRemainsDenied",
+      "scope": "Policy fixtures do not close SEC-P1 release/native/admin blockers",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-PERFORMANCE",
+      "runner": "ctest",
+      "source": "tests/benchmarks/bench_context_compression.cpp",
+      "scenario": "benchmarkCompressionPlanning",
+      "scope": "Benchmarks are not adopted latency or memory budgets",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-PLATFORMS",
+      "runner": "ci",
+      "source": ".github/workflows/ci-windows.yml",
+      "scenario": "ctest",
+      "scope": "Workflow presence is not executed native platform evidence",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-FEDORA",
+      "runner": "python",
+      "source": "tests/packaging/test_packaging.py",
+      "scenario": "test_repository_metadata",
+      "scope": "RPM metadata only; consumer repository and native transaction evidence missing",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-INSTALL",
+      "runner": "ctest",
+      "source": "tests/core/test_upgrade.cpp",
+      "scenario": "chatHistorySchemaMigration",
+      "scope": "Store migration is not installed package upgrade/removal",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-RELEASE",
+      "runner": "python",
+      "source": "tests/packaging/test_packaging.py",
+      "scenario": "test_source_snapshot_is_reproducible_and_uses_committed_spec",
+      "scope": "Archive fixture is not signed release or SDK compatibility acceptance",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-AUTOMATION-FUTURE",
+      "runner": "ctest",
+      "source": "tests/core/test_tool_execution_gateway.cpp",
+      "scenario": "consultsPermissionPolicyWithoutGrantingExecution",
+      "scope": "Gate prerequisite only; persistent jobs cannot self-authorize",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-LEASE-FUTURE",
+      "runner": "ctest",
+      "source": "tests/core/test_resource_lease_reference_contract.cpp",
+      "scenario": "twoRunsRetainArtifactUntilBothTerminate",
+      "scope": "Reference model only; PD-D10 pending, D4/D5b XFAIL and D6 SKIP",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-WEBUI-ACP",
+      "runner": "ctest",
+      "source": "tests/core/test_skill_extension_runtime.cpp",
+      "scenario": "localInstructionsCannotChangeNetworkPolicy",
+      "scope": "State-only stubs; skill policy test is boundary coverage only",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-WINDOWS-IPC",
+      "runner": "ci",
+      "source": ".github/workflows/ci-windows.yml",
+      "scenario": "ctest",
+      "scope": "Unsupported runtime cell, never passed by workflow presence",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "TEST-QA",
+      "runner": "python",
+      "source": "tests/verification/test_registry.py",
+      "scenario": "test_valid_registry",
+      "scope": "Infrastructure fixtures do not certify the application",
+      "limitations": "Source-inspected mapping only; not an executed evidence receipt"
+    },
+    {
+      "id": "GATE-QML",
+      "runner": "qml",
+      "source": ".github/workflows/ci-linux.yml",
+      "scenario": "qmllint",
+      "scope": "QML lint is not native keyboard/focus acceptance",
+      "limitations": "No result inferred from source presence"
+    },
+    {
+      "id": "GATE-PRIVACY",
+      "runner": "python",
+      "source": "tools/analysis/check_personal_paths.py",
+      "scenario": "def check",
+      "scope": "Home-path guard is not complete secret detection",
+      "limitations": "No result inferred from source presence"
+    },
+    {
+      "id": "GATE-IPC",
+      "runner": "python",
+      "source": "tools/ipc/generate.py",
+      "scenario": "--check",
+      "scope": "Generated contract consistency only",
+      "limitations": "No result inferred from source presence"
+    },
+    {
+      "id": "GATE-CARGO",
+      "runner": "ci",
+      "source": ".github/workflows/ci-rust.yml",
+      "scenario": "clippy",
+      "scope": "Pipeline definition is not a successful execution",
+      "limitations": "No result inferred from source presence"
+    },
+    {
+      "id": "TEST-SETTINGS",
+      "runner": "ctest",
+      "source": "tests/core/test_settings_recovery_runtime.cpp",
+      "scenario": "onboardingFirstRunResumeAndFinishWithoutProvider",
+      "scope": "Disposable settings recovery only; full shipping onboarding and OS credential storage unverified",
+      "limitations": "Source-inspected mapping, not an execution receipt"
+    },
+    {
+      "id": "TEST-WORKSPACES",
+      "runner": "ctest",
+      "source": "tests/core/test_workspace_service.cpp",
+      "scenario": "supportsWorkspaceLifecycle",
+      "scope": "Workspace state fixture; cross-profile data isolation needs E2E oracles",
+      "limitations": "Source-inspected mapping, not an execution receipt"
+    },
+    {
+      "id": "TEST-PLUGIN",
+      "runner": "ctest",
+      "source": "tests/core/test_plugin_tool_integration.cpp",
+      "scenario": "permissionDeniedAtRegistrationAndShutdownCleanup",
+      "scope": "Owned fixture plugin and broker; advertised third-party ABI/platform matrix remains unverified",
+      "limitations": "Source-inspected mapping, not an execution receipt"
+    },
+    {
+      "id": "TEST-SKILLS",
+      "runner": "ctest",
+      "source": "tests/core/test_skill_extension_runtime.cpp",
+      "scenario": "agentContextSkillsAreScopedOrderedAndBounded",
+      "scope": "Scoped skill context fixture; instructions never grant execution authority",
+      "limitations": "Source-inspected mapping, not an execution receipt"
+    },
+    {
+      "id": "TEST-RETRIEVAL",
+      "runner": "ctest",
+      "source": "tests/core/test_local_rag_store.cpp",
+      "scenario": "persistsDocumentsPerWorkspace",
+      "scope": "Per-workspace synthetic persistence, not embedding model or retrieval-quality acceptance",
+      "limitations": "Source-inspected mapping, not an execution receipt"
+    },
+    {
+      "id": "TEST-MODES",
+      "runner": "ctest",
+      "source": "tests/core/test_mode_manager.cpp",
+      "scenario": "exposesNoSelectableModes",
+      "scope": "Current collapsed mode surface; future Passive/Assisted semantics remain PD-D14 pending",
+      "limitations": "Source-inspected mapping, not an execution receipt"
+    },
+    {
+      "id": "TEST-QML-PALETTE",
+      "runner": "qml",
+      "source": "tests/gui/components/tst_CommandPalette.qml",
+      "scenario": "test_palette_component_initialization",
+      "scope": "CommandPalette component initialization, not real keyboard/focus acceptance",
+      "limitations": "Source-inspected map, not a run receipt"
+    },
+    {
+      "id": "GATE-MACOS",
+      "runner": "ci",
+      "source": ".github/workflows/ci-macos.yml",
+      "scenario": "ctest",
+      "scope": "macOS pipeline definition; no native run inferred",
+      "limitations": "Source-inspected map, not a run receipt"
+    },
+    {
+      "id": "GATE-FEDORA",
+      "runner": "ci",
+      "source": ".github/workflows/ci-fedora.yml",
+      "scenario": "check_install_manifest.py",
+      "scope": "Fedora staged-payload validation definition, not native RPM upgrade acceptance",
+      "limitations": "Source-inspected map, not a run receipt"
+    }
+  ],
+  "features": [
+    {
+      "id": "FSV-BASELINE",
+      "name": "Architecture baseline",
+      "subsystem": "baseline",
+      "phases": [
+        "P0"
+      ],
+      "components": [
+        "sentinel.verification"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P0-01",
+        "AC-P0-02",
+        "AC-P0-03",
+        "AC-P0-04"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-BASELINE"
+      ],
+      "source_refs": [
+        "docs/development/ARCHITECTURE.md"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Identity inventory is not product acceptance"
+    },
+    {
+      "id": "FSV-DESKTOP",
+      "name": "Desktop Qt/QML",
+      "subsystem": "desktop",
+      "phases": [
+        "P6"
+      ],
+      "components": [
+        "sentinel.desktop"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [
+        "FSV-IPC"
+      ],
+      "criteria": [
+        "AC-P6-01",
+        "AC-P6-02",
+        "AC-P6-03",
+        "AC-P6-04",
+        "AC-P6-05",
+        "AC-P6-06",
+        "AC-P6-07",
+        "AC-P6-08"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-DESKTOP",
+        "GATE-QML",
+        "TEST-QML-PALETTE"
+      ],
+      "source_refs": [
+        "apps/sentinel-desktop/src/DesktopShellViewModel.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Offscreen geometry is not shipping bootstrap E2E"
+    },
+    {
+      "id": "FSV-QUICK-PANEL",
+      "name": "Quick Panel",
+      "subsystem": "quick-panel",
+      "phases": [
+        "P6"
+      ],
+      "components": [
+        "sentinel.desktop"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [
+        "FSV-IPC"
+      ],
+      "criteria": [
+        "AC-P6-01",
+        "AC-P6-02",
+        "AC-P6-03",
+        "AC-P6-04",
+        "AC-P6-05",
+        "AC-P6-06",
+        "AC-P6-07",
+        "AC-P6-08"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-QUICK-PANEL"
+      ],
+      "source_refs": [
+        "apps/sentinel-desktop/src/NativeCompanionAdapter.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Injected shortcut backend; native focus and consent unverified"
+    },
+    {
+      "id": "FSV-TRAY",
+      "name": "Tray and notifications",
+      "subsystem": "tray",
+      "phases": [
+        "P6"
+      ],
+      "components": [
+        "sentinel.desktop"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P6-01",
+        "AC-P6-02",
+        "AC-P6-03",
+        "AC-P6-04",
+        "AC-P6-05",
+        "AC-P6-06",
+        "AC-P6-07",
+        "AC-P6-08"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-TRAY"
+      ],
+      "source_refs": [
+        "apps/sentinel-desktop/src/NativeCompanionAdapter.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Harness tray flow does not prove native notification delivery"
+    },
+    {
+      "id": "FSV-NATIVE",
+      "name": "Native OS integration",
+      "subsystem": "native",
+      "phases": [
+        "P6"
+      ],
+      "components": [
+        "sentinel.desktop"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P6-01",
+        "AC-P6-02",
+        "AC-P6-03",
+        "AC-P6-04",
+        "AC-P6-05",
+        "AC-P6-06",
+        "AC-P6-07",
+        "AC-P6-08"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-NATIVE"
+      ],
+      "source_refs": [
+        "apps/sentinel-desktop/src/NativeCompanionAdapter.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Native KDE and other OS acceptance missing"
+    },
+    {
+      "id": "FSV-CLI",
+      "name": "Rust CLI",
+      "subsystem": "cli",
+      "phases": [
+        "P5"
+      ],
+      "components": [
+        "sentinel.terminal"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [
+        "FSV-IPC"
+      ],
+      "criteria": [
+        "AC-P5-01",
+        "AC-P5-02",
+        "AC-P5-03",
+        "AC-P5-04",
+        "AC-P5-05"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-CLI"
+      ],
+      "source_refs": [
+        "cli/crates/sentinel-cli/src/main.rs"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Client protocol unit tests; installed CLI parity unverified"
+    },
+    {
+      "id": "FSV-TUI",
+      "name": "Rust TUI",
+      "subsystem": "tui",
+      "phases": [
+        "P5"
+      ],
+      "components": [
+        "sentinel.terminal"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [
+        "FSV-IPC"
+      ],
+      "criteria": [
+        "AC-P5-01",
+        "AC-P5-02",
+        "AC-P5-03",
+        "AC-P5-04",
+        "AC-P5-05"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-TUI"
+      ],
+      "source_refs": [
+        "cli/crates/sentinel-tui/src/lib.rs"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Command refusal unit tests; native terminal matrix unverified"
+    },
+    {
+      "id": "FSV-LEGACY-CLI",
+      "name": "Legacy C++ CLI",
+      "subsystem": "legacy-cli",
+      "phases": [
+        "P1"
+      ],
+      "components": [
+        "sentinel.terminal"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P1-01",
+        "AC-P1-02",
+        "AC-P1-03",
+        "AC-P1-04",
+        "AC-P1-05",
+        "AC-P1-06",
+        "AC-P1-07"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-LEGACY-CLI"
+      ],
+      "source_refs": [
+        "apps/sentinel-cli/main.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Exit-code fixtures; PD-D05 disposition pending"
+    },
+    {
+      "id": "FSV-IPC",
+      "name": "Daemon and local IPC",
+      "subsystem": "ipc",
+      "phases": [
+        "P5"
+      ],
+      "components": [
+        "sentinel.protocol"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P5-01",
+        "AC-P5-02",
+        "AC-P5-03",
+        "AC-P5-04",
+        "AC-P5-05"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-IPC"
+      ],
+      "source_refs": [
+        "apps/sentinel-daemon/service/DaemonIpcServer.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Generation fixtures; Windows transport and native multi-user scope open"
+    },
+    {
+      "id": "FSV-CHAT",
+      "name": "Chat",
+      "subsystem": "chat",
+      "phases": [
+        "P1"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "implemented",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P1-01",
+        "AC-P1-02",
+        "AC-P1-03",
+        "AC-P1-04",
+        "AC-P1-05",
+        "AC-P1-06",
+        "AC-P1-07"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-CHAT"
+      ],
+      "source_refs": [
+        "core/src/chat/ChatModeService.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Late-callback cancellation fixture; no live LLM reliability claim"
+    },
+    {
+      "id": "FSV-AGENT",
+      "name": "AgentRuntime and AgentLoop",
+      "subsystem": "agent",
+      "phases": [
+        "P1"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P1-01",
+        "AC-P1-02",
+        "AC-P1-03",
+        "AC-P1-04",
+        "AC-P1-05",
+        "AC-P1-06",
+        "AC-P1-07"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-AGENT"
+      ],
+      "source_refs": [
+        "core/src/agent/AgentRuntime.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "COR fixtures do not certify real task success"
+    },
+    {
+      "id": "FSV-TOOLS",
+      "name": "Tool registry and gateway",
+      "subsystem": "tools",
+      "phases": [
+        "P1"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "implemented",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P1-01",
+        "AC-P1-02",
+        "AC-P1-03",
+        "AC-P1-04",
+        "AC-P1-05",
+        "AC-P1-06",
+        "AC-P1-07"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-TOOLS"
+      ],
+      "source_refs": [
+        "core/src/runtime/ToolExecutionGateway.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Invocation rules do not imply every tool is available"
+    },
+    {
+      "id": "FSV-APPROVAL",
+      "name": "Authorization and approvals",
+      "subsystem": "approval",
+      "phases": [
+        "P1"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "implemented",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P1-01",
+        "AC-P1-02",
+        "AC-P1-03",
+        "AC-P1-04",
+        "AC-P1-05",
+        "AC-P1-06",
+        "AC-P1-07"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-APPROVAL"
+      ],
+      "source_refs": [
+        "core/src/runtime/ToolExecutionGateway.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Async gate fixture; complete native approval UX unverified"
+    },
+    {
+      "id": "FSV-LOCAL-PROVIDERS",
+      "name": "Local LLM providers",
+      "subsystem": "local-providers",
+      "phases": [
+        "P2"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P2-01",
+        "AC-P2-02",
+        "AC-P2-03",
+        "AC-P2-04"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-LOCAL-PROVIDERS"
+      ],
+      "source_refs": [
+        "core/src/model/ModelService.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Synthetic requests; real loaded models and tool quality unverified"
+    },
+    {
+      "id": "FSV-CLOUD-PROVIDERS",
+      "name": "Cloud LLM providers",
+      "subsystem": "cloud-providers",
+      "phases": [
+        "P2"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P2-01",
+        "AC-P2-02",
+        "AC-P2-03",
+        "AC-P2-04"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-CLOUD-PROVIDERS"
+      ],
+      "source_refs": [
+        "core/src/model/ModelService.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Injected HTTPS transport; no paid or live certification"
+    },
+    {
+      "id": "FSV-DISCOVERY",
+      "name": "Provider discovery and capabilities",
+      "subsystem": "discovery",
+      "phases": [
+        "P2"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P2-01",
+        "AC-P2-02",
+        "AC-P2-03",
+        "AC-P2-04"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-DISCOVERY"
+      ],
+      "source_refs": [
+        "core/src/provider/ProviderRegistry.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Static declarations do not prove runtime/model support"
+    },
+    {
+      "id": "FSV-MODEL-STORAGE",
+      "name": "Model lifecycle and storage",
+      "subsystem": "model-storage",
+      "phases": [
+        "P3"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "blocked",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P3-01",
+        "AC-P3-02",
+        "AC-P3-03"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-MODEL-STORAGE"
+      ],
+      "source_refs": [
+        "core/src/model/ModelStorageManager.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [
+        "D6 unfenced deletion witness, not safe delete-during-use"
+      ],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "blocked",
+      "notes": "D6 unfenced deletion witness, not safe delete-during-use"
+    },
+    {
+      "id": "FSV-RESOURCES",
+      "name": "Adaptive telemetry and policy",
+      "subsystem": "resources",
+      "phases": [
+        "P4"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "blocked",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P4-01",
+        "AC-P4-02",
+        "AC-P4-03"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-RESOURCES"
+      ],
+      "source_refs": [
+        "core/src/policy/ResourcePolicy.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [
+        "Fake sampling; calibration and native workload acceptance pending"
+      ],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "blocked",
+      "notes": "Fake sampling; calibration and native workload acceptance pending"
+    },
+    {
+      "id": "FSV-SESSIONS",
+      "name": "Sessions and conversation persistence",
+      "subsystem": "sessions",
+      "phases": [
+        "P8"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "implemented",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P8-01",
+        "AC-P8-02",
+        "AC-P8-03"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-SESSIONS"
+      ],
+      "source_refs": [
+        "core/src/chat/ChatModeService.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Disposable store recovery; no private profile certification"
+    },
+    {
+      "id": "FSV-MEMORY",
+      "name": "Memory and context",
+      "subsystem": "memory",
+      "phases": [
+        "P8"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P8-01",
+        "AC-P8-02",
+        "AC-P8-03"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-MEMORY"
+      ],
+      "source_refs": [
+        "core/src/app/ApplicationController.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Committed context fixture; retrieval quality and retention pending"
+    },
+    {
+      "id": "FSV-BACKGROUND",
+      "name": "Background jobs and scheduling",
+      "subsystem": "background",
+      "phases": [
+        "P9"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "blocked",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P9-01",
+        "AC-P9-02"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-BACKGROUND"
+      ],
+      "source_refs": [
+        "core/src/job/BackgroundJobService.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [
+        "Terminal persistence only, not authorized unattended automation"
+      ],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "blocked",
+      "notes": "Terminal persistence only, not authorized unattended automation"
+    },
+    {
+      "id": "FSV-SPEECH",
+      "name": "Speech transcription and TTS",
+      "subsystem": "speech",
+      "phases": [
+        "P10"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P10-01",
+        "AC-P10-02",
+        "AC-P10-03"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-SPEECH"
+      ],
+      "source_refs": [
+        "core/src/voice/UnifiedAudioService.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Refusal/runtime fixtures; microphone and voice quality unverified"
+    },
+    {
+      "id": "FSV-MULTIMODAL",
+      "name": "Image document multimodal processing",
+      "subsystem": "multimodal",
+      "phases": [
+        "P10"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P10-01",
+        "AC-P10-02",
+        "AC-P10-03"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-MULTIMODAL"
+      ],
+      "source_refs": [
+        "core/include/sentinel/core/chat/ChatImageContent.h"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Synthetic attachments; vision/PDF/OCR quality unverified"
+    },
+    {
+      "id": "FSV-EXTENSIONS",
+      "name": "Plugin MCP and skills",
+      "subsystem": "extensions",
+      "phases": [
+        "P11"
+      ],
+      "components": [
+        "sentinel.extensions"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P11-01",
+        "AC-P11-02",
+        "AC-P11-03"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-EXTENSIONS"
+      ],
+      "source_refs": [
+        "core/src/app/ApplicationController.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Owned fixture server; remote and third-party compatibility unverified"
+    },
+    {
+      "id": "FSV-DIAGNOSTICS",
+      "name": "Logging Inspector diagnostics",
+      "subsystem": "diagnostics",
+      "phases": [
+        "P0"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P0-01",
+        "AC-P0-02",
+        "AC-P0-03",
+        "AC-P0-04"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-DIAGNOSTICS"
+      ],
+      "source_refs": [
+        "core/src/app/AgentInspectorService.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Metadata diagnostics only; no observability/privacy acceptance"
+    },
+    {
+      "id": "FSV-SECURITY",
+      "name": "Security sandbox privacy",
+      "subsystem": "security",
+      "phases": [
+        "P12"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P12-01",
+        "AC-P12-02",
+        "AC-P12-03",
+        "AC-P12-04",
+        "AC-P12-05",
+        "AC-P12-06",
+        "AC-P12-07",
+        "AC-P12-08",
+        "AC-P12-09",
+        "AC-P12-10",
+        "AC-P12-11",
+        "AC-P12-12",
+        "AC-P12-13",
+        "AC-P12-14",
+        "AC-P12-15",
+        "AC-P12-16",
+        "AC-P12-17",
+        "AC-P12-18"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-SECURITY"
+      ],
+      "source_refs": [
+        "core/src/runtime/ProcessExecutor.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Policy fixtures do not close SEC-P1 release/native/admin blockers"
+    },
+    {
+      "id": "FSV-PERFORMANCE",
+      "name": "Performance and reliability",
+      "subsystem": "performance",
+      "phases": [
+        "P4"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P4-01",
+        "AC-P4-02",
+        "AC-P4-03"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-PERFORMANCE"
+      ],
+      "source_refs": [
+        "core/src/policy/ResourcePolicy.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Benchmarks are not adopted latency or memory budgets"
+    },
+    {
+      "id": "FSV-PLATFORMS",
+      "name": "Linux macOS Windows compatibility",
+      "subsystem": "platforms",
+      "phases": [
+        "P6"
+      ],
+      "components": [
+        "sentinel.desktop"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P6-01",
+        "AC-P6-02",
+        "AC-P6-03",
+        "AC-P6-04",
+        "AC-P6-05",
+        "AC-P6-06",
+        "AC-P6-07",
+        "AC-P6-08"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-PLATFORMS",
+        "GATE-MACOS"
+      ],
+      "source_refs": [
+        "apps/sentinel-desktop/src/NativeCompanionAdapter.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Workflow presence is not executed native platform evidence"
+    },
+    {
+      "id": "FSV-FEDORA",
+      "name": "Fedora Ro-ASD integration",
+      "subsystem": "fedora",
+      "phases": [
+        "P7"
+      ],
+      "components": [
+        "sentinel.packaging",
+        "roasd.packaging"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "blocked",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P7-01",
+        "AC-P7-02"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-FEDORA",
+        "GATE-FEDORA"
+      ],
+      "source_refs": [
+        "packaging/linux/rpm/sentinel-desktop.spec"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [
+        "RPM metadata only; consumer repository and native transaction evidence missing"
+      ],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "blocked",
+      "notes": "RPM metadata only; consumer repository and native transaction evidence missing"
+    },
+    {
+      "id": "FSV-INSTALL",
+      "name": "Packaging upgrade removal",
+      "subsystem": "install",
+      "phases": [
+        "P7"
+      ],
+      "components": [
+        "sentinel.packaging"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P7-01",
+        "AC-P7-02"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-INSTALL"
+      ],
+      "source_refs": [
+        "cmake/SentinelCPack.cmake"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Store migration is not installed package upgrade/removal"
+    },
+    {
+      "id": "FSV-RELEASE",
+      "name": "Release artifacts ecosystem compatibility",
+      "subsystem": "release",
+      "phases": [
+        "P12"
+      ],
+      "components": [
+        "sentinel.packaging",
+        "roasd.packaging"
+      ],
+      "implementation": "planned",
+      "coverage": "mapped",
+      "verification": "blocked",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P12-01",
+        "AC-P12-02",
+        "AC-P12-03",
+        "AC-P12-04",
+        "AC-P12-05",
+        "AC-P12-06",
+        "AC-P12-07",
+        "AC-P12-08",
+        "AC-P12-09",
+        "AC-P12-10",
+        "AC-P12-11",
+        "AC-P12-12",
+        "AC-P12-13",
+        "AC-P12-14",
+        "AC-P12-15",
+        "AC-P12-16",
+        "AC-P12-17",
+        "AC-P12-18"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-RELEASE"
+      ],
+      "source_refs": [
+        ".github/workflows/release.yml"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [
+        "Archive fixture is not signed release or SDK compatibility acceptance"
+      ],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "blocked",
+      "notes": "Archive fixture is not signed release or SDK compatibility acceptance"
+    },
+    {
+      "id": "FSV-AUTOMATION-FUTURE",
+      "name": "Authorized unattended automation",
+      "subsystem": "automation-future",
+      "phases": [
+        "P9"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "not_implemented",
+      "coverage": "mapped",
+      "verification": "blocked",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P9-01",
+        "AC-P9-02"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-AUTOMATION-FUTURE"
+      ],
+      "source_refs": [
+        "core/src/job/BackgroundJobService.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [
+        "Gate prerequisite only; persistent jobs cannot self-authorize"
+      ],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "blocked",
+      "notes": "Gate prerequisite only; persistent jobs cannot self-authorize"
+    },
+    {
+      "id": "FSV-LEASE-FUTURE",
+      "name": "Physical resource lease enforcement",
+      "subsystem": "lease-future",
+      "phases": [
+        "P3"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "not_implemented",
+      "coverage": "mapped",
+      "verification": "blocked",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P3-01",
+        "AC-P3-02",
+        "AC-P3-03"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-LEASE-FUTURE"
+      ],
+      "source_refs": [
+        "apps/sentinel-daemon/service/LocalModelRuntime.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [
+        "Reference model only; PD-D10 pending, D4/D5b XFAIL and D6 SKIP"
+      ],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "blocked",
+      "notes": "Reference model only; PD-D10 pending, D4/D5b XFAIL and D6 SKIP"
+    },
+    {
+      "id": "FSV-WEBUI-ACP",
+      "name": "WebUI ACP service stubs",
+      "subsystem": "webui-acp",
+      "phases": [
+        "P11"
+      ],
+      "components": [
+        "sentinel.extensions"
+      ],
+      "implementation": "stub",
+      "coverage": "mapped",
+      "verification": "blocked",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P11-01",
+        "AC-P11-02",
+        "AC-P11-03"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-WEBUI-ACP"
+      ],
+      "source_refs": [
+        "core/src/webui/WebUiService.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [
+        "State-only stubs; skill policy test is boundary coverage only"
+      ],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "blocked",
+      "notes": "State-only stubs; skill policy test is boundary coverage only"
+    },
+    {
+      "id": "FSV-WINDOWS-IPC",
+      "name": "Windows named-pipe authorization",
+      "subsystem": "windows-ipc",
+      "phases": [
+        "P5"
+      ],
+      "components": [
+        "sentinel.protocol"
+      ],
+      "implementation": "unsupported",
+      "coverage": "mapped",
+      "verification": "unsupported",
+      "platforms": [
+        {
+          "id": "windows",
+          "support": "unsupported"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P5-01",
+        "AC-P5-02",
+        "AC-P5-03",
+        "AC-P5-04",
+        "AC-P5-05"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-WINDOWS-IPC"
+      ],
+      "source_refs": [
+        "apps/sentinel-daemon/service/DaemonIpcServer.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [
+        "Unsupported runtime cell, never passed by workflow presence"
+      ],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "blocked",
+      "notes": "Unsupported runtime cell, never passed by workflow presence"
+    },
+    {
+      "id": "FSV-QA",
+      "name": "Verification infrastructure",
+      "subsystem": "qa",
+      "phases": [
+        "P0"
+      ],
+      "components": [
+        "sentinel.verification"
+      ],
+      "implementation": "implemented",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P0-01",
+        "AC-P0-02",
+        "AC-P0-03",
+        "AC-P0-04"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-QA",
+        "GATE-PRIVACY",
+        "GATE-IPC",
+        "GATE-CARGO"
+      ],
+      "source_refs": [
+        "tools/verification/validate.py"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Infrastructure fixtures do not certify the application"
+    },
+    {
+      "id": "FSV-SETTINGS",
+      "name": "Settings onboarding and recovery",
+      "subsystem": "settings",
+      "phases": [
+        "P6"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P6-01",
+        "AC-P6-02",
+        "AC-P6-03",
+        "AC-P6-04",
+        "AC-P6-05",
+        "AC-P6-06",
+        "AC-P6-07",
+        "AC-P6-08"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-SETTINGS"
+      ],
+      "source_refs": [
+        "core/src/app/AppSettings.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Disposable settings recovery only; full shipping onboarding and OS credential storage unverified"
+    },
+    {
+      "id": "FSV-WORKSPACES",
+      "name": "Workspace lifecycle and isolation",
+      "subsystem": "workspaces",
+      "phases": [
+        "P8"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P8-01",
+        "AC-P8-02",
+        "AC-P8-03"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-WORKSPACES"
+      ],
+      "source_refs": [
+        "core/src/app/WorkspaceService.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Workspace state fixture; cross-profile data isolation needs E2E oracles"
+    },
+    {
+      "id": "FSV-PLUGIN",
+      "name": "Plugin host and broker lifecycle",
+      "subsystem": "plugin",
+      "phases": [
+        "P11"
+      ],
+      "components": [
+        "sentinel.extensions"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P11-01",
+        "AC-P11-02",
+        "AC-P11-03"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-PLUGIN"
+      ],
+      "source_refs": [
+        "core/src/plugin/PluginManager.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Owned fixture plugin and broker; advertised third-party ABI/platform matrix remains unverified"
+    },
+    {
+      "id": "FSV-SKILLS",
+      "name": "Skill context and permissions",
+      "subsystem": "skills",
+      "phases": [
+        "P11"
+      ],
+      "components": [
+        "sentinel.extensions"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P11-01",
+        "AC-P11-02",
+        "AC-P11-03"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-SKILLS"
+      ],
+      "source_refs": [
+        "core/src/skill/SkillService.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Scoped skill context fixture; instructions never grant execution authority"
+    },
+    {
+      "id": "FSV-RETRIEVAL",
+      "name": "Semantic retrieval and knowledge base",
+      "subsystem": "retrieval",
+      "phases": [
+        "P8"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P8-01",
+        "AC-P8-02",
+        "AC-P8-03"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-RETRIEVAL"
+      ],
+      "source_refs": [
+        "core/src/memory/SemanticRetrieval.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Per-workspace synthetic persistence, not embedding model or retrieval-quality acceptance"
+    },
+    {
+      "id": "FSV-MODES",
+      "name": "Mode mapping and authority",
+      "subsystem": "modes",
+      "phases": [
+        "P0"
+      ],
+      "components": [
+        "sentinel.runtime"
+      ],
+      "implementation": "partial",
+      "coverage": "mapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P0-01",
+        "AC-P0-02",
+        "AC-P0-03",
+        "AC-P0-04"
+      ],
+      "evidence_ids": [],
+      "test_ids": [
+        "TEST-MODES"
+      ],
+      "source_refs": [
+        "core/src/app/ModeManager.cpp"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Current collapsed mode surface; future Passive/Assisted semantics remain PD-D14 pending"
+    },
+    {
+      "id": "FSV-NOTIFICATIONS",
+      "name": "Native notification consent and delivery",
+      "subsystem": "notifications",
+      "phases": [
+        "P6"
+      ],
+      "components": [
+        "sentinel.desktop"
+      ],
+      "implementation": "partial",
+      "coverage": "unmapped",
+      "verification": "unverified",
+      "platforms": [
+        {
+          "id": "linux-fedora-kde-wayland",
+          "support": "conditional"
+        },
+        {
+          "id": "linux-x11",
+          "support": "conditional"
+        },
+        {
+          "id": "macos",
+          "support": "conditional"
+        },
+        {
+          "id": "windows",
+          "support": "conditional"
+        }
+      ],
+      "dependencies": [],
+      "criteria": [
+        "AC-P6-01",
+        "AC-P6-02",
+        "AC-P6-03",
+        "AC-P6-04",
+        "AC-P6-05",
+        "AC-P6-06",
+        "AC-P6-07",
+        "AC-P6-08"
+      ],
+      "evidence_ids": [],
+      "test_ids": [],
+      "source_refs": [
+        "apps/sentinel-desktop/src/MacNativeNotifications.mm"
+      ],
+      "context_refs": [
+        "docs/roadmaps/SENTINEL_PLATFORM_ROADMAP.md",
+        "docs/roadmaps/ACCEPTANCE_MATRIX.md"
+      ],
+      "blockers": [],
+      "owner": null,
+      "reviewer": null,
+      "acceptance": "pending",
+      "notes": "Native permission/delivery source exists; no focused native receipt or deterministic delivery scenario mapped"
+    }
+  ],
+  "evidence": []
+}
