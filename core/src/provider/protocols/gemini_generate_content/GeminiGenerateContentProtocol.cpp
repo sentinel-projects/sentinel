@@ -5,6 +5,7 @@
 #include "sentinel/core/provider/protocols/gemini_generate_content/GeminiGenerateContentProtocol.h"
 
 #include <QUrlQuery>
+#include <limits>
 
 namespace sentinel::core::provider {
 
@@ -198,6 +199,36 @@ QJsonArray geminiFunctionResponseParts(const QList<GeminiFunctionResult>& result
         parts.append(QJsonObject{{QStringLiteral("functionResponse"), functionResponse}});
     }
     return parts;
+}
+
+std::optional<QList<OllamaModelSummary>> parseGeminiModelCatalog(const QJsonObject& body) {
+    const auto modelsValue = body.value(QStringLiteral("models"));
+    if (!modelsValue.isArray())
+        return std::nullopt;
+    QList<OllamaModelSummary> models;
+    const auto modelsArray = modelsValue.toArray();
+    for (const auto& val : modelsArray) {
+        const auto obj = val.toObject();
+        auto name = obj.value(QStringLiteral("name")).toString().trimmed();
+        if (name.startsWith(QStringLiteral("models/"))) {
+            name = name.mid(7);
+        }
+        if (!val.isObject() || !obj.value(QStringLiteral("name")).isString() || name.isEmpty())
+            return std::nullopt;
+        const auto displayName = obj.value(QStringLiteral("displayName")).toString().trimmed();
+        OllamaModelSummary model{
+            name, displayName.isEmpty() ? QStringLiteral("Google Cloud") : displayName, 0};
+        const auto inputLimit = obj.value(QStringLiteral("inputTokenLimit"));
+        const auto outputLimit = obj.value(QStringLiteral("outputTokenLimit"));
+        if (inputLimit.isDouble() && inputLimit.toDouble() > 0 &&
+            inputLimit.toDouble() <= std::numeric_limits<int>::max())
+            model.capabilities.contextWindow = inputLimit.toInt();
+        if (outputLimit.isDouble() && outputLimit.toDouble() > 0 &&
+            outputLimit.toDouble() <= std::numeric_limits<int>::max())
+            model.capabilities.maxOutputTokens = outputLimit.toInt();
+        models.append(std::move(model));
+    }
+    return models;
 }
 
 } // namespace sentinel::core::provider

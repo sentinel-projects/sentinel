@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "sentinel/core/provider/protocols/anthropic_messages/AnthropicMessagesProtocol.h"
+#include "sentinel/core/provider/protocols/openai_compatible/OpenAiCompatibleProtocol.h"
 
 namespace sentinel::core::provider {
 
@@ -120,6 +121,15 @@ QJsonArray anthropicToolResultBlocks(const QList<AnthropicToolResult>& results,
                         {QStringLiteral("content"), result.content.left(maxContentLength)}});
     }
     return blocks;
+}
+
+std::optional<QList<OllamaModelSummary>> parseAnthropicModelCatalog(const QJsonObject& body) {
+    // Anthropic discovery has historically used this exact data/id scanner,
+    // including its optional metadata fallbacks. Keep one implementation.
+    auto parsed = parseOpenAiCompatibleModelCatalog(body);
+    if (parsed.malformed)
+        return std::nullopt;
+    return std::move(parsed.models);
 }
 
 } // namespace sentinel::core::provider
