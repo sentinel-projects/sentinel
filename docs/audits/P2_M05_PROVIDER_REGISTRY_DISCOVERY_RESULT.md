@@ -1,6 +1,7 @@
 # P2-M05 — Provider registry and discovery architecture result
 
-Date: 2026-10-18. Status: implemented; final validation in progress. Changes are uncommitted.
+Date: 2026-10-18. Status: implemented; final validation in progress. External commits were detected;
+only this audit's final updates remain uncommitted. See workspace caveat below.
 AC-P2-01 and AC-P2-03 remain open without authorized live backend/model verification.
 
 ## Verified base and workspace
@@ -13,12 +14,19 @@ AC-P2-01 and AC-P2-03 remain open without authorized live backend/model verifica
 - Host: macOS ARM64, Qt 6.12.0, AppleClang 21; approximately 88 GiB initially available.
   Personal-Brain's `brain` was unavailable on PATH; the explicitly supplied repository was verified.
 - One coding agent; existing `build/tests` reused. No clone, worktree, source duplication,
-  additional build tree, commit, push, merge, rebase, reset, stash, clean, PR or workflow dispatch.
+  additional build tree, agent-created commit, push, merge, rebase, reset, stash, clean, PR or workflow dispatch.
 - An external actor switched to main during the focused build. Reflog and file inventories proved
   this was a tree-neutral checkout: both branches remained at the exact base SHA and only the seven
   expected implementation/test files were modified/untracked. The requested branch was safely
   reselected without changing contents. Subsequent identity checks remained stable. This does not
   substitute for maintainers serializing access to the shared checkout.
+- During final validation an external actor committed the implementation in four commits:
+  `72ec6207`, `e87b7b11`, `426b52d2`, `0ad8444b`. Observed HEAD became
+  `0ad8444bda5e675ed85d818773bf1702b03a8b67` on the requested branch. The coding agent issued
+  no commit command and did not undo, amend or rewrite these commits. The nine-file task delta
+  is therefore measured against the verified base, not only the remaining working-tree diff.
+  The requested entirely uncommitted handoff cannot truthfully be claimed; only audit updates
+  remain uncommitted. Maintainers must review this external history explicitly.
 
 ## Actual inventory
 
@@ -60,6 +68,8 @@ This is the single built-in registration metadata table, not another executable 
 ModelService's existing factory map remains authoritative for constructed providers and composition-root
 overrides/custom providers. Its public registerProvider replacement semantics are unchanged; duplicate
 descriptor rejection does not silently remove the existing runtime override seam.
+ApplicationController's supplied legacy IChatProvider can still replace the `ollama` factory without
+adding an identity; static descriptors describe built-in defaults rather than overruling that seam.
 
 ModelService now delegates built-in enumeration/defaults, adapter choice, cloud membership,
 cloud-key catalog invalidation and static endpoint/facade identity lookup. It still orchestrates
@@ -97,9 +107,10 @@ untouched. No default is promoted to tested/live-verified capability, no new con
 invented, and provider defaults do not certify every model. Runtime-reported metadata is not treated
 as authorized live acceptance merely because its provenance enum exists.
 
-Two deterministic service characterization cases were added and run before migration, then retained:
-sorted registered IDs, defaults/provenance, persisted normalized selection, unknown-provider errors,
-local/cloud endpoint mapping, facade mapping and credential selection. Three further registry cases
+Two deterministic service characterization cases were added and run before migration, then retained
+and extended: sorted registered IDs, defaults/provenance, persisted normalized selection,
+unknown-provider errors, local/cloud endpoint and facade mapping. Distinct in-memory credential
+fixtures extend the final mapping assertions. Three further registry cases
 cover immutable order/ID/protocol/adapter lookup, duplicate rejection versus factory override, every
 discovery strategy and facade edge cases. Existing provider contracts cover malformed/missing catalogs,
 empty/stale catalogs, frozen model binding, authentication/network restrictions, unsupported capability
@@ -113,15 +124,26 @@ rejection and error categories; parser and request code was not moved in this ta
 | Pre-migration provider/native/protocol baseline | 5/5 CTest executables passed |
 | Initial post-migration focused run | Registry, provider and native contract executables: 3/3 passed |
 | Clean configure | Existing directory, `CCACHE_DISABLE=1 cmake --fresh --preset tests` passed; initial wrapper-cache write denial corrected by disabling ccache |
-| Full C++ build | Pending final result |
-| Final provider/protocol/catalog gates | Pending final counts |
+| Full C++ build | Passed, including all application and test targets; final incremental rebuild passed after formatting |
+| Final provider/protocol/catalog gates | **10/10 executables passed**, 437 QtTest passes including lifecycle hooks, 0 failures/skips, 9.99 s |
 | Full sequential CTest | Pending final count; explicit `-j 1` |
 | CI clang-format 18.1.8 | New C++ files formatted and modified-hunk diff checked |
-| Scoped clang-tidy | Registry and ModelService configured analysis completed; controller analysis and final counts recorded after completion |
+| Scoped clang-tidy | Three changed production sources analyzed; 0 compiler errors; registry and changed hunks: 0 diagnostics. Legacy ModelService: 96 warnings (93 braces, 2 move-const, 1 value-param); ApplicationController: 135 (129 braces, 2 narrowing, 2 value-param, 1 automatic-move, 1 std-move). No new suppressions or unrelated cleanup |
 | Generated IPC | Both Python generators passed `--check` |
-| Rust 1.94 fmt/Clippy/tests | Pending final results; no Rust or IPC schema change |
+| Rust 1.94 fmt/Clippy/tests | All passed, locked/offline; 142 tests passed, 0 failures/ignored across 8 test/doc-test suites; no Rust or IPC schema change |
 | Privacy | 0 personal-path findings |
-| Credentials / whitespace | Final candidate scan and `git diff --check` recorded after completion |
+| Credentials / whitespace | All 9 base-to-working-tree candidate files scanned: 0 high-confidence private-key/token findings; `git diff --check 8085a9ed` passed |
+
+The fresh full build emitted one pre-existing HuggingFaceModelSource.cpp shadow warning; the final
+incremental build emitted none. Two initial Qt 6.12 deprecation warnings in the new tests were fixed
+using the supported QVERIFY_THROWS_EXCEPTION macro before final validation. The temporary analysis
+database strips production PCH flags using the existing helper; it is not another build tree.
+
+Focused QtTest totals: static_model_router 8, static_provider_catalog 7, runtime_provider 8,
+provider_contracts 205, provider_registry 7 (5 test methods plus lifecycle hooks), native_provider_contract
+78, openai_compatible_protocol 57, anthropic_messages_protocol 19, gemini_generate_content_protocol
+25, ollama_runtime 23. Missing/malformed catalogs and stable typed errors are covered by the existing
+provider/native/protocol fixtures, not by newly issuing discovery requests.
 
 All test requests use deterministic fixtures or isolated local transports; no authorized live vendor
 or model acceptance was attempted. Native Fedora/KDE, Windows and live backend behavior are not
