@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "sentinel/core/interfaces/IChatProvider.h"
 #include "sentinel/core/runtime/OllamaRuntime.h"
 
 #include <QJsonArray>
@@ -61,6 +62,39 @@ struct OpenAiCompatibleToolCall {
 // missing/non-array `tool_calls` yields an empty list. No registration or
 // argument-decoding policy is applied here.
 QList<OpenAiCompatibleToolCall> parseOpenAiCompatibleToolCalls(const QJsonObject& body);
+
+// Shared function envelope used by the endpoint adapter, including its native
+// Anthropic/Gemini declaration bridges. This is serialization, not authorization.
+QString openAiCompatibleFunctionName(const QString& toolId);
+QJsonObject openAiCompatibleToolDefinition(const ToolDescriptor& tool);
+
+struct OpenAiCompatibleNativeRequest {
+    QJsonObject body;
+    QString error;
+};
+
+// Builds the native-capability body without token budgets, capability checks,
+// endpoint policy or transport. `content` is the caller's encoded text/images.
+// Continuation IDs are compared verbatim; observation text is clipped to 6800.
+OpenAiCompatibleNativeRequest buildOpenAiCompatibleNativeRequest(const QString& model,
+                                                                 const QJsonValue& content,
+                                                                 const ChatRequestOptions& options);
+
+struct OpenAiCompatibleNativeResponse {
+    bool hasChoices = false;
+    bool outputLimit = false;
+    QString text;
+    QList<OpenAiCompatibleToolCall> toolCalls;
+    QJsonObject diagnostics;
+};
+
+// Normalizes the first choice and allowlisted usage/finish metadata. Tool IDs
+// remain opaque and missing IDs stay empty. Registration and error taxonomy
+// remain adapter responsibilities; no service or transport is consulted.
+OpenAiCompatibleNativeResponse normalizeOpenAiCompatibleNativeResponse(const QJsonObject& body);
+
+// Strict object-only JSON decoding shared by tool arguments and structured text.
+std::optional<QJsonObject> parseOpenAiCompatibleJsonObject(const QString& text);
 
 struct OpenAiCompatibleCatalogParse {
     QList<OllamaModelSummary> models;

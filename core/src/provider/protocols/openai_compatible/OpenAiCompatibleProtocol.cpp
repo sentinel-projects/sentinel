@@ -4,6 +4,10 @@
 
 #include "sentinel/core/provider/protocols/openai_compatible/OpenAiCompatibleProtocol.h"
 
+#include <QCryptographicHash>
+#include <QJsonDocument>
+#include <QRegularExpression>
+
 #include <cmath>
 #include <limits>
 #include <utility>
@@ -68,6 +72,145 @@ QList<OpenAiCompatibleToolCall> parseOpenAiCompatibleToolCalls(const QJsonObject
                                               function.value(QStringLiteral("arguments"))});
     }
     return calls;
+}
+
+QString openAiCompatibleFunctionName(const QString& toolId) {
+    static const QRegularExpression valid(QStringLiteral("^[A-Za-z0-9_-]{1,64}$"));
+    if (valid.match(toolId).hasMatch())
+        return toolId;
+    return QStringLiteral("tool_%1").arg(QString::fromLatin1(
+        QCryptographicHash::hash(toolId.toUtf8(), QCryptographicHash::Sha256).toHex().left(48)));
+}
+
+QJsonObject openAiCompatibleToolDefinition(const ToolDescriptor& tool) {
+    QJsonObject schema = tool.inputSchema;
+    if (schema.isEmpty()) {
+        QJsonObject properties;
+        QJsonArray required;
+        for (const auto& parameter : tool.parameters) {
+            properties.insert(parameter.id,
+                              QJsonObject{{QStringLiteral("type"), QStringLiteral("string")},
+                                          {QStringLiteral("description"), parameter.description}});
+            if (parameter.required)
+                required.append(parameter.id);
+        }
+        schema = {{QStringLiteral("type"), QStringLiteral("object")},
+                  {QStringLiteral("properties"), properties},
+                  {QStringLiteral("required"), required}};
+    }
+    return {{QStringLiteral("type"), QStringLiteral("function")},
+            {QStringLiteral("function"),
+             QJsonObject{{QStringLiteral("name"), openAiCompatibleFunctionName(tool.id)},
+                         {QStringLiteral("description"), tool.description.left(200)},
+                         {QStringLiteral("parameters"), schema}}}};
+}
+
+OpenAiCompatibleNativeRequest
+buildOpenAiCompatibleNativeRequest(const QString& model, const QJsonValue& content,
+                                   const ChatRequestOptions& options) {
+    QJsonArray messages{QJsonObject{{QStringLiteral("role"), QStringLiteral("user")},
+                                    {QStringLiteral("content"), content}}};
+    if (!options.priorToolCalls.isEmpty()) {
+        if (options.priorToolCalls.size() != options.toolResults.size())
+            return {{}, QStringLiteral("Native tool results are incomplete.")};
+        QJsonArray calls;
+        for (const auto& call : options.priorToolCalls) {
+            calls.append(QJsonObject{
+                {QStringLiteral("id"), call.callId},
+                {QStringLiteral("type"), QStringLiteral("function")},
+                {QStringLiteral("function"),
+                 QJsonObject{{QStringLiteral("name"), openAiCompatibleFunctionName(call.toolId)},
+                             {QStringLiteral("arguments"),
+                              QString::fromUtf8(QJsonDocument(call.arguments)
+                                                    .toJson(QJsonDocument::Compact))}}}});
+        }
+        messages.append(QJsonObject{{QStringLiteral("role"), QStringLiteral("assistant")},
+                                    {QStringLiteral("tool_calls"), calls}});
+        for (int i = 0; i < options.toolResults.size(); ++i) {
+            const auto& result = options.toolResults.at(i);
+            if (result.callId != options.priorToolCalls.at(i).callId)
+                return {{}, QStringLiteral("Native tool result IDs do not match.")};
+            messages.append(QJsonObject{{QStringLiteral("role"), QStringLiteral("tool")},
+                                        {QStringLiteral("tool_call_id"), result.callId},
+                                        {QStringLiteral("content"), result.content.left(6800)}});
+        }
+    }
+    QJsonObject body{{QStringLiteral("model"), model},
+                     {QStringLiteral("messages"), messages},
+                     {QStringLiteral("stream"), false}};
+    if (options.nativeToolCalling) {
+        QJsonArray tools;
+        for (const auto& tool : options.tools)
+            if (tool.enabled && tool.exposedToModel)
+                tools.append(openAiCompatibleToolDefinition(tool));
+        if (!tools.isEmpty()) {
+            body.insert(QStringLiteral("tools"), tools);
+            body.insert(QStringLiteral("tool_choice"), QStringLiteral("auto"));
+        }
+    }
+    if (options.structuredOutput) {
+        if (options.structuredSchemaName.isEmpty() || options.structuredSchema.isEmpty())
+            return {{}, QStringLiteral("Structured planner schema is missing.")};
+        body.insert(
+            QStringLiteral("response_format"),
+            QJsonObject{{QStringLiteral("type"), QStringLiteral("json_schema")},
+                        {QStringLiteral("json_schema"),
+                         QJsonObject{{QStringLiteral("name"), options.structuredSchemaName},
+                                     {QStringLiteral("strict"), options.strictStructuredOutput},
+                                     {QStringLiteral("schema"), options.structuredSchema}}}});
+    }
+    return {body, {}};
+}
+
+OpenAiCompatibleNativeResponse normalizeOpenAiCompatibleNativeResponse(const QJsonObject& body) {
+    OpenAiCompatibleNativeResponse parsed;
+    const auto choices = body.value(QStringLiteral("choices")).toArray();
+    if (choices.isEmpty()) {
+        return parsed;
+    }
+    parsed.hasChoices = true;
+    const auto replyMessage =
+        choices.first().toObject().value(QStringLiteral("message")).toObject();
+    const auto rawFinish = choices.first().toObject().value(QStringLiteral("finish_reason"));
+    if (rawFinish.isString()) {
+        const auto reason = rawFinish.toString();
+        parsed.diagnostics.insert(QStringLiteral("finish_reason"),
+                                  QStringList{QStringLiteral("stop"), QStringLiteral("length"),
+                                              QStringLiteral("tool_calls"),
+                                              QStringLiteral("content_filter")}
+                                          .contains(reason)
+                                      ? reason
+                                      : QStringLiteral("other"));
+    }
+    const auto usage = body.value(QStringLiteral("usage")).toObject();
+    for (const auto& key : {"prompt_tokens", "completion_tokens", "total_tokens"}) {
+        const auto value = usage.value(QLatin1String(key));
+        if (value.isDouble() && value.toDouble() >= 0)
+            parsed.diagnostics.insert(QString::fromLatin1(key), value);
+    }
+    const auto reasoningTokens = usage.value(QStringLiteral("completion_tokens_details"))
+                                     .toObject()
+                                     .value(QStringLiteral("reasoning_tokens"));
+    if (reasoningTokens.isDouble() && reasoningTokens.toDouble() >= 0)
+        parsed.diagnostics.insert(QStringLiteral("reasoning_tokens"), reasoningTokens);
+    parsed.diagnostics.insert(
+        QStringLiteral("response_content_bytes"),
+        replyMessage.value(QStringLiteral("content")).toString().toUtf8().size());
+    parsed.diagnostics.insert(QStringLiteral("response_tool_calls"),
+                              replyMessage.value(QStringLiteral("tool_calls")).toArray().size());
+    parsed.text = replyMessage.value(QStringLiteral("content")).toString();
+    parsed.outputLimit = rawFinish.toString() == QLatin1String("length");
+    parsed.toolCalls = parseOpenAiCompatibleToolCalls(body);
+    return parsed;
+}
+
+std::optional<QJsonObject> parseOpenAiCompatibleJsonObject(const QString& text) {
+    QJsonParseError error;
+    const auto document = QJsonDocument::fromJson(text.toUtf8(), &error);
+    if (error.error != QJsonParseError::NoError || !document.isObject()) {
+        return std::nullopt;
+    }
+    return document.object();
 }
 
 OpenAiCompatibleCatalogParse parseOpenAiCompatibleModelCatalog(const QJsonObject& body) {
