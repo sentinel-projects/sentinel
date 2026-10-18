@@ -1,0 +1,606 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1"
+      ]
+    },
+    "application_repository": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "max_age_days": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "components": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/component"
+      },
+      "minItems": 1,
+      "maxItems": 1000
+    },
+    "criteria": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/criterion"
+      },
+      "minItems": 1,
+      "maxItems": 1000
+    },
+    "tests": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/test"
+      },
+      "minItems": 0,
+      "maxItems": 1000
+    },
+    "features": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/feature"
+      },
+      "minItems": 1,
+      "maxItems": 1000
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/evidence"
+      },
+      "minItems": 0,
+      "maxItems": 1000
+    }
+  },
+  "required": [
+    "schema_version",
+    "application_repository",
+    "max_age_days",
+    "components",
+    "criteria",
+    "tests",
+    "features",
+    "evidence"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sentinel:verification:registry:1",
+  "title": "Sentinel verification registry and evidence contract",
+  "$defs": {
+    "component": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,95}"
+        },
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "source_sha": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "[0-9a-f]{40}"
+        },
+        "dirty": {
+          "type": "boolean"
+        },
+        "dirty_digest": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "[0-9a-f]{64}"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "boundary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "id",
+        "repository",
+        "source_sha",
+        "dirty",
+        "dirty_digest",
+        "required",
+        "boundary"
+      ],
+      "additionalProperties": false
+    },
+    "criterion": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "AC-P[0-9]{1,2}-[0-9]{2}"
+        },
+        "phase": {
+          "type": "string",
+          "pattern": "P[0-9]{1,2}"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "Blocked",
+            "Unverified",
+            "Not Started",
+            "Ready for Validation",
+            "In Progress",
+            "Passed",
+            "Failed"
+          ]
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "id",
+        "phase",
+        "status",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "test": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,95}"
+        },
+        "runner": {
+          "type": "string",
+          "enum": [
+            "ctest",
+            "rust",
+            "qml",
+            "python",
+            "ci",
+            "manual"
+          ]
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "scenario": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "limitations": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "id",
+        "runner",
+        "source",
+        "scenario",
+        "scope",
+        "limitations"
+      ],
+      "additionalProperties": false
+    },
+    "platform": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": [
+            "linux-fedora-kde-wayland",
+            "linux-x11",
+            "macos",
+            "windows"
+          ]
+        },
+        "support": {
+          "type": "string",
+          "enum": [
+            "supported",
+            "conditional",
+            "unsupported",
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "support"
+      ],
+      "additionalProperties": false
+    },
+    "feature": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,95}"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "subsystem": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "phases": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "P(?:[0-9]|1[0-2])"
+          },
+          "minItems": 1,
+          "maxItems": 1000
+        },
+        "components": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,95}"
+          },
+          "minItems": 1,
+          "maxItems": 1000
+        },
+        "implementation": {
+          "type": "string",
+          "enum": [
+            "implemented",
+            "partial",
+            "planned",
+            "stub",
+            "unsupported",
+            "unknown",
+            "not_implemented"
+          ]
+        },
+        "coverage": {
+          "type": "string",
+          "enum": [
+            "mapped",
+            "unmapped"
+          ]
+        },
+        "verification": {
+          "type": "string",
+          "enum": [
+            "unverified",
+            "deterministic",
+            "integration",
+            "end_to_end",
+            "native",
+            "blocked",
+            "unsupported"
+          ]
+        },
+        "platforms": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/platform"
+          },
+          "minItems": 1,
+          "maxItems": 1000
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,95}"
+          },
+          "minItems": 0,
+          "maxItems": 1000
+        },
+        "criteria": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,95}"
+          },
+          "minItems": 0,
+          "maxItems": 1000
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,95}"
+          },
+          "minItems": 0,
+          "maxItems": 1000
+        },
+        "test_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,95}"
+          },
+          "minItems": 0,
+          "maxItems": 1000
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "minItems": 1,
+          "maxItems": 1000
+        },
+        "context_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "minItems": 0,
+          "maxItems": 1000
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "minItems": 0,
+          "maxItems": 1000
+        },
+        "owner": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512
+        },
+        "reviewer": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512
+        },
+        "acceptance": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "blocked",
+            "accepted"
+          ]
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "subsystem",
+        "phases",
+        "components",
+        "implementation",
+        "coverage",
+        "verification",
+        "platforms",
+        "dependencies",
+        "criteria",
+        "evidence_ids",
+        "test_ids",
+        "source_refs",
+        "context_refs",
+        "blockers",
+        "owner",
+        "reviewer",
+        "acceptance",
+        "notes"
+      ],
+      "additionalProperties": false
+    },
+    "artifact": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "[0-9a-f]{64}"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,95}"
+        },
+        "component": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,95}"
+        },
+        "source_sha": {
+          "type": "string",
+          "pattern": "[0-9a-f]{40}"
+        },
+        "dirty": {
+          "type": "boolean"
+        },
+        "dirty_digest": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "[0-9a-f]{64}"
+        },
+        "branch": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "scenario": {
+          "type": "string",
+          "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,95}"
+        },
+        "platform": {
+          "type": "string",
+          "enum": [
+            "linux-fedora-kde-wayland",
+            "linux-x11",
+            "macos",
+            "windows"
+          ]
+        },
+        "architecture": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "os_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "toolchain": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "build_profile": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "timestamp": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "fail",
+            "skip",
+            "xfail",
+            "unknown"
+          ]
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "deterministic",
+            "integration",
+            "end_to_end",
+            "native"
+          ]
+        },
+        "runtime_environment": {
+          "type": "string",
+          "enum": [
+            "synthetic",
+            "isolated-local",
+            "native",
+            "live-provider",
+            "unknown"
+          ]
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/artifact"
+          },
+          "minItems": 1,
+          "maxItems": 1000
+        },
+        "scope": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "[A-Za-z0-9][A-Za-z0-9._-]{0,95}"
+          },
+          "minItems": 1,
+          "maxItems": 1000
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "minItems": 1,
+          "maxItems": 1000
+        },
+        "component_versions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "[0-9a-f]{40}"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "component",
+        "source_sha",
+        "dirty",
+        "dirty_digest",
+        "branch",
+        "scenario",
+        "platform",
+        "architecture",
+        "os_version",
+        "toolchain",
+        "build_profile",
+        "timestamp",
+        "outcome",
+        "level",
+        "runtime_environment",
+        "artifacts",
+        "scope",
+        "limitations",
+        "component_versions"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

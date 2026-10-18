@@ -368,6 +368,10 @@ endif()
 # Canonical IPC models are checked in so normal C++ builds need no generator runtime.
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME test_verification_registry
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/verification/test_registry.py)
+    add_test(NAME test_verification_inventory
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/verification/validate.py --format json)
     add_test(NAME test_packaging_contract
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/packaging/test_packaging.py)
     set_tests_properties(test_packaging_contract PROPERTIES TIMEOUT 120)
