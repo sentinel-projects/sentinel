@@ -51,7 +51,9 @@ endif()
 if(WIN32)
     target_link_libraries(settings_ui_certification_probe PRIVATE user32)
 endif()
-target_link_libraries(settings_ui_certification_probe PRIVATE sentinel_desktop_viewmodels Qt6::Quick Qt6::Qml Qt6::Test)
+target_link_libraries(settings_ui_certification_probe PRIVATE sentinel_desktop_viewmodels sentinel_daemon_service Qt6::Quick Qt6::Qml Qt6::Test)
+add_test(NAME test_desktop_daemon_e2e COMMAND settings_ui_certification_probe --daemon-e2e)
+set_tests_properties(test_desktop_daemon_e2e PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 75 ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QSG_RENDER_LOOP=basic;QT_SCALE_FACTOR=1;QT_FONT_DPI=96")
 add_test(NAME test_desktop_shell_launch COMMAND settings_ui_certification_probe --shell-smoke)
 set_tests_properties(test_desktop_shell_launch PROPERTIES TIMEOUT 45 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 add_test(NAME test_onboarding_focus COMMAND $<TARGET_FILE:settings_ui_certification_probe> --focus-smoke)
@@ -111,6 +113,7 @@ qt_add_resources(settings_ui_certification_probe "certification_translations"
     PREFIX "/i18n" FILES ${CERTIFICATION_QM_FILES})
 add_dependencies(settings_ui_certification_probe Sentinel_lrelease)
 target_compile_definitions(settings_ui_certification_probe PRIVATE
+    CERTIFICATION_DAEMON_EVIDENCE_ROOT="${CMAKE_BINARY_DIR}/desktop-daemon-verification"
     CERTIFICATION_QML_IMPORT="${CMAKE_BINARY_DIR}/apps/sentinel-desktop"
     CERTIFICATION_TRANSLATIONS="${CMAKE_BINARY_DIR}/apps/sentinel-desktop"
     CERTIFICATION_QML_WRAPPER="${CMAKE_CURRENT_SOURCE_DIR}/helpers/settings_ui_certification.qml")
@@ -384,6 +387,8 @@ endif()
 # Canonical IPC models are checked in so normal C++ builds need no generator runtime.
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME test_verification_desktop_daemon COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/verification/test_desktop_daemon.py)
+    set_tests_properties(test_verification_desktop_daemon PROPERTIES TIMEOUT 30)
     add_test(NAME test_verification_registry
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/verification/test_registry.py)
     add_test(NAME test_verification_desktop_ui
