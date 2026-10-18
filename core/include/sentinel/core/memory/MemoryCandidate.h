@@ -113,6 +113,9 @@ struct MemoryCandidate {
     QDateTime createdAtUtc;
     QDateTime reviewedAtUtc;
     QDateTime committedAtUtc;
+    QString sourceCaptureId;
+    QString sourceSessionId;
+    QString sourceWorkspaceId;
 };
 
 struct MemoryCandidateSummary {

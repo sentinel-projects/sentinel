@@ -8,10 +8,12 @@
 #include "sentinel/core/chat/IConversationStore.h"
 #include "sentinel/core/model/ModelService.h"
 
+#include "sentinel/core/interfaces/IMemoryStore.h"
 #include <QObject>
 #include <QSet>
 #include <QThread>
 #include <atomic>
+#include <functional>
 #include <memory>
 
 namespace sentinel::core {
@@ -46,6 +48,11 @@ public:
     bool sendExisting(const QString& conversationId, int userMessageId, int replacesMessageId = 0,
                       const ModelSelection& selection = {}, bool requireLocal = false);
     void setResponseProfileInstructions(QString instructions) { profileInstructions_ = instructions.left(2000); }
+    void setScopedMemory(const IMemoryStore* store,
+                         std::function<MemoryAccessContext(const QString&)> context) {
+        memory_ = store;
+        memoryContext_ = std::move(context);
+    }
     bool stop();
     bool tryShutdown(int timeoutMs);
     bool busy() const;
@@ -65,6 +72,8 @@ private:
     QString contextFor(const QString& conversationId, int userMessageId) const;
     static ChatProviderErrorCategory bindingError(ModelBindingError error);
 
+    const IMemoryStore* memory_ = nullptr;
+    std::function<MemoryAccessContext(const QString&)> memoryContext_;
     ModelService& models_;
     ChatSession& session_;
     IConversationStore& store_;

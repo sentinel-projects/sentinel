@@ -8,6 +8,7 @@
 #include "sentinel/core/chat/InMemoryConversationStore.h"
 #include "sentinel/core/chat/SQLiteConversationStore.h"
 #include "sentinel/core/interfaces/IChatProvider.h"
+#include "sentinel/core/memory/InMemoryStore.h"
 #include "sentinel/core/model/ModelService.h"
 
 #include <QScopeGuard>
@@ -140,7 +141,45 @@ private slots:
     void sqliteStoreAcceptsInitiallyEmptyAssistantPlaceholder();
     void geminiPreservesAuthoritativeJsonSchema();
     void responseProfileChangesRequestWithoutChangingUserMessage();
+    void scopedMemoryControlsProductionPrompt();
 };
+
+void ChatModeServiceTest::scopedMemoryControlsProductionPrompt() {
+    Harness h(FixtureProvider::ReplyMode::EchoPrompt);
+    InMemoryStore memory;
+    MemoryAccessContext own{h.conversationId, "p1", {"p1"}, false};
+    auto other = own;
+    other.sessionId = "other-session";
+    auto foreign = other;
+    foreign.workspaceId = "p2";
+    foreign.authorizedWorkspaceIds = {"p2"};
+    QCOMPARE(memory
+                 .writeScopedMemory({MemoryScope::Session, "orchid", "SAME_SESSION",
+                                     MemoryProvenance::GeneratedSummary, "summary:fixture"},
+                                    own)
+                 .status,
+             ScopedMemoryStatus::Ready);
+    memory.writeScopedMemory({MemoryScope::Session, "orchid", "FOREIGN_SESSION"}, other);
+    memory.writeScopedMemory({MemoryScope::Project, "orchid", "PROJECT_ONE"}, own);
+    memory.writeScopedMemory({MemoryScope::Project, "orchid", "PROJECT_TWO"}, foreign);
+    auto personal = own;
+    personal.includePersonal = true;
+    memory.writeScopedMemory({MemoryScope::Personal, "orchid", "PERSONAL_SECRET"}, personal);
+    memory.put("orchid", "LEGACY_SECRET");
+    ChatModeService service(h.models, h.session, h.store);
+    service.setScopedMemory(&memory, [own](const QString&) { return own; });
+    QVERIFY(service.send(h.conversationId, "Please recall orchid", {}, {"ollama", "fixture"}));
+    QTRY_VERIFY(!service.busy());
+    const auto delivered = h.session.messages().last().content;
+    QVERIFY(delivered.contains("SAME_SESSION"));
+    QVERIFY(delivered.contains("PROJECT_ONE"));
+    QVERIFY(delivered.contains("generated-summary"));
+    QVERIFY(delivered.contains("summary:fixture"));
+    QVERIFY(!delivered.contains("FOREIGN_SESSION"));
+    QVERIFY(!delivered.contains("PROJECT_TWO"));
+    QVERIFY(!delivered.contains("PERSONAL_SECRET"));
+    QVERIFY(!delivered.contains("LEGACY_SECRET"));
+}
 
 void ChatModeServiceTest::responseProfileChangesRequestWithoutChangingUserMessage() {
     Harness harness(FixtureProvider::ReplyMode::EchoPrompt);

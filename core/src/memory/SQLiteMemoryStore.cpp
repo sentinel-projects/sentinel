@@ -9,8 +9,10 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <QScopeGuard>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QThread>
 #include <QUuid>
 #include <QVariant>
 #include <algorithm>
@@ -177,6 +179,191 @@ QList<MemoryRecord> SQLiteMemoryStore::searchRelevantRecords(const QString& text
     return result;
 }
 
+ScopedMemoryResult SQLiteMemoryStore::writeScopedMemory(const ScopedMemoryWrite& write,
+                                                        const MemoryAccessContext& context) {
+    if (!permittedMemoryWrite(write, context)) {
+        return {ScopedMemoryStatus::Unauthorized, {}};
+    }
+    if (!validMemoryWrite(write)) {
+        return {ScopedMemoryStatus::InvalidInput, {}};
+    }
+    if (QThread::currentThread() != connectionThread_ || !isAvailable()) {
+        return {};
+    }
+    if (!database_.transaction()) {
+        return {};
+    }
+    auto rollback = qScopeGuard([&] {
+        if (database_.isOpen()) {
+            database_.rollback();
+        }
+    });
+    const auto owner = memoryOwner(write.scope, context);
+    const auto workspace = memoryWorkspace(write.scope, context);
+    const auto now = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
+    QSqlQuery q(database_);
+    q.prepare(
+        "INSERT INTO "
+        "scoped_memory_entries(id,scope,owner_id,workspace_id,key,value,provenance,source_ref,"
+        "created_at,updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(scope,owner_id,workspace_id,key) DO UPDATE SET "
+        "value=excluded.value,provenance=excluded.provenance,source_ref=excluded.source_ref,"
+        "updated_at=excluded.updated_at WHERE ?=1");
+    q.addBindValue(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    q.addBindValue(static_cast<int>(write.scope));
+    q.addBindValue(owner.isNull() ? QStringLiteral("") : owner);
+    q.addBindValue(workspace.isNull() ? QStringLiteral("") : workspace);
+    q.addBindValue(write.key);
+    q.addBindValue(write.value);
+    q.addBindValue(static_cast<int>(write.provenance));
+    q.addBindValue(write.sourceReference.isNull() ? QStringLiteral("") : write.sourceReference);
+    q.addBindValue(now);
+    q.addBindValue(now);
+    q.addBindValue(write.overwriteExisting ? 1 : 0);
+    if (!q.exec()) {
+        setLastError(QStringLiteral("Scoped memory write failed."));
+        return {};
+    }
+    if (q.numRowsAffected() == 0) {
+        return {ScopedMemoryStatus::InvalidInput, {}};
+    }
+    q.finish();
+    q.prepare("SELECT id,created_at FROM scoped_memory_entries WHERE scope=? AND owner_id=? AND "
+              "workspace_id=? AND key=?");
+    q.addBindValue(static_cast<int>(write.scope));
+    q.addBindValue(owner.isNull() ? QStringLiteral("") : owner);
+    q.addBindValue(workspace.isNull() ? QStringLiteral("") : workspace);
+    q.addBindValue(write.key);
+    if (!q.exec() || !q.next()) {
+        return {};
+    }
+    ScopedMemoryRecord record{q.value(0).toString(),
+                              write.scope,
+                              owner,
+                              workspace,
+                              write.key,
+                              write.value,
+                              write.provenance,
+                              write.sourceReference,
+                              QDateTime::fromString(q.value(1).toString(), Qt::ISODateWithMs),
+                              QDateTime::fromString(now, Qt::ISODateWithMs)};
+    q.finish();
+    if (!database_.commit()) {
+        return {};
+    }
+    rollback.dismiss();
+    setLastError({});
+    return {ScopedMemoryStatus::Ready, {record}};
+}
+
+ScopedMemoryResult SQLiteMemoryStore::retrieveMemory(const QString& text,
+                                                     const MemoryAccessContext& context,
+                                                     int limit) const {
+    if (!authorizedMemoryContext(context)) {
+        return {ScopedMemoryStatus::Unauthorized, {}};
+    }
+    if (limit <= 0 || text.size() > 4096) {
+        return {ScopedMemoryStatus::InvalidInput, {}};
+    }
+    if (!identityReady_) {
+        return {};
+    }
+    QString connection;
+    QSqlDatabase db;
+    const auto cleanup = qScopeGuard([&] {
+        db = {};
+        if (!connection.isEmpty()) {
+            QSqlDatabase::removeDatabase(connection);
+        }
+    });
+    if (QThread::currentThread() == connectionThread_) {
+        if (!isAvailable()) {
+            return {};
+        }
+        db = database_;
+    } else {
+        if (databasePath_ == QLatin1String(":memory:")) {
+            return {};
+        }
+        connection = "sentinel_scoped_read_" + QUuid::createUuid().toString(QUuid::Id128);
+        db = QSqlDatabase::addDatabase("QSQLITE", connection);
+        db.setDatabaseName(databasePath_);
+        db.setConnectOptions("QSQLITE_OPEN_READONLY;QSQLITE_BUSY_TIMEOUT=5000");
+        if (!db.open()) {
+            return {};
+        }
+    }
+    QSqlQuery q(db);
+    const auto terms = scopedMemoryQueryTerms(text);
+    QStringList matches;
+    for (const auto& term : terms) {
+        Q_UNUSED(term)
+        matches.append(QStringLiteral("key LIKE ? ESCAPE '\\' OR value LIKE ? ESCAPE '\\'"));
+    }
+    if (matches.isEmpty()) {
+        matches.append(QStringLiteral("1=1"));
+    }
+    q.prepare(
+        QStringLiteral(
+            "SELECT "
+            "id,scope,owner_id,workspace_id,key,value,provenance,source_ref,created_at,updated_at "
+            "FROM scoped_memory_entries WHERE ((scope=1 AND owner_id=? AND workspace_id=?) OR "
+            "(scope=2 AND owner_id=? AND workspace_id=? AND ?<>'') OR "
+            "(scope=3 AND owner_id='' AND workspace_id='' AND ?=1)) AND (%1) "
+            "ORDER BY updated_at DESC,id ASC LIMIT ?")
+            .arg(matches.join(QStringLiteral(" OR "))));
+    const auto workspace = context.workspaceId.isNull() ? QStringLiteral("") : context.workspaceId;
+    q.addBindValue(context.sessionId);
+    q.addBindValue(workspace);
+    q.addBindValue(workspace);
+    q.addBindValue(workspace);
+    q.addBindValue(workspace);
+    q.addBindValue(context.includePersonal ? 1 : 0);
+    for (QString term : terms) {
+        term.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
+        term.replace(QLatin1Char('%'), QStringLiteral("\\%"));
+        term.replace(QLatin1Char('_'), QStringLiteral("\\_"));
+        const auto pattern = QLatin1Char('%') + term + QLatin1Char('%');
+        q.addBindValue(pattern);
+        q.addBindValue(pattern);
+    }
+    q.addBindValue(qBound(1, limit, 50));
+    if (!q.exec()) {
+        return {};
+    }
+    ScopedMemoryResult result{ScopedMemoryStatus::Ready, {}};
+    while (q.next()) {
+        ScopedMemoryRecord record{q.value(0).toString(),
+                                  static_cast<MemoryScope>(q.value(1).toInt()),
+                                  q.value(2).toString(),
+                                  q.value(3).toString(),
+                                  q.value(4).toString(),
+                                  q.value(5).toString(),
+                                  static_cast<MemoryProvenance>(q.value(6).toInt()),
+                                  q.value(7).toString(),
+                                  QDateTime::fromString(q.value(8).toString(), Qt::ISODateWithMs),
+                                  QDateTime::fromString(q.value(9).toString(), Qt::ISODateWithMs)};
+        if (visibleMemory(record, context)) {
+            result.records.append(record);
+        }
+    }
+    if (q.lastError().isValid()) {
+        return {};
+    }
+    return result;
+}
+
+bool SQLiteMemoryStore::hasScopedMemory() const {
+    if (QThread::currentThread() != connectionThread_ || !isAvailable()) {
+        return true;
+    }
+    QSqlQuery query(database_);
+    if (!query.exec("SELECT 1 FROM scoped_memory_entries LIMIT 1")) {
+        return true;
+    }
+    return query.next();
+}
+
 void SQLiteMemoryStore::clear() {
     if (!isAvailable()) {
         setLastError(QStringLiteral("SQLite memory database is not open."));
@@ -189,7 +376,8 @@ void SQLiteMemoryStore::clear() {
     }
 
     QSqlQuery query(database_);
-    if (!query.exec(QStringLiteral("DELETE FROM memory_entries"))) {
+    if (!query.exec(QStringLiteral("DELETE FROM memory_entries")) ||
+        !query.exec(QStringLiteral("DELETE FROM scoped_memory_entries"))) {
         database_.rollback();
         setLastError(query.lastError().text());
     } else if (!database_.commit()) {
@@ -200,6 +388,10 @@ void SQLiteMemoryStore::clear() {
 }
 
 bool SQLiteMemoryStore::isAvailable() const {
+    // Cross-thread readers use their own read-only connection and immutable initialization state.
+    if (QThread::currentThread() != connectionThread_) {
+        return identityReady_;
+    }
     return database_.isOpen() && identityReady_;
 }
 
@@ -359,7 +551,7 @@ void SQLiteMemoryStore::initializeSchema() {
                            "INSERT INTO memory_entries_fts(memory_id, key, value) "
                            "VALUES(new.id, new.key, new.value); END")};
         bool ready = true;
-        if (hadIndex && previousVersion < currentSchemaVersion) {
+        if (hadIndex && previousVersion < 3) {
             for (const auto& name : {QStringLiteral("memory_fts_insert"),
                                      QStringLiteral("memory_fts_delete"),
                                      QStringLiteral("memory_fts_update")})
@@ -375,7 +567,7 @@ void SQLiteMemoryStore::initializeSchema() {
                 ready = false;
                 break;
             }
-        if (ready && (previousVersion < currentSchemaVersion || !hadIndex || !hadTriggers)) {
+        if (ready && (previousVersion < 3 || !hadIndex || !hadTriggers)) {
             ready = query.exec(QStringLiteral("DELETE FROM memory_entries_fts"));
             if (ready)
                 ready = query.exec(QStringLiteral("INSERT INTO memory_entries_fts(memory_id, key, value) "
@@ -387,12 +579,41 @@ void SQLiteMemoryStore::initializeSchema() {
             database_.rollback();
     }
 
+    if (!database_.transaction()) {
+        identityReady_ = false;
+        return;
+    }
+    const auto rollbackScoped = qScopeGuard([&] {
+        if (!identityReady_) {
+            database_.rollback();
+        }
+    });
+    if (!query.exec(QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS scoped_memory_entries("
+            "id TEXT PRIMARY KEY NOT NULL,scope INTEGER NOT NULL CHECK(scope IN (1,2,3)),"
+            "owner_id TEXT NOT NULL,workspace_id TEXT NOT NULL,key TEXT NOT NULL,value TEXT NOT "
+            "NULL,"
+            "provenance INTEGER NOT NULL CHECK(provenance BETWEEN 0 AND 6),source_ref TEXT NOT "
+            "NULL,"
+            "created_at TEXT NOT NULL,updated_at TEXT NOT NULL,"
+            "UNIQUE(scope,owner_id,workspace_id,key),"
+            "CHECK((scope=1 AND owner_id<>'') OR (scope=2 AND owner_id<>'' AND "
+            "owner_id=workspace_id) OR "
+            "(scope=3 AND owner_id='' AND workspace_id='')))")) ||
+        !query.exec(
+            QStringLiteral("CREATE INDEX IF NOT EXISTS scoped_memory_owner ON "
+                           "scoped_memory_entries(scope,owner_id,workspace_id,updated_at)"))) {
+        identityReady_ = false;
+        setLastError(QStringLiteral("Scoped memory migration failed."));
+        return;
+    }
     query.prepare(QStringLiteral("INSERT INTO memory_schema_metadata(key, value) VALUES(?, ?) "
                                  "ON CONFLICT(key) DO UPDATE SET value = excluded.value"));
     query.addBindValue(QStringLiteral("schema_version"));
-    query.addBindValue(ftsReady_ ? currentSchemaVersion : qMax(1, previousVersion));
-    if (!query.exec()) {
-        setLastError(query.lastError().text());
+    query.addBindValue(currentSchemaVersion);
+    if (!query.exec() || !database_.commit()) {
+        identityReady_ = false;
+        setLastError(QStringLiteral("Scoped memory migration failed."));
         return;
     }
 

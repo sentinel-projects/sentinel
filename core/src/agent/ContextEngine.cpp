@@ -285,14 +285,17 @@ AgentPlanningContext ContextEngine::build(const AgentContextInput& input) const 
         }
     }
     int memoryBudget = qMin(remaining / 3, 350);
-    const auto memories =
+    const auto memoryResult =
         input.memoryStore && input.memoryStore->isAvailable()
-            ? input.memoryStore->searchRelevantRecords(input.goal, qBound(1, memoryBudget / 100, 3))
-            : QList<MemoryRecord>{};
+            ? input.memoryStore->retrieveMemory(input.goal.left(4096), input.memoryAccess,
+                                                qBound(1, memoryBudget / 100, 3))
+            : ScopedMemoryResult{};
+    const auto memories = memoryResult.status == ScopedMemoryStatus::Ready
+                              ? memoryResult.records
+                              : QList<ScopedMemoryRecord>{};
     for (const auto& entry : memories) {
-        AgentContextItem item{AgentContextKind::Memory, AgentContextPriority::Normal,
-                              QString::number(entry.id),
-                              bounded(entry.key + QStringLiteral(": ") + entry.value, 350), true};
+        AgentContextItem item{AgentContextKind::Memory, AgentContextPriority::Normal, entry.id,
+                              scopedMemoryContextText({ScopedMemoryStatus::Ready, {entry}}), true};
         if (add(std::move(item), memoryBudget))
             memoryBudget -= cost(result.items.last());
     }

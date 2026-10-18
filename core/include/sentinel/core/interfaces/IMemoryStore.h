@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "sentinel/core/memory/ScopedMemory.h"
+
 #include <QList>
 #include <QString>
 #include <QtGlobal>
@@ -17,6 +19,8 @@ struct MemoryRecord {
     qint64 id = 0;
     QString key;
     QString value;
+    MemoryScope scope = MemoryScope::Legacy;
+    MemoryProvenance provenance = MemoryProvenance::Unknown;
 };
 
 class IMemoryStore {
@@ -37,6 +41,18 @@ public:
         Q_UNUSED(query)
         Q_UNUSED(limit)
         return {};
+    }
+    // Old key/value methods address legacy/unclassified data only. They grant no scoped visibility.
+    virtual ScopedMemoryResult writeScopedMemory(const ScopedMemoryWrite&,
+                                                 const MemoryAccessContext&) {
+        return {};
+    }
+    virtual ScopedMemoryResult retrieveMemory(const QString&, const MemoryAccessContext&,
+                                              int = 10) const {
+        return {};
+    }
+    virtual bool hasScopedMemory() const {
+        return false;
     }
     virtual void clear() = 0;
     virtual bool isAvailable() const {

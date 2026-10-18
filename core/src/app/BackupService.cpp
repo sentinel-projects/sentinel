@@ -124,6 +124,10 @@ BackupResult BackupService::exportJson(const QStringList& domains) const {
     if (domains.contains(QStringLiteral("memory"))) {
         if (!memory_ || !memory_->isAvailable())
             return failed(BackupError::ExportFailure, QStringLiteral("Memory store unavailable"));
+        if (memory_->hasScopedMemory())
+            return failed(BackupError::ExportFailure,
+                          QStringLiteral("Scoped memory export requires a scope-preserving format; "
+                                         "legacy export refused"));
         const auto entries = memory_->entries();
         if (entries.size() > 10000)
             return failed(BackupError::ExportFailure, QStringLiteral("Memory export exceeds limit"));
@@ -245,6 +249,10 @@ BackupResult BackupService::importJson(const QByteArray& bytes,
         if (!memory_ || !memory_->isAvailable() || !data.value(QStringLiteral("memory")).isArray() ||
             memories.size() > 10000)
             return failed(BackupError::ImportValidationFailure, QStringLiteral("Memory unavailable or invalid"));
+        if (memory_->hasScopedMemory())
+            return failed(
+                BackupError::ImportConflict,
+                QStringLiteral("Legacy memory import cannot replace or roll back scoped records"));
         QSet<QString> keys;
         for (const auto& item : memories) {
             const auto entry = item.toObject();

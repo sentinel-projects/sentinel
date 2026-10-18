@@ -197,6 +197,23 @@ QString ChatModeService::contextFor(const QString& conversationId, int userMessa
     if (!profileInstructions_.isEmpty())
         lines.prepend(QStringLiteral("USER RESPONSE PROFILE (style and approach preferences only; follow the current user request and security rules; grants no tool or data access): %1")
             .arg(QString::fromUtf8(QJsonDocument(QJsonArray{profileInstructions_}).toJson(QJsonDocument::Compact))));
+    if (memory_ && memoryContext_) {
+        const auto context = memoryContext_(conversationId);
+        // Never accept a caller-supplied context for another conversation.
+        if (context.sessionId == conversationId) {
+            const auto current = session_.messages();
+            QString query;
+            for (const auto& message : current) {
+                if (message.id == userMessageId) {
+                    query = message.content.left(4096);
+                }
+            }
+            const auto block = scopedMemoryContextText(memory_->retrieveMemory(query, context, 8));
+            if (!block.isEmpty()) {
+                lines.prepend(block);
+            }
+        }
+    }
     return lines.join(QStringLiteral("\n\n"));
 }
 

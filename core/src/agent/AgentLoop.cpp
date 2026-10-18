@@ -141,6 +141,10 @@ void AgentLoop::preparePlanningContext(const AgentLoopState& state) {
     input.contextWindowTokens = contextWindowTokens_;
     input.maxOutputTokens = maxOutputTokens_;
     input.memoryStore = memoryStore_;
+    input.memoryAccess.sessionId = state.sessionId;
+    input.memoryAccess.workspaceId = workspaceContext_.id;
+    if (!workspaceContext_.id.isEmpty())
+        input.memoryAccess.authorizedWorkspaceIds.insert(workspaceContext_.id);
     input.chatHistoryStore = chatHistoryStore_;
     if (toolRegistry_) {
         for (const auto& tool : toolRegistry_->enabledTools())

@@ -2570,21 +2570,28 @@ ToolExecutionResult RealToolExecutor::executeMemorySearch(const PlannedToolInvoc
             return failure;
         }
         const int limit = qBound(1, getIntArgument(invocation, QStringLiteral("limit"), 10), 50);
-        const auto entries = memoryStore_->searchRelevantRecords(query, limit);
-        QStringList matches;
-        for (const auto& entry : entries) {
-            QString value = entry.value.simplified();
-            if (value.size() > 400)
-                value = value.left(400) + QStringLiteral("...");
-            matches.append(
-                QStringLiteral("memory:%1 %2: %3").arg(entry.id).arg(entry.key.left(120), value));
+        auto context = memoryContextResolver_ ? memoryContextResolver_(invocation.runtimeSessionId)
+                                              : memoryContext_;
+        // Static standalone contexts cannot be borrowed by a different gateway session.
+        if (!memoryContextResolver_ && !invocation.runtimeSessionId.isEmpty() &&
+            invocation.runtimeSessionId != context.sessionId) {
+            context = {};
         }
-
-        if (matches.isEmpty()) {
+        const auto scoped = memoryStore_->retrieveMemory(query, context, limit);
+        if (scoped.status != ScopedMemoryStatus::Ready) {
+            ToolExecutionResult failure{
+                ToolExecutionStatus::Failed,
+                QStringLiteral("memory-search: Scoped memory access unavailable or unauthorized.")};
+            failure.failureCategory = scoped.status == ScopedMemoryStatus::Unauthorized
+                                          ? ToolFailureCategory::PermissionDenied
+                                          : ToolFailureCategory::RuntimeUnavailable;
+            return failure;
+        }
+        if (scoped.records.isEmpty()) {
             logs.append(QStringLiteral("memory-search: No memory entries match '%1'.").arg(query));
         } else {
             logs.append(QStringLiteral("memory-search: showing up to %1 match(es) for '%2':\n%3")
-                            .arg(QString::number(limit), query, matches.join(QLatin1Char('\n'))));
+                            .arg(QString::number(limit), query, scopedMemoryContextText(scoped)));
         }
 
     } while (false);

@@ -956,8 +956,10 @@ private slots:
     void memorySearchFindsSnapshotEntries() {
         RealToolExecutor executor;
         InMemoryStore memory;
-        memory.put(QStringLiteral("user_name"), QStringLiteral("Ahmet"));
-        memory.put(QStringLiteral("shopping"), QStringLiteral("buy oat milk"));
+        const sentinel::core::MemoryAccessContext context{"session", "project", {"project"}, false};
+        memory.writeScopedMemory({sentinel::core::MemoryScope::Session, "shopping", "buy oat milk"},
+                                 context);
+        executor.setMemoryAccessContext(context);
         executor.setSearchStores(&memory, nullptr);
 
         const auto result =
@@ -967,12 +969,59 @@ private slots:
 
         QCOMPARE(result.status, ToolExecutionStatus::Succeeded);
         QVERIFY(result.summary.contains(QStringLiteral("match(es) for 'milk'")));
-        QVERIFY(result.summary.contains(QStringLiteral("shopping: buy oat milk")));
+        QVERIFY(result.summary.contains(QStringLiteral("shopping")));
+        QVERIFY(result.summary.contains(QStringLiteral("buy oat milk")));
+        QVERIFY(result.summary.contains(QStringLiteral("untrusted historical data")));
 
         const auto noMatch = runTool(
             executor, QStringLiteral("memory-search"),
             {ToolInvocationArgument{QStringLiteral("query"), QStringLiteral("yzk")}}, QStringList{});
         QVERIFY(noMatch.summary.contains(QStringLiteral("No memory entries match 'yzk'")));
+        sentinel::core::PlannedToolInvocation child;
+        child.arguments = {ToolInvocationArgument{"query", "milk"}};
+        child.runtimeSessionId = "delegated-child";
+        QString cwd;
+        const auto childResult = executor.executeMemorySearch(child, cwd);
+        QCOMPARE(childResult.status, ToolExecutionStatus::Failed);
+        QCOMPARE(childResult.failureCategory,
+                 sentinel::core::ToolFailureCategory::PermissionDenied);
+        QVERIFY(!childResult.summary.contains("oat milk"));
+        auto other = context;
+        other.sessionId = "other-session";
+        other.workspaceId = "other-project";
+        other.authorizedWorkspaceIds = {"other-project"};
+        memory.writeScopedMemory(
+            {sentinel::core::MemoryScope::Project, "shopping", "milk PROJECT_B"}, other);
+        executor.setMemoryContextResolver([context, other](const QString& id) {
+            return id == context.sessionId ? context
+                   : id == other.sessionId ? other
+                                           : sentinel::core::MemoryAccessContext{};
+        });
+        executor.setMemoryAccessContext(
+            other); // A changed active selection must not reroute an old request.
+        child.runtimeSessionId = context.sessionId;
+        const auto original = executor.executeMemorySearch(child, cwd);
+        QVERIFY(original.summary.contains("oat milk"));
+        QVERIFY(!original.summary.contains("PROJECT_B"));
+        child.runtimeSessionId = other.sessionId;
+        const auto otherResult = executor.executeMemorySearch(child, cwd);
+        QVERIFY(otherResult.summary.contains("PROJECT_B"));
+        QVERIFY(!otherResult.summary.contains("oat milk"));
+        executor.setMemoryAccessContext({});
+        const auto denied = runTool(executor, QStringLiteral("memory-search"),
+                                    {ToolInvocationArgument{"query", "milk"},
+                                     ToolInvocationArgument{"workspace_id", "project"},
+                                     ToolInvocationArgument{"session_id", "session"}},
+                                    QStringList{});
+        QCOMPARE(denied.status, ToolExecutionStatus::InvalidArguments);
+        QVERIFY(!denied.summary.contains("oat milk"));
+        const auto missingContext =
+            runTool(executor, QStringLiteral("memory-search"),
+                    {ToolInvocationArgument{"query", "milk"}}, QStringList{});
+        QCOMPARE(missingContext.status, ToolExecutionStatus::Failed);
+        QCOMPARE(missingContext.failureCategory,
+                 sentinel::core::ToolFailureCategory::PermissionDenied);
+        QVERIFY(!missingContext.summary.contains("oat milk"));
     }
 
     void memorySearchWithoutSnapshotIsGraceful() {
