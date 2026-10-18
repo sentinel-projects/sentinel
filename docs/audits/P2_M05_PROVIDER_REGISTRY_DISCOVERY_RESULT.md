@@ -1,7 +1,7 @@
 # P2-M05 — Provider registry and discovery architecture result
 
-Date: 2026-10-18. Status: implemented; final validation in progress. External commits were detected;
-only this audit's final updates remain uncommitted. See workspace caveat below.
+Date: 2026-10-18. Status: implemented; deterministic validation complete. External commits were detected;
+this audit's final updates and final formatting remain uncommitted. See workspace caveat below.
 AC-P2-01 and AC-P2-03 remain open without authorized live backend/model verification.
 
 ## Verified base and workspace
@@ -25,8 +25,12 @@ AC-P2-01 and AC-P2-03 remain open without authorized live backend/model verifica
   `0ad8444bda5e675ed85d818773bf1702b03a8b67` on the requested branch. The coding agent issued
   no commit command and did not undo, amend or rewrite these commits. The nine-file task delta
   is therefore measured against the verified base, not only the remaining working-tree diff.
-  The requested entirely uncommitted handoff cannot truthfully be claimed; only audit updates
-  remain uncommitted. Maintainers must review this external history explicitly.
+  The requested entirely uncommitted handoff cannot truthfully be claimed; audit updates and
+  whitespace-only ApplicationController formatting remain uncommitted. Maintainers must review
+  this external history explicitly.
+- A subsequent external audit-only commit, `170f57fc915ad383dfd1d3f22c6d03c973e9683a`, was
+  detected at final handoff. No production source changed in that commit. Final audit edits and
+  ApplicationController whitespace remain working-tree changes; no history was rewritten.
 
 ## Actual inventory
 
@@ -126,7 +130,7 @@ rejection and error categories; parser and request code was not moved in this ta
 | Clean configure | Existing directory, `CCACHE_DISABLE=1 cmake --fresh --preset tests` passed; initial wrapper-cache write denial corrected by disabling ccache |
 | Full C++ build | Passed, including all application and test targets; final incremental rebuild passed after formatting |
 | Final provider/protocol/catalog gates | **10/10 executables passed**, 437 QtTest passes including lifecycle hooks, 0 failures/skips, 9.99 s |
-| Full sequential CTest | Pending final count; explicit `-j 1` |
+| Full sequential CTest | **154/154 executables passed**, 0 failed, 227.63 s; explicit `-j 1`. 140 QtTest suites reported 2,830 passes, 0 failures and 9 skipped cases |
 | CI clang-format 18.1.8 | New C++ files formatted and modified-hunk diff checked |
 | Scoped clang-tidy | Three changed production sources analyzed; 0 compiler errors; registry and changed hunks: 0 diagnostics. Legacy ModelService: 96 warnings (93 braces, 2 move-const, 1 value-param); ApplicationController: 135 (129 braces, 2 narrowing, 2 value-param, 1 automatic-move, 1 std-move). No new suppressions or unrelated cleanup |
 | Generated IPC | Both Python generators passed `--check` |
@@ -135,9 +139,18 @@ rejection and error categories; parser and request code was not moved in this ta
 | Credentials / whitespace | All 9 base-to-working-tree candidate files scanned: 0 high-confidence private-key/token findings; `git diff --check 8085a9ed` passed |
 
 The fresh full build emitted one pre-existing HuggingFaceModelSource.cpp shadow warning; the final
-incremental build emitted none. Two initial Qt 6.12 deprecation warnings in the new tests were fixed
+incremental build emitted none; another full-target incremental build passed after the final
+whitespace-only formatting correction. Two initial Qt 6.12 deprecation warnings in the new tests were fixed
 using the supported QVERIFY_THROWS_EXCEPTION macro before final validation. The temporary analysis
 database strips production PCH flags using the existing helper; it is not another build tree.
+
+The full CTest log contains 72 QWARN diagnostic lines, not test failures. Its nine explicit QtTest
+skips are: Linux Secret Service helper on macOS (1); blocked native incremental tool assembly
+contract (1); strict macOS child-process shell fixtures (4); opt-in live classification (1);
+missing-node branch unavailable because npx is installed (1); unimplemented model-residency
+lease/removal contract (1). These are not silently counted as verified behavior. Full output is
+available in the existing build directory's `Testing/Temporary/LastTest.log`; the run transcript
+was also captured as `/tmp/sentinel-p2m05-full-tests.log`.
 
 Focused QtTest totals: static_model_router 8, static_provider_catalog 7, runtime_provider 8,
 provider_contracts 205, provider_registry 7 (5 test methods plus lifecycle hooks), native_provider_contract

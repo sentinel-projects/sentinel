@@ -10202,17 +10202,17 @@ void ApplicationController::pollOllama() {
             const auto lmUrl = lmStudioEndpointSnapshot.isEmpty()
                                    ? QStringLiteral("http://127.0.0.1:1234/v1/models")
                                    : lmStudioEndpointSnapshot + QStringLiteral("/v1/models");
-            lmStudioModels = fetchOpenAiCompatibleModels(QUrl(lmUrl), 1000, {}, nullptr,
-                                                          token, &selectedOutcome);
+            lmStudioModels = fetchOpenAiCompatibleModels(QUrl(lmUrl), 1000, {}, nullptr, token,
+                                                         &selectedOutcome);
         } else if (strategy == ProviderDiscovery::LlamaCppModels) {
             const auto llamaUrl = llamaCppEndpointSnapshot.isEmpty()
                                       ? QStringLiteral("http://127.0.0.1:8080/v1/models")
                                       : llamaCppEndpointSnapshot + QStringLiteral("/v1/models");
             llamaCppModels = fetchLlamaCppModels(QUrl(llamaUrl), 1000, token, &selectedOutcome);
         } else if (strategy == ProviderDiscovery::OpenAiLocalModels) {
-            openAiModels = fetchOpenAiCompatibleModels(
-                QUrl(QStringLiteral("http://127.0.0.1:8000/v1/models")), 1000,
-                {}, nullptr, token, &selectedOutcome);
+            openAiModels =
+                fetchOpenAiCompatibleModels(QUrl(QStringLiteral("http://127.0.0.1:8000/v1/models")),
+                                            1000, {}, nullptr, token, &selectedOutcome);
         } else if (strategy == ProviderDiscovery::SelectedCloud ||
                    strategy == ProviderDiscovery::OpenAiCloudModels ||
                    strategy == ProviderDiscovery::AnthropicModels ||
@@ -10236,8 +10236,8 @@ void ApplicationController::pollOllama() {
             const bool isOpenAi = openAiCatalog && cloudEndpoint == ProviderEndpoint::OpenAi;
 
             if (isGemini) {
-                cloudModels = fetchGeminiCloudModels(settings.geminiApiKey(), 4000, nullptr,
-                                                     token, &selectedOutcome);
+                cloudModels = fetchGeminiCloudModels(settings.geminiApiKey(), 4000, nullptr, token,
+                                                     &selectedOutcome);
             } else if (isClaude) {
                 cloudModels = fetchAnthropicCloudModels(settings.claudeApiKey(), 4000, nullptr,
                                                         token, &selectedOutcome);
