@@ -56,3 +56,15 @@ Verification states: {"blocked": 8, "unsupported": 1, "unverified": 34}
 - FSV-MODES: partial; mapped; unverified; pending
 - FSV-NOTIFICATIONS: partial; unmapped; unverified; pending
 - Warning: missing external component evidence: roasd.packaging
+
+## QA-02A fixture boundary mappings
+
+The eight E2E IDs map to inspected QtTest slots in the registry. Five bounded scopes are executable:
+streaming Chat plus durable daemon projection (01), rejected approval with zero workspace mutation
+(03), cancellation before approval with rejected replay (04), reconnect with authoritative snapshot
+(06), and client/daemon terminal-state consistency (08). The provider-driven Agent chain (02), full
+process restart with generation fencing (05), and conversation-store cross-session isolation (07)
+remain Blocked; their supporting component/IPC probes do not close those scopes. Existing generation
+and duplicate-event tests remain available in `test_agent_reliability_ipc`; they are not a daemon
+process crash test. No AC status or feature verification level is promoted. All 43 features and
+65 historical criteria remain intact. See the QA-02A audit for actual execution outcomes and gaps.
