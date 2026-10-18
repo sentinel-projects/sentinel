@@ -956,6 +956,14 @@
       "scenario": "P6-05 production Main",
       "scope": "Real production QML interactions with isolated fixture or disconnected public client; partial AC-P6-06 oracle",
       "limitations": "Offscreen fixture only; no native screen reader, portal consent or platform delivery acceptance"
+    },
+    {
+      "id": "UI-P606-MAIN",
+      "runner": "python",
+      "source": "tests/helpers/DesktopDaemonInteraction.h",
+      "scenario": "runDesktopDaemonInteraction",
+      "scope": "Production Main controls via keyboard/mouse, real IPC daemon service/planner/gateway/executor and independent SQLite/filesystem oracles; partial AC-P6-06",
+      "limitations": "Synthetic inference and same-process daemon service; no native screen-reader/portal/tray/Windows or whole-process restart acceptance; review-candidate captures only"
     }
   ],
   "features": [
@@ -1066,7 +1074,8 @@
         "UI-P605-CONTROLS",
         "UI-P605-COMMANDS",
         "UI-P605-INTERACTION",
-        "UI-P605-SHELL"
+        "UI-P605-SHELL",
+        "UI-P606-MAIN"
       ],
       "source_refs": [
         "apps/sentinel-desktop/src/DesktopShellViewModel.cpp"
@@ -1479,7 +1488,8 @@
         "E2E-01",
         "E2E-05",
         "E2E-06",
-        "E2E-08"
+        "E2E-08",
+        "UI-P606-MAIN"
       ],
       "source_refs": [
         "apps/sentinel-daemon/service/DaemonIpcServer.cpp"
@@ -1540,7 +1550,8 @@
         "TEST-CHAT",
         "E2E-01",
         "E2E-06",
-        "UI-P605-INTERACTION"
+        "UI-P605-INTERACTION",
+        "UI-P606-MAIN"
       ],
       "source_refs": [
         "core/src/chat/ChatModeService.cpp"
@@ -1601,7 +1612,8 @@
         "TEST-AGENT",
         "E2E-02",
         "E2E-04",
-        "E2E-08"
+        "E2E-08",
+        "UI-P606-MAIN"
       ],
       "source_refs": [
         "core/src/agent/AgentRuntime.cpp"
@@ -1722,7 +1734,8 @@
         "E2E-02",
         "E2E-03",
         "E2E-04",
-        "UI-P605-INTERACTION"
+        "UI-P605-INTERACTION",
+        "UI-P606-MAIN"
       ],
       "source_refs": [
         "core/src/runtime/ToolExecutionGateway.cpp"
@@ -2054,7 +2067,8 @@
       "evidence_ids": [],
       "test_ids": [
         "TEST-SESSIONS",
-        "E2E-07"
+        "E2E-07",
+        "UI-P606-MAIN"
       ],
       "source_refs": [
         "core/src/chat/ChatModeService.cpp"

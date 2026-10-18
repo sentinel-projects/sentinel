@@ -352,7 +352,7 @@ homeChat.conversationSidebarOpen = !homeChat.compact
                         border.color: conversationSearch.activeFocus
                                       ? SentinelTheme.withAlpha(homeChat.modeAccent, 0.55)
                                       : SentinelTheme.withAlpha(SentinelTheme.textPrimary, 0.10)
-                        layer.enabled: conversationSearch.activeFocus
+                        layer.enabled: GraphicsInfo.api !== GraphicsInfo.Software && conversationSearch.activeFocus
                         layer.effect: MultiEffect {
                             shadowEnabled: true
                             shadowColor: SentinelTheme.withAlpha(SentinelTheme.textPrimary, 0.12)
@@ -621,6 +621,7 @@ if (homeChat.compact)
                         // Overflow 3-dots Menu button (right side, on top with z: 2)
                         Button {
                             id: convItemMenuBtn
+                            objectName: "chatConversationMenu-" + convItem.convId
                             anchors.right: parent.right
                             anchors.verticalCenter: parent.verticalCenter
                             anchors.rightMargin: 4
@@ -686,6 +687,7 @@ if (homeChat.compact)
                             MenuSeparator {}
 
                             MenuItem {
+                                objectName: "chatDeleteConversation"
                                 text: qsTr("Delete")
                                 icon.source: "qrc:/icons/tabler/trash.svg"
                                 onTriggered: {
@@ -706,7 +708,7 @@ if (homeChat.compact)
                         radius: SentinelTheme.radiusSm
                         color: SentinelTheme.withAlpha(SentinelTheme.textPrimary, 0.03)
                         border.color: SentinelTheme.withAlpha(SentinelTheme.textPrimary, 0.06)
-                        layer.enabled: true
+                        layer.enabled: GraphicsInfo.api !== GraphicsInfo.Software
                         layer.effect: MultiEffect {
                             shadowEnabled: true
                             shadowColor: SentinelTheme.withAlpha(SentinelTheme.textPrimary, 0.08)
@@ -754,6 +756,7 @@ if (homeChat.compact)
 
                     Button {
                         id: headerNewChatBtn
+                        objectName: "chatNewConversation"
                         Layout.preferredWidth: 30
                         Layout.preferredHeight: 30
                         hoverEnabled: true
@@ -783,6 +786,7 @@ if (homeChat.compact)
 
                     Button {
                         id: headerSidebarToggle
+                        objectName: "chatSidebarToggle"
                         Layout.preferredWidth: 30
                         Layout.preferredHeight: 30
                         hoverEnabled: true
@@ -1006,7 +1010,7 @@ if (homeChat.compact)
                                                   ? SentinelTheme.withAlpha(homeChat.modeAccent, 0.28)
                                                   : SentinelTheme.withAlpha(SentinelTheme.textPrimary, 0.06)
                                     border.width: 1
-                                    layer.enabled: sugMouse.containsMouse || sugMouse.pressed
+                                    layer.enabled: GraphicsInfo.api !== GraphicsInfo.Software && (sugMouse.containsMouse || sugMouse.pressed)
                                     layer.effect: MultiEffect {
                                         shadowEnabled: true
                                         shadowColor: SentinelTheme.withAlpha(SentinelTheme.textPrimary, 0.15)
@@ -1171,7 +1175,7 @@ if (homeChat.compact)
                                                        messageRole === "user" ? 0.12 : 0.08)
                 opacity: 1.0
                 scale: 1.0
-                layer.enabled: msgArea.containsMouse
+                layer.enabled: GraphicsInfo.api !== GraphicsInfo.Software && msgArea.containsMouse
                 layer.effect: MultiEffect {
                     shadowEnabled: true
                     shadowColor: SentinelTheme.withAlpha(SentinelTheme.textPrimary, 0.10)
@@ -1509,6 +1513,7 @@ if (homeChat.compact)
                         model: [{mode: "Chat", icon: "message-circle", label: qsTr("Chat")}, {mode: "Agent", icon: "robot", label: qsTr("Agent")}]
                         delegate: Button {
                             id: modeButton
+                            objectName: "chatMode" + modelData.mode
                             required property var modelData
                             Layout.preferredWidth: 36
                             Layout.preferredHeight: 36
@@ -1659,6 +1664,7 @@ if (homeChat.compact)
     // Permanent delete confirmation dialog
     Dialog {
         id: deleteConfirmDialog
+        objectName: "chatDeleteConfirmation"
         onOpened: homeChat.deleteRequestError = ""
         anchors.centerIn: parent
         modal: true
@@ -1670,7 +1676,7 @@ if (homeChat.compact)
             radius: SentinelTheme.radiusLg
             color: SentinelTheme.backgroundRaised
             border.color: SentinelTheme.withAlpha(SentinelTheme.warning, 0.35)
-            layer.enabled: true
+            layer.enabled: GraphicsInfo.api !== GraphicsInfo.Software
             layer.effect: MultiEffect {
                 shadowEnabled: true
                 shadowColor: SentinelTheme.withAlpha(SentinelTheme.textPrimary, 0.12)
@@ -1762,6 +1768,7 @@ if (homeChat.compact)
                     // Cancel
                     Button {
                         id: deleteCancelBtn
+                        objectName: "chatDeleteCancel"
                         enabled: !homeChat.deleteRequestPending
                         Layout.fillWidth: true
                         Layout.preferredHeight: 34
@@ -1786,6 +1793,7 @@ if (homeChat.compact)
                     // Confirm delete
                     Button {
                         id: deleteConfirmBtn
+                        objectName: "chatDeleteConfirm"
                         enabled: !homeChat.deleteRequestPending
                         Layout.fillWidth: true
                         Layout.preferredHeight: 34

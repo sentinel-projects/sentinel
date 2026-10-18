@@ -84,7 +84,8 @@ def inspect_result(xml, code, output):
     return outcome, captures, document.findtext("Environment/QtBuild") or "Unavailable"
 
 
-def verify(directory, identity):
+def verify(directory, identity, binary_path=None):
+    binary_path = binary_path or executable()
     receipt = json.loads((directory / "receipt.json").read_text())
     schema = json.loads((ROOT / "verification/schema.json").read_text())
     errors = schema_errors(receipt, schema["$defs"]["evidence"], schema)
@@ -112,9 +113,9 @@ def verify(directory, identity):
             raise ValueError("Evidence artifact corrupted or escaped")
     binary = json.loads((directory / "binary.json").read_text())
     if binary["sha256"] is None:
-        if receipt["outcome"] != "blocked" or executable().exists():
+        if receipt["outcome"] != "blocked" or binary_path.exists():
             raise ValueError("Missing binary provenance mismatch")
-    elif digest(executable()) != binary["sha256"]:
+    elif digest(binary_path) != binary["sha256"]:
         raise ValueError("Test binary provenance mismatch")
     return receipt
 

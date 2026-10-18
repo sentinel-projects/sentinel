@@ -3,6 +3,8 @@ void qml_register_types_Sentinel_Warden();
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Opt-in UI harness: production QML and viewmodel, disposable disk stores,
 // explicitly injected in-memory credential backend. No provider success is faked.
+#include "DesktopDaemonFixture.h"
+#include "DesktopDaemonInteraction.h"
 #include "sentinel/core/app/AppSettings.h"
 #include "sentinel/core/app/ApplicationControllerBuilder.h"
 #include "sentinel/core/app/ModeManager.h"
@@ -21,6 +23,7 @@ void qml_register_types_Sentinel_Warden();
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QFontDatabase>
 #include <QFontMetricsF>
 #include <QJSValue>
 #include <QJsonArray>
@@ -36,6 +39,7 @@ void qml_register_types_Sentinel_Warden();
 #include <QTest>
 #include <QTimer>
 #include <QTranslator>
+#include <QUuid>
 #include <cmath>
 #include <cstdio>
 
@@ -104,6 +108,26 @@ int main(int argc, char** argv) {
     QApplication app(argc, argv);
     QCoreApplication::setApplicationName("Sentinel Settings Certification");
     QStandardPaths::setTestModeEnabled(true);
+    const bool daemonE2e = argc == 2 && QString::fromLocal8Bit(argv[1]) == "--daemon-e2e";
+#ifndef Q_OS_UNIX
+    if (daemonE2e) {
+        qInfo("P606_BLOCKED: production daemon peer authentication requires Unix");
+        return 77;
+    }
+#endif
+    if (daemonE2e)
+        QCoreApplication::setApplicationName("sentinel-p606-" +
+                                             QUuid::createUuid().toString(QUuid::WithoutBraces));
+    if (daemonE2e) {
+        const auto fonts = QFontDatabase::families();
+        for (const auto& family : {QString("DejaVu Sans"), QString("Arial"), QString("Noto Sans"),
+                                   QString("Liberation Sans")}) {
+            if (fonts.contains(family)) {
+                QApplication::setFont(QFont(family, 14));
+                break;
+            }
+        }
+    }
     const bool shellSmoke = argc == 2 && QString::fromLocal8Bit(argv[1]) == "--shell-smoke";
     const bool extensionsSmoke = argc == 2 && QString::fromLocal8Bit(argv[1]) == "--extensions-smoke";
     const bool phase1FailureSmoke =
@@ -121,13 +145,13 @@ int main(int argc, char** argv) {
     Phase1Diagnostic diagnostic(phase1Smoke);
     QTemporaryDir temporaryProfile;
     if (argc != 2 ||
-        (!shellSmoke && !extensionsSmoke && !phase1Smoke && !focusSmoke && !navigationSmoke &&
-         !chatSmoke && !modelsSmoke && !settingsSmoke && !traySmoke && !accessibilitySmoke &&
-         !QDir(QString::fromLocal8Bit(argv[1])).exists()))
+        (!daemonE2e && !shellSmoke && !extensionsSmoke && !phase1Smoke && !focusSmoke &&
+         !navigationSmoke && !chatSmoke && !modelsSmoke && !settingsSmoke && !traySmoke &&
+         !accessibilitySmoke && !QDir(QString::fromLocal8Bit(argv[1])).exists()))
         return 2;
-    QDir profile(shellSmoke || extensionsSmoke || phase1Smoke || focusSmoke || navigationSmoke ||
-                         chatSmoke || modelsSmoke || settingsSmoke || traySmoke ||
-                         accessibilitySmoke
+    QDir profile(daemonE2e || shellSmoke || extensionsSmoke || phase1Smoke || focusSmoke ||
+                         navigationSmoke || chatSmoke || modelsSmoke || settingsSmoke ||
+                         traySmoke || accessibilitySmoke
                      ? temporaryProfile.path()
                      : QString::fromLocal8Bit(argv[1]));
     sentinel::core::AppSettings settings(
@@ -139,9 +163,24 @@ int main(int argc, char** argv) {
             std::make_unique<sentinel::core::SQLiteMemoryStore>(profile.filePath("memory.sqlite3")))
         .withConversationStore(std::make_unique<sentinel::core::SQLiteConversationStore>(
             profile.filePath("chat.sqlite3")));
+    std::shared_ptr<sentinel::test::DesktopScript> daemonScript;
+    if (daemonE2e) {
+        daemonScript = sentinel::test::configureDesktopDaemon(builder, settings, profile);
+        if (!daemonScript)
+            return 247;
+    }
     diagnostic.stage("controller-build");
     auto controller = builder.build();
     diagnostic.stage("controller-ready");
+    std::unique_ptr<sentinel::daemon::DaemonIpcServer> fixtureServer;
+    if (daemonE2e) {
+        controller->attachControlledTaskSettings(settings);
+        controller->setAgentAutonomousMode(false);
+        fixtureServer = std::make_unique<sentinel::daemon::DaemonIpcServer>(controller.get());
+        fixtureServer->setSettings(&settings);
+        if (!fixtureServer->openSessionProjectionStore(profile.filePath("projection.sqlite3")))
+            return 248;
+    }
     sentinel::core::ModeManager modes;
     sentinel::core::JsonSettingsStore presentationStore(profile.filePath("warden-harness.json"));
     sentinel::desktop::CoreWardenPreferences wardenPreferences(presentationStore);
@@ -168,17 +207,18 @@ int main(int argc, char** argv) {
     sentinel::desktop::DaemonClient transport(profile.filePath("absent.sock"), 500, 10000);
     sentinel::desktop::DesktopRuntimeClient remoteRuntime(transport);
     std::unique_ptr<sentinel::desktop::DesktopShellViewModel> shell =
-        shellSmoke ? std::make_unique<sentinel::desktop::DesktopShellViewModel>(remoteRuntime,
-                                                                                modes, settings)
-                   : std::make_unique<sentinel::desktop::DesktopShellViewModel>(*controller, modes,
-                                                                                settings);
+        (shellSmoke || daemonE2e)
+            ? std::make_unique<sentinel::desktop::DesktopShellViewModel>(remoteRuntime, modes,
+                                                                         settings)
+            : std::make_unique<sentinel::desktop::DesktopShellViewModel>(*controller, modes,
+                                                                         settings);
     auto& viewModel = *shell;
     sentinel::desktop::QuickPanelController quickPanel(remoteRuntime);
     sentinel::desktop::RemoteAgentInspectorService inspectorService(transport);
     sentinel::desktop::AgentInspectorViewModel inspector(inspectorService);
     engine.rootContext()->setContextProperty("agentInspectorViewModel", &inspector);
     engine.rootContext()->setContextProperty("quickPanelController", &quickPanel);
-    if (shellSmoke)
+    if (shellSmoke || daemonE2e)
         viewModel.setReducedMotionEnabled(true);
     sentinel::desktop::NativeCompanionAdapter native(viewModel, settings, nullptr);
     engine.rootContext()->setContextProperty("nativeDesktop", &native);
@@ -196,7 +236,7 @@ int main(int argc, char** argv) {
     for (const auto* name : {"ggufLibraryFetcher", "lmStudioLibraryFetcher", "ollamaModelDetailFetcher", "ollamaPuller", "daemonClient"})
         engine.rootContext()->setContextProperty(name, &emptyLibrary);
     diagnostic.stage("qml-engine-load");
-    if (shellSmoke) {
+    if (shellSmoke || daemonE2e) {
         engine.rootContext()->setContextProperty("daemonClient", &transport);
         engine.loadFromModule("Sentinel.Desktop", "Main");
     } else
@@ -211,6 +251,15 @@ int main(int argc, char** argv) {
     diagnostic.stage("qml-engine-loaded");
     if (engine.rootObjects().isEmpty())
         return 3;
+    if (daemonE2e) {
+        auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().first());
+        QTimer::singleShot(250, &app, [&, window] {
+            const auto result = sentinel::test::runDesktopDaemonInteraction(
+                window, viewModel, remoteRuntime, transport, inspector, *fixtureServer, *controller,
+                daemonScript, profile);
+            app.exit(result);
+        });
+    }
     if (shellSmoke) {
         auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().first());
         QTimer::singleShot(250, &app, [&, window] {
@@ -1505,6 +1554,16 @@ int main(int argc, char** argv) {
     for (auto* root : engine.rootObjects())
         delete root;
     diagnostic.stage("qml-root-teardown-complete");
+    if (daemonE2e) {
+        daemonScript->release.release();
+        fixtureServer.reset();
+        controller.reset();
+        for (auto location : {QStandardPaths::AppDataLocation, QStandardPaths::AppConfigLocation}) {
+            const auto path = QStandardPaths::writableLocation(location);
+            if (QDir(path).exists() && !QDir(path).removeRecursively())
+                return 249;
+        }
+    }
     return code;
 }
 
