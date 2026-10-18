@@ -52,6 +52,8 @@ if(WIN32)
     target_link_libraries(settings_ui_certification_probe PRIVATE user32)
 endif()
 target_link_libraries(settings_ui_certification_probe PRIVATE sentinel_desktop_viewmodels Qt6::Quick Qt6::Qml Qt6::Test)
+add_test(NAME test_desktop_shell_launch COMMAND settings_ui_certification_probe --shell-smoke)
+set_tests_properties(test_desktop_shell_launch PROPERTIES TIMEOUT 45 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 add_test(NAME test_onboarding_focus COMMAND $<TARGET_FILE:settings_ui_certification_probe> --focus-smoke)
 set_tests_properties(test_onboarding_focus PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 add_test(NAME test_navigation_settings COMMAND settings_ui_certification_probe --navigation-smoke)
@@ -362,7 +364,20 @@ if(Qt6QuickTest_FOUND AND TARGET Qt6::QuickTest)
             ${PROJECT_SOURCE_DIR}/resources/sounds/error.wav
             ${PROJECT_SOURCE_DIR}/resources/sounds/success.wav
     )
+    # Reuse the production module/resources, not copied widget implementations.
+    qt_add_resources(test_gui_components gui_desktop_qml
+        PREFIX "/qt/qml/Sentinel/Desktop" FILES ${CERTIFICATION_QML_FILES})
+    qt_add_resources(test_gui_components gui_desktop_qmldir
+        PREFIX "/qt/qml" BASE "${CMAKE_BINARY_DIR}/apps/sentinel-desktop"
+        FILES "${CMAKE_BINARY_DIR}/apps/sentinel-desktop/Sentinel/Desktop/qmldir")
+    qt_add_resources(test_gui_components gui_desktop_icons
+        PREFIX "/" BASE "${CMAKE_SOURCE_DIR}/resources" FILES ${CERTIFICATION_ICON_FILES})
+    target_compile_definitions(test_gui_components PRIVATE
+        DESKTOP_QML_IMPORT="${CMAKE_BINARY_DIR}/apps/sentinel-desktop"
+        UI_EVIDENCE_ROOT="${CMAKE_BINARY_DIR}/ui-verification")
     add_test(NAME test_gui_components COMMAND $<TARGET_FILE:test_gui_components> -input "${CMAKE_CURRENT_SOURCE_DIR}/gui")
+    set_tests_properties(test_gui_components PROPERTIES TIMEOUT 90 ENVIRONMENT
+        "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QSG_RENDER_LOOP=basic;QT_SCALE_FACTOR=1;QT_FONT_DPI=96")
 endif()
 
 # Canonical IPC models are checked in so normal C++ builds need no generator runtime.
@@ -370,6 +385,9 @@ find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
     add_test(NAME test_verification_registry
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/verification/test_registry.py)
+    add_test(NAME test_verification_desktop_ui
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/verification/test_desktop_ui.py)
+    set_tests_properties(test_verification_desktop_ui PROPERTIES TIMEOUT 30)
     add_test(NAME test_verification_e2e_collector
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/verification/test_e2e.py)
     set_tests_properties(test_verification_e2e_collector PROPERTIES TIMEOUT 30)
