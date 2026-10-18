@@ -5,6 +5,8 @@
 #include "sentinel/core/runtime/OllamaRuntime.h"
 #include "sentinel/core/model/ModelCategory.h"
 #include "sentinel/core/network/NetworkPolicyService.h"
+#include "sentinel/core/provider/protocols/anthropic_messages/AnthropicMessagesProtocol.h"
+#include "sentinel/core/provider/protocols/gemini_generate_content/GeminiGenerateContentProtocol.h"
 #include "sentinel/core/provider/protocols/openai_compatible/OpenAiCompatibleProtocol.h"
 #include "sentinel/core/runtime/LocalInference.h"
 #include "sentinel/core/runtime/LocalInferenceTransport.h"
@@ -1616,10 +1618,12 @@ void LMStudioLibraryFetcher::parseHtml(const QString& html) {
 }
 
 namespace sentinel::core {
-QList<OllamaModelSummary> fetchOpenAiCompatibleModels(
-    const QUrl& url, int timeoutMs, const QMap<QByteArray, QByteArray>& headers, QString* errorOut,
-    const std::shared_ptr<std::atomic_bool>& cancellationToken, ProviderDiscoveryOutcome* outcome,
-    const std::shared_ptr<ILocalInferenceNetworkFactory>& networkFactory) {
+static QList<OllamaModelSummary>
+fetchModelCatalog(const QUrl& url, int timeoutMs, const QMap<QByteArray, QByteArray>& headers,
+                  QString* errorOut, const std::shared_ptr<std::atomic_bool>& cancellationToken,
+                  ProviderDiscoveryOutcome* outcome,
+                  const std::shared_ptr<ILocalInferenceNetworkFactory>& networkFactory,
+                  std::optional<QList<OllamaModelSummary>> (*parseCatalog)(const QJsonObject&)) {
     const auto reply = getJson(url, timeoutMs, nullptr, headers, cancellationToken,
                                ProviderRequestMode::Discovery, networkFactory);
     if (outcome)
@@ -1633,8 +1637,8 @@ QList<OllamaModelSummary> fetchOpenAiCompatibleModels(
         return {};
     }
 
-    const auto parsed = provider::parseOpenAiCompatibleModelCatalog(reply.document.object());
-    if (parsed.malformed) {
+    const auto parsed = parseCatalog(reply.document.object());
+    if (!parsed) {
         if (outcome)
             *outcome = {false, ChatProviderErrorCategory::MalformedResponse, reply.httpStatus,
                         reply.requestId};
@@ -1646,7 +1650,21 @@ QList<OllamaModelSummary> fetchOpenAiCompatibleModels(
         *outcome = {true, ChatProviderErrorCategory::None, reply.httpStatus, reply.requestId};
     if (errorOut)
         errorOut->clear();
-    return parsed.models;
+    return *parsed;
+}
+
+QList<OllamaModelSummary> fetchOpenAiCompatibleModels(
+    const QUrl& url, int timeoutMs, const QMap<QByteArray, QByteArray>& headers, QString* errorOut,
+    const std::shared_ptr<std::atomic_bool>& cancellationToken, ProviderDiscoveryOutcome* outcome,
+    const std::shared_ptr<ILocalInferenceNetworkFactory>& networkFactory) {
+    return fetchModelCatalog(
+        url, timeoutMs, headers, errorOut, cancellationToken, outcome, networkFactory,
+        [](const QJsonObject& body) -> std::optional<QList<OllamaModelSummary>> {
+            auto parsed = provider::parseOpenAiCompatibleModelCatalog(body);
+            if (parsed.malformed)
+                return std::nullopt;
+            return std::move(parsed.models);
+        });
 }
 
 QList<OllamaModelSummary>
@@ -1726,33 +1744,8 @@ fetchGeminiCloudModels(const QString& apiKey, int timeoutMs, QString* errorOut,
             *errorOut = QStringLiteral("Gemini returned an invalid model catalog.");
         return {};
     };
-    const auto modelsValue = reply.document.object().value(QStringLiteral("models"));
-    if (!modelsValue.isArray())
-        return malformedCatalog();
-    QList<OllamaModelSummary> models;
-    const auto modelsArray = modelsValue.toArray();
-    for (const auto& val : modelsArray) {
-        const auto obj = val.toObject();
-        auto name = obj.value(QStringLiteral("name")).toString().trimmed();
-        if (name.startsWith(QStringLiteral("models/"))) {
-            name = name.mid(7);
-        }
-        if (!val.isObject() || !obj.value(QStringLiteral("name")).isString() || name.isEmpty())
-            return malformedCatalog();
-        const auto displayName = obj.value(QStringLiteral("displayName")).toString().trimmed();
-        OllamaModelSummary model{
-            name, displayName.isEmpty() ? QStringLiteral("Google Cloud") : displayName, 0};
-        const auto inputLimit = obj.value(QStringLiteral("inputTokenLimit"));
-        const auto outputLimit = obj.value(QStringLiteral("outputTokenLimit"));
-        if (inputLimit.isDouble() && inputLimit.toDouble() > 0 &&
-            inputLimit.toDouble() <= std::numeric_limits<int>::max())
-            model.capabilities.contextWindow = inputLimit.toInt();
-        if (outputLimit.isDouble() && outputLimit.toDouble() > 0 &&
-            outputLimit.toDouble() <= std::numeric_limits<int>::max())
-            model.capabilities.maxOutputTokens = outputLimit.toInt();
-        models.append(std::move(model));
-    }
-    return models;
+    const auto parsed = provider::parseGeminiModelCatalog(reply.document.object());
+    return parsed ? *parsed : malformedCatalog();
 }
 
 QList<OllamaModelSummary>
@@ -1771,8 +1764,8 @@ fetchAnthropicCloudModels(const QString& apiKey, int timeoutMs, QString* errorOu
     const QUrl url(QStringLiteral("https://api.anthropic.com/v1/models"));
     const QMap<QByteArray, QByteArray> headers{{"x-api-key", apiKey.trimmed().toUtf8()},
                                                {"anthropic-version", "2023-06-01"}};
-    return fetchOpenAiCompatibleModels(url, timeoutMs, headers, errorOut, cancellationToken,
-                                       outcome, networkFactory);
+    return fetchModelCatalog(url, timeoutMs, headers, errorOut, cancellationToken, outcome,
+                             networkFactory, provider::parseAnthropicModelCatalog);
 }
 
 QList<OllamaModelSummary>
