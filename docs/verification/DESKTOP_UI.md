@@ -114,3 +114,29 @@ P6-06 should connect an isolated production daemon/scripted provider to real Mai
 widgets, assert render/state parity after cancellation/reconnect, and exercise populated Inspector
 filters/details. Then run the native matrix on disposable macOS, Fedora KDE Wayland and Windows
 hosts with explicit screen-reader/consent evidence and per-platform reviewed visual manifests.
+
+## P6-06 production Main / daemon fixture
+
+Run `python3 tools/verification/desktop_daemon.py` after a successful existing tests build.
+The allowlisted `settings_ui_certification_probe --daemon-e2e` mounts actual Main with public
+remote view models, real IPC/daemon/application/runtime/gateway/executor and a private scripted
+provider. Keyboard/mouse controls drive Chat streaming/cancel, Deny/Allow, Inspector and permanent
+delete; independent SQLite reads, accepted runtime final, file bytes/hash and write counts are
+required. UI-P606-MAIN maps these bounded integration oracles without promoting feature status.
+
+The collector requires every scenario, explicit side-effect/state fields and seven capture stages.
+Artifacts live under existing ignored `build/tests/desktop-daemon-verification/run-*`; use its
+printed directory with `--verify`. Receipts bind exact SHA/dirty digest, binary/component versions,
+platform/toolchain and artifact hashes. Missing/partial/wrong outcomes cannot become Passed.
+No screenshot is auto-approved. Fixed Paper theme, reduced motion, software rendering, DPI96/DPR1,
+selected installed font, compact780/wide1320 x720 and a separate 20-point application-font scene
+make layout stages repeatable. Real run/session UUIDs, disposable paths, timestamps and durations
+remain variable and are excluded from any future exact pixel baseline; use reviewed masks or
+semantic/structural oracles. Raw captures remain unedited. Hardcoded QML pixel fonts mean the
+application-font scene does not establish full 200% shell scaling.
+
+Software rendering now skips unsupported MultiEffect layers on ShellPanel and the chat surface;
+otherwise Main's Dashboard can be invisible while its QML controls still accept keyboard events.
+The integration test requires rendered composer ink in addition to object-tree visibility.
+Native GPU shadows/effects, VoiceOver/Orca/NVDA, KDE portal consent, notifications/tray, Windows
+focus and process restart remain separate acceptance. AC-P6-06/07/08 stay open.
