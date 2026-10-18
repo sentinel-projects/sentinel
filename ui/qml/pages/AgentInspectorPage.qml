@@ -116,6 +116,7 @@ Item {
                         model: page.viewModel.runs
                         delegate: ItemDelegate {
         id: delegateScope1
+                            objectName: "inspectorRun-" + entry.runId
                             required property var entry
                             width: runList.width
                             height: 94
@@ -183,7 +184,7 @@ Item {
                             property var run: page.viewModel.selectedRun
 
                             Text { text: parent.run.goal || qsTr("Agent run"); color: SentinelTheme.textPrimary; font.pixelSize: 20; font.bold: true; Layout.fillWidth: true; wrapMode: Text.Wrap }
-                            Text { text: parent.run.runType + (parent.run.role ? "  /  " + parent.run.role : "") + "  /  " + parent.run.state; color: SentinelTheme.accent; font.bold: true }
+                            Text { objectName: "inspectorRunState"; text: parent.run.runType + (parent.run.role ? "  /  " + parent.run.role : "") + "  /  " + parent.run.state; color: SentinelTheme.accent; font.bold: true }
                             Text { text: qsTr("Run ID: ") + parent.run.runId + "\n" + qsTr("Session: ") + parent.run.sessionId; color: SentinelTheme.textMuted; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere; font.pixelSize: 12 }
                             Text { text: parent.run.provider + " / " + parent.run.model + "\n" + page.stamp(parent.run.startedAt) + " - " + page.stamp(parent.run.finishedAt) + "  " + parent.run.duration; color: SentinelTheme.textPrimary; Layout.fillWidth: true; wrapMode: Text.Wrap }
                             Text { text: qsTr("Current catalog: ") + (parent.run.providerCatalogStatus || qsTr("Unverified")) + (parent.run.providerCatalogDetail ? "  /  " + parent.run.providerCatalogDetail : ""); color: SentinelTheme.textMuted; Layout.fillWidth: true; wrapMode: Text.Wrap }

@@ -454,6 +454,7 @@ ApplicationWindow {
 
     SentinelOverlayModal {
         id: daemonApprovalModal
+        objectName: "daemonApprovalModal"
         preferredWidth: 620
         preferredHeight: 380
         closePolicy: Popup.NoAutoClose
@@ -502,10 +503,12 @@ ApplicationWindow {
                 Item { Layout.fillWidth: true }
                 SentinelButton {
                     id: daemonApprovalDeny
+                    objectName: "daemonApprovalDeny"
                     text: qsTr("Deny")
                     onClicked: root.viewModel.respondToDaemonApproval(false)
                 }
                 SentinelButton {
+                    objectName: "daemonApprovalAllow"
                     text: qsTr("Allow once")
                     onClicked: root.viewModel.respondToDaemonApproval(true)
                 }

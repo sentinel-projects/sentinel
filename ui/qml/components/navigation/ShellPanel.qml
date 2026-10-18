@@ -15,7 +15,8 @@ Rectangle {
     border.width: borderWidth
 
     // Drop shadow
-    layer.enabled: true
+    // Software scene graph cannot render MultiEffect; keep panel content visible.
+    layer.enabled: GraphicsInfo.api !== GraphicsInfo.Software
     layer.smooth: false
     layer.effect: MultiEffect {
         shadowEnabled: true
