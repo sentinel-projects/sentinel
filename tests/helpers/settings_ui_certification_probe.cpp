@@ -9,8 +9,12 @@ void qml_register_types_Sentinel_Warden();
 #include "sentinel/core/chat/SQLiteConversationStore.h"
 #include "sentinel/core/memory/JsonSettingsStore.h"
 #include "sentinel/core/memory/SQLiteMemoryStore.h"
+#include "sentinel/desktop/DesktopRuntimeClient.h"
 #include "sentinel/desktop/DesktopShellViewModel.h"
 #include "sentinel/desktop/NativeCompanionAdapter.h"
+#include "sentinel/desktop/QuickPanelController.h"
+#include "sentinel/desktop/RemoteAgentInspectorService.h"
+#include "sentinel/desktop/viewmodels/AgentInspectorViewModel.h"
 #include <QAccessible>
 #include <QApplication>
 #include <QDir>
@@ -100,6 +104,7 @@ int main(int argc, char** argv) {
     QApplication app(argc, argv);
     QCoreApplication::setApplicationName("Sentinel Settings Certification");
     QStandardPaths::setTestModeEnabled(true);
+    const bool shellSmoke = argc == 2 && QString::fromLocal8Bit(argv[1]) == "--shell-smoke";
     const bool extensionsSmoke = argc == 2 && QString::fromLocal8Bit(argv[1]) == "--extensions-smoke";
     const bool phase1FailureSmoke =
         argc == 2 && QString::fromLocal8Bit(argv[1]) == "--phase1-failure-smoke";
@@ -115,12 +120,14 @@ int main(int argc, char** argv) {
         argc == 2 && QString::fromLocal8Bit(argv[1]) == "--accessibility-smoke";
     Phase1Diagnostic diagnostic(phase1Smoke);
     QTemporaryDir temporaryProfile;
-    if (argc != 2 || (!extensionsSmoke && !phase1Smoke && !focusSmoke && !navigationSmoke &&
-                      !chatSmoke && !modelsSmoke && !settingsSmoke && !traySmoke &&
-                      !accessibilitySmoke && !QDir(QString::fromLocal8Bit(argv[1])).exists()))
+    if (argc != 2 ||
+        (!shellSmoke && !extensionsSmoke && !phase1Smoke && !focusSmoke && !navigationSmoke &&
+         !chatSmoke && !modelsSmoke && !settingsSmoke && !traySmoke && !accessibilitySmoke &&
+         !QDir(QString::fromLocal8Bit(argv[1])).exists()))
         return 2;
-    QDir profile(extensionsSmoke || phase1Smoke || focusSmoke || navigationSmoke || chatSmoke ||
-                         modelsSmoke || settingsSmoke || traySmoke || accessibilitySmoke
+    QDir profile(shellSmoke || extensionsSmoke || phase1Smoke || focusSmoke || navigationSmoke ||
+                         chatSmoke || modelsSmoke || settingsSmoke || traySmoke ||
+                         accessibilitySmoke
                      ? temporaryProfile.path()
                      : QString::fromLocal8Bit(argv[1]));
     sentinel::core::AppSettings settings(
@@ -143,7 +150,9 @@ int main(int argc, char** argv) {
     engine.rootContext()->setContextProperty("coreWardenPreferences", &wardenPreferences);
     engine.rootContext()->setContextProperty("navigationSmoke", navigationSmoke);
     QObject::connect(&engine, &QQmlApplicationEngine::exit, &app, &QApplication::exit);
-    if (phase1Smoke || navigationSmoke || chatSmoke || modelsSmoke || settingsSmoke || traySmoke) settings.setOnboardingComplete(true);
+    if (shellSmoke || phase1Smoke || navigationSmoke || chatSmoke || modelsSmoke || settingsSmoke ||
+        traySmoke)
+        settings.setOnboardingComplete(true);
     engine.addImportPath(QStringLiteral(CERTIFICATION_QML_IMPORT));
     QTranslator translator;
     auto translate = [&] {
@@ -156,7 +165,21 @@ int main(int argc, char** argv) {
     translate();
     QObject::connect(&settings, &sentinel::core::AppSettings::appLanguageChanged, &app, translate);
     // Match production bootstrap: translator changes precede viewmodel language signals.
-    sentinel::desktop::DesktopShellViewModel viewModel(*controller, modes, settings);
+    sentinel::desktop::DaemonClient transport(profile.filePath("absent.sock"), 500, 10000);
+    sentinel::desktop::DesktopRuntimeClient remoteRuntime(transport);
+    std::unique_ptr<sentinel::desktop::DesktopShellViewModel> shell =
+        shellSmoke ? std::make_unique<sentinel::desktop::DesktopShellViewModel>(remoteRuntime,
+                                                                                modes, settings)
+                   : std::make_unique<sentinel::desktop::DesktopShellViewModel>(*controller, modes,
+                                                                                settings);
+    auto& viewModel = *shell;
+    sentinel::desktop::QuickPanelController quickPanel(remoteRuntime);
+    sentinel::desktop::RemoteAgentInspectorService inspectorService(transport);
+    sentinel::desktop::AgentInspectorViewModel inspector(inspectorService);
+    engine.rootContext()->setContextProperty("agentInspectorViewModel", &inspector);
+    engine.rootContext()->setContextProperty("quickPanelController", &quickPanel);
+    if (shellSmoke)
+        viewModel.setReducedMotionEnabled(true);
     sentinel::desktop::NativeCompanionAdapter native(viewModel, settings, nullptr);
     engine.rootContext()->setContextProperty("nativeDesktop", &native);
     engine.rootContext()->setContextProperty("shellViewModel", &viewModel);
@@ -173,17 +196,90 @@ int main(int argc, char** argv) {
     for (const auto* name : {"ggufLibraryFetcher", "lmStudioLibraryFetcher", "ollamaModelDetailFetcher", "ollamaPuller", "daemonClient"})
         engine.rootContext()->setContextProperty(name, &emptyLibrary);
     diagnostic.stage("qml-engine-load");
-    engine.load(QUrl::fromLocalFile(
-        extensionsSmoke ? QFileInfo(QStringLiteral(CERTIFICATION_QML_WRAPPER))
-                              .dir()
-                              .filePath("extensions_hub_certification.qml")
-        : accessibilitySmoke ? QFileInfo(QStringLiteral(CERTIFICATION_QML_WRAPPER))
-                                   .dir()
-                                   .filePath("accessibility_certification.qml")
-                             : QStringLiteral(CERTIFICATION_QML_WRAPPER)));
+    if (shellSmoke) {
+        engine.rootContext()->setContextProperty("daemonClient", &transport);
+        engine.loadFromModule("Sentinel.Desktop", "Main");
+    } else
+        engine.load(QUrl::fromLocalFile(
+            extensionsSmoke ? QFileInfo(QStringLiteral(CERTIFICATION_QML_WRAPPER))
+                                  .dir()
+                                  .filePath("extensions_hub_certification.qml")
+            : accessibilitySmoke ? QFileInfo(QStringLiteral(CERTIFICATION_QML_WRAPPER))
+                                       .dir()
+                                       .filePath("accessibility_certification.qml")
+                                 : QStringLiteral(CERTIFICATION_QML_WRAPPER)));
     diagnostic.stage("qml-engine-loaded");
     if (engine.rootObjects().isEmpty())
         return 3;
+    if (shellSmoke) {
+        auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().first());
+        QTimer::singleShot(250, &app, [&, window] {
+            auto find = [](auto&& self, QQuickItem* item, const QString& name) -> QQuickItem* {
+                if (item->objectName() == name)
+                    return item;
+                for (auto* child : item->childItems())
+                    if (auto* result = self(self, child, name))
+                        return result;
+                return nullptr;
+            };
+            if (!window || window->property("currentShellPage").toString() != "Dashboard" ||
+                viewModel.daemonConnected()) {
+                app.exit(240);
+                return;
+            }
+            window->requestActivate();
+            for (const auto& page :
+                 {QString("Models"), QString("Inspector"), QString("Dashboard")}) {
+                auto* button = find(find, window->contentItem(), page + "NavigationButton");
+                if (!button) {
+                    app.exit(241);
+                    return;
+                }
+                button->forceActiveFocus();
+                QTest::keyClick(window, Qt::Key_Space);
+                if (!QTest::qWaitFor(
+                        [&] { return window->property("currentShellPage").toString() == page; },
+                        2000)) {
+                    app.exit(242);
+                    return;
+                }
+                if (page == "Inspector" &&
+                    (!inspector.active() || inspector.runs()->rowCount() != 0)) {
+                    app.exit(243);
+                    return;
+                }
+            }
+            // Public shell shortcuts at compact and wide supported window sizes.
+            for (const auto width : {780, 1320}) {
+                window->setWidth(width);
+                window->setHeight(720);
+                QTest::keyClick(window, Qt::Key_2, Qt::ControlModifier);
+                if (!QTest::qWaitFor(
+                        [&] { return window->property("currentShellPage").toString() == "Models"; },
+                        2000)) {
+                    app.exit(244);
+                    return;
+                }
+                QTest::keyClick(window, Qt::Key_1, Qt::ControlModifier);
+                if (!QTest::qWaitFor(
+                        [&] {
+                            return window->property("currentShellPage").toString() == "Dashboard";
+                        },
+                        2000)) {
+                    app.exit(245);
+                    return;
+                }
+                if (viewModel.daemonConnected() ||
+                    remoteRuntime.quickPanelSnapshot().value("ready").toBool()) {
+                    app.exit(246);
+                    return;
+                }
+            }
+            qInfo("P6-05 production Main launch/navigation/Inspector/disconnected readiness "
+                  "passed; no daemon started");
+            app.exit(0);
+        });
+    }
     if (extensionsSmoke) {
         auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().first());
         QTimer::singleShot(200, &app, [&, window] {
