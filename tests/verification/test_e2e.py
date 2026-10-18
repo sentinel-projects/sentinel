@@ -43,6 +43,68 @@ class E2eCollectorTest(unittest.TestCase):
         ]:
             self.assertEqual(e2e.qt_outcome(xml, 0), "unverified")
 
+    def test_provider_oracles_require_all_side_effects(self):
+        original = e2e.hashlib.sha256(b"original fixture bytes\n").hexdigest()
+        updated = e2e.hashlib.sha256(b"QA02B independently checked bytes\n").hexdigest()
+        rows = []
+        for mode in sorted(e2e.PROVIDER_ROWS):
+            before = {"allowed.txt": original, "unchanged.txt": original}
+            after = dict(before)
+            mutates = mode in {"allowed", "unaccepted-final"}
+            if mutates:
+                after["allowed.txt"] = updated
+            rows.append(
+                dict(
+                    scenario=mode,
+                    before=before,
+                    after=after,
+                    successful_writes=int(mutates),
+                    terminal_events=1,
+                    accepted_final=mode == "allowed",
+                    planner_calls=3,
+                    classifications=2 if mode == "stale-generation" else 1,
+                    persisted_state=(
+                        "completed"
+                        if mode == "allowed"
+                        else "cancelled" if mode == "cancelled" else "failed"
+                    ),
+                )
+            )
+        e2e.validate_provider_oracles(rows)
+        xml = (
+            "<TestCase><TestFunction name='providerDrivenChain'>"
+            + "".join(
+                "<Incident type='pass'><DataTag>"
+                + r["scenario"]
+                + "</DataTag></Incident>"
+                + "<Message><Description>QA02B_ORACLE "
+                + json.dumps(r)
+                + "</Description></Message>"
+                for r in rows
+            )
+            + "</TestFunction><TestFunction name='cleanupTestCase'><Incident type='pass'/></TestFunction></TestCase>"
+        )
+        self.assertEqual(e2e.provider_oracles(xml), rows)
+        with self.assertRaises(ValueError):
+            e2e.provider_oracles(
+                xml.replace("name='cleanupTestCase'", "name='missing'")
+            )
+        for bad in [rows[:-1], rows + [rows[0]], []]:
+            with self.assertRaises(ValueError):
+                e2e.validate_provider_oracles(bad)
+        for key, value in [
+            ("successful_writes", 2),
+            ("terminal_events", 2),
+            ("after", {}),
+            ("persisted_state", "running"),
+            ("accepted_final", False),
+        ]:
+            altered = json.loads(json.dumps(rows))
+            allowed = next(r for r in altered if r["scenario"] == "allowed")
+            allowed[key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                e2e.validate_provider_oracles(altered)
+
     def test_missing_executable(self):
         with patch.object(subprocess, "run", side_effect=FileNotFoundError):
             self.assertEqual(
@@ -173,6 +235,13 @@ class E2eCollectorTest(unittest.TestCase):
             (root / "verification/schema.json").write_text(json.dumps(schema))
             with patch.object(e2e, "ROOT", root):
                 self.assertEqual(len(e2e.verify_bundle(root, identity)), 8)
+                provider = next(r for r in receipts if r["scenario"] == "E2E-02")
+                provider["outcome"] = "pass"
+                (root / "receipts.json").write_text(json.dumps(receipts))
+                with self.assertRaisesRegex(ValueError, "Missing provider"):
+                    e2e.verify_bundle(root, identity)
+                provider["outcome"] = "blocked"
+                (root / "receipts.json").write_text(json.dumps(receipts))
                 with self.assertRaisesRegex(ValueError, "provenance"):
                     e2e.verify_bundle(root, ("b" * 40, False, None, "fixture"))
                 log.write_text("corrupted diagnostic")

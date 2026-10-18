@@ -34,9 +34,9 @@ SCENARIOS = {
         "Streaming and persisted projection",
     ),
     "E2E-02": (
-        "test_agent_reliability_ipc",
-        "cor17_disconnectReattachDuringActiveRun",
-        "Blocked: synthetic planner/executor; provider-driven Agent planning not exercised",
+        "test_provider_agent_e2e",
+        "providerDrivenChain",
+        "Scripted provider; production planner/gateway/executor; server recreation retains controller",
     ),
     "E2E-03": (
         "test_agent_reliability_ipc",
@@ -125,6 +125,71 @@ def qt_outcome(xml, returncode, expected=None):
         return "unverified"
 
 
+PROVIDER_ROWS = {
+    "allowed",
+    "denied",
+    "cancelled",
+    "outside",
+    "malformed",
+    "unaccepted-final",
+    "stale-generation",
+}
+
+
+def provider_oracles(xml):
+    """Require every bounded side-effect oracle; partial rows cannot close E2E-02."""
+    root = ET.fromstring(xml)
+    incidents = root.findall("./TestFunction[@name='providerDrivenChain']/Incident")
+    if (
+        len(incidents) != len(PROVIDER_ROWS)
+        or {i.findtext("DataTag") for i in incidents} != PROVIDER_ROWS
+        or any(i.get("type") != "pass" for i in incidents)
+        or root.find("./TestFunction[@name='cleanupTestCase']/Incident[@type='pass']")
+        is None
+    ):
+        raise ValueError("Incomplete provider test rows or cleanup")
+    rows = []
+    for description in root.findall(".//Message/Description"):
+        text = description.text or ""
+        if text.startswith("QA02B_ORACLE "):
+            rows.append(json.loads(text.removeprefix("QA02B_ORACLE ")))
+    validate_provider_oracles(rows)
+    return rows
+
+
+def validate_provider_oracles(rows):
+    if (
+        len(rows) != len(PROVIDER_ROWS)
+        or {r["scenario"] for r in rows} != PROVIDER_ROWS
+    ):
+        raise ValueError("Incomplete provider scenario oracles")
+    original = hashlib.sha256(b"original fixture bytes\n").hexdigest()
+    replacement = hashlib.sha256(b"QA02B independently checked bytes\n").hexdigest()
+    for row in rows:
+        mode = row["scenario"]
+        before = {"allowed.txt": original, "unchanged.txt": original}
+        after = dict(before)
+        mutates = mode in {"allowed", "unaccepted-final"}
+        if mutates:
+            after["allowed.txt"] = replacement
+        if (
+            row["before"] != before
+            or row["after"] != after
+            or row["successful_writes"] != int(mutates)
+            or row["terminal_events"] != 1
+            or row["accepted_final"] is not (mode == "allowed")
+            or row["persisted_state"]
+            != (
+                "completed"
+                if mode == "allowed"
+                else "cancelled" if mode == "cancelled" else "failed"
+            )
+            or row["classifications"] != (2 if mode == "stale-generation" else 1)
+            or not 1 <= row["planner_calls"] <= 8
+        ):
+            raise ValueError("Invalid provider side-effect oracle")
+
+
 def execute(executable, slot, profile, timeout):
     env = {
         k: os.environ[k] for k in ("PATH", "SystemRoot", "WINDIR") if k in os.environ
@@ -188,6 +253,14 @@ def verify_bundle(directory, identity):
             raise ValueError(
                 "Evidence freshness mismatch: " + str(freshness["reasons"])
             )
+        if receipt["scenario"] == "E2E-02" and receipt["outcome"] == "pass":
+            oracle_files = [
+                a
+                for a in receipt["artifacts"]
+                if a["path"].endswith("/E2E-02-oracles.json")
+            ]
+            if len(oracle_files) != 1:
+                raise ValueError("Missing provider side-effect oracle artifact")
         for artifact in receipt["artifacts"]:
             path = ROOT / artifact["path"]
             if (
@@ -195,6 +268,8 @@ def verify_bundle(directory, identity):
                 or digest(path) != artifact["sha256"]
             ):
                 raise ValueError("Corrupted or escaped evidence artifact")
+            if path.name == "E2E-02-oracles.json":
+                validate_provider_oracles(json.loads(path.read_text()))
             if path.name.endswith("-binary.json"):
                 binary = json.loads(path.read_text())
                 expected = SCENARIOS[receipt["scenario"]][0]
@@ -245,6 +320,12 @@ def main():
             prefix="sentinel-e2e-", dir="/tmp" if os.name == "posix" else None
         ) as temp:
             outcome, diagnostic = execute(exe, slot, Path(temp), 45)
+            oracles = None
+            if scenario == "E2E-02" and outcome == "pass":
+                try:
+                    oracles = provider_oracles(diagnostic)
+                except (ValueError, KeyError, TypeError, ET.ParseError):
+                    outcome = "unverified"
             try:
                 toolchain = (
                     ET.fromstring(diagnostic).findtext("Environment/QtBuild")
@@ -261,6 +342,15 @@ def main():
         log = output / (scenario + ".txt")
         log.write_text(diagnostic)
         artifacts = [{"path": log.relative_to(ROOT).as_posix(), "sha256": digest(log)}]
+        if oracles is not None:
+            oracle_path = output / "E2E-02-oracles.json"
+            oracle_path.write_text(json.dumps(oracles, indent=2) + "\n")
+            artifacts.append(
+                {
+                    "path": oracle_path.relative_to(ROOT).as_posix(),
+                    "sha256": digest(oracle_path),
+                }
+            )
         if exe.is_file():
             # Bind executable bytes without copying binaries into evidence or permitting source hashes.
             binary_manifest = output / (scenario + "-binary.json")
@@ -274,7 +364,7 @@ def main():
                 }
             )
         components = ["sentinel.runtime", "sentinel.protocol"]
-        if binary == "test_agent_reliability_ipc":
+        if binary in {"test_agent_reliability_ipc", "test_provider_agent_e2e"}:
             components.append("sentinel.desktop")
         receipt = dict(
             id=scenario + "-" + output.name,
