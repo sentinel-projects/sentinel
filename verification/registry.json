@@ -841,9 +841,9 @@
       "id": "TEST-QML-PALETTE",
       "runner": "qml",
       "source": "tests/gui/components/tst_CommandPalette.qml",
-      "scenario": "test_palette_component_initialization",
-      "scope": "CommandPalette component initialization, not real keyboard/focus acceptance",
-      "limitations": "Source-inspected map, not a run receipt"
+      "scenario": "test_keyboard_filter_and_settings",
+      "scope": "Production CommandPalette keyboard filtering and settings route with an isolated fixture; partial AC-P6-06 oracle",
+      "limitations": "Replaces the former placeholder initialization check; offscreen fixture is not native keyboard acceptance"
     },
     {
       "id": "GATE-MACOS",
@@ -924,6 +924,38 @@
       "scenario": "cor19_eventSequenceMonotonicAndGenerationFencing",
       "scope": "Fixture boundary only; Client snapshot, exact mutation and terminal event consistency",
       "limitations": "Synthetic planner/provider/executor; no native or live acceptance"
+    },
+    {
+      "id": "UI-P605-CONTROLS",
+      "runner": "qml",
+      "source": "tests/gui/components/tst_SentinelButton.qml",
+      "scenario": "SentinelButtonTest",
+      "scope": "Real production QML interactions with isolated fixture or disconnected public client; partial AC-P6-06 oracle",
+      "limitations": "Offscreen fixture only; no native screen reader, portal consent or platform delivery acceptance"
+    },
+    {
+      "id": "UI-P605-COMMANDS",
+      "runner": "qml",
+      "source": "tests/gui/components/tst_CommandPalette.qml",
+      "scenario": "CommandPaletteTest",
+      "scope": "Real production QML interactions with isolated fixture or disconnected public client; partial AC-P6-06 oracle",
+      "limitations": "Offscreen fixture only; no native screen reader, portal consent or platform delivery acceptance"
+    },
+    {
+      "id": "UI-P605-INTERACTION",
+      "runner": "qml",
+      "source": "tests/gui/components/tst_DesktopInteraction.qml",
+      "scenario": "DesktopInteractionTest",
+      "scope": "Real production QML interactions with isolated fixture or disconnected public client; partial AC-P6-06 oracle",
+      "limitations": "Offscreen fixture only; no native screen reader, portal consent or platform delivery acceptance"
+    },
+    {
+      "id": "UI-P605-SHELL",
+      "runner": "ctest",
+      "source": "tests/helpers/settings_ui_certification_probe.cpp",
+      "scenario": "P6-05 production Main",
+      "scope": "Real production QML interactions with isolated fixture or disconnected public client; partial AC-P6-06 oracle",
+      "limitations": "Offscreen fixture only; no native screen reader, portal consent or platform delivery acceptance"
     }
   ],
   "features": [
@@ -1030,7 +1062,11 @@
       "test_ids": [
         "TEST-DESKTOP",
         "GATE-QML",
-        "TEST-QML-PALETTE"
+        "TEST-QML-PALETTE",
+        "UI-P605-CONTROLS",
+        "UI-P605-COMMANDS",
+        "UI-P605-INTERACTION",
+        "UI-P605-SHELL"
       ],
       "source_refs": [
         "apps/sentinel-desktop/src/DesktopShellViewModel.cpp"
@@ -1503,7 +1539,8 @@
       "test_ids": [
         "TEST-CHAT",
         "E2E-01",
-        "E2E-06"
+        "E2E-06",
+        "UI-P605-INTERACTION"
       ],
       "source_refs": [
         "core/src/chat/ChatModeService.cpp"
@@ -1684,7 +1721,8 @@
         "TEST-APPROVAL",
         "E2E-02",
         "E2E-03",
-        "E2E-04"
+        "E2E-04",
+        "UI-P605-INTERACTION"
       ],
       "source_refs": [
         "core/src/runtime/ToolExecutionGateway.cpp"
@@ -2342,7 +2380,8 @@
       ],
       "evidence_ids": [],
       "test_ids": [
-        "TEST-DIAGNOSTICS"
+        "TEST-DIAGNOSTICS",
+        "UI-P605-SHELL"
       ],
       "source_refs": [
         "core/src/app/AgentInspectorService.cpp"
