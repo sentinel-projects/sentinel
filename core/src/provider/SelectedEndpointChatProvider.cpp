@@ -9,13 +9,11 @@
 #include "sentinel/core/runtime/LocalInference.h"
 #include "sentinel/core/runtime/ProviderRequestRuntime.h"
 
-#include <QCryptographicHash>
 #include <QDateTime>
 #include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLoggingCategory>
-#include <QRegularExpression>
 
 #include <algorithm>
 #include <utility>
@@ -23,37 +21,6 @@
 namespace sentinel::core {
 namespace {
 Q_LOGGING_CATEGORY(nativeProviderDiagnostics, "sentinel.provider.diagnostics", QtWarningMsg)
-
-QString nativeFunctionName(const QString& toolId) {
-    static const QRegularExpression valid(QStringLiteral("^[A-Za-z0-9_-]{1,64}$"));
-    if (valid.match(toolId).hasMatch())
-        return toolId;
-    return QStringLiteral("tool_%1").arg(QString::fromLatin1(
-        QCryptographicHash::hash(toolId.toUtf8(), QCryptographicHash::Sha256).toHex().left(48)));
-}
-
-QJsonObject nativeToolDefinition(const ToolDescriptor& tool) {
-    QJsonObject schema = tool.inputSchema;
-    if (schema.isEmpty()) {
-        QJsonObject properties;
-        QJsonArray required;
-        for (const auto& parameter : tool.parameters) {
-            properties.insert(parameter.id,
-                              QJsonObject{{QStringLiteral("type"), QStringLiteral("string")},
-                                          {QStringLiteral("description"), parameter.description}});
-            if (parameter.required)
-                required.append(parameter.id);
-        }
-        schema = {{QStringLiteral("type"), QStringLiteral("object")},
-                  {QStringLiteral("properties"), properties},
-                  {QStringLiteral("required"), required}};
-    }
-    return {{QStringLiteral("type"), QStringLiteral("function")},
-            {QStringLiteral("function"),
-             QJsonObject{{QStringLiteral("name"), nativeFunctionName(tool.id)},
-                         {QStringLiteral("description"), tool.description.left(200)},
-                         {QStringLiteral("parameters"), schema}}}};
-}
 
 ChatProviderErrorCategory categoryFromLocalInference(LocalInferenceError error,
                                                      LocalInferenceStatus status) {
@@ -157,7 +124,8 @@ ChatProviderReply nativeEndpointReply(LMStudioLocalInferenceClient::NativeProtoc
             for (const auto& tool : options.tools) {
                 if (!tool.enabled || !tool.exposedToModel)
                     continue;
-                tools.append(provider::anthropicToolDeclaration(nativeToolDefinition(tool)));
+                tools.append(provider::anthropicToolDeclaration(
+                    provider::openAiCompatibleToolDefinition(tool)));
             }
         }
         body = provider::buildAnthropicNativeRequestBody(
@@ -188,7 +156,8 @@ ChatProviderReply nativeEndpointReply(LMStudioLocalInferenceClient::NativeProtoc
                 const auto& result = options.toolResults.at(i);
                 if (call.callId.isEmpty() || call.callId != result.callId)
                     return malformed(QStringLiteral("Native function result ID mismatch."));
-                results.append({call.callId, nativeFunctionName(call.toolId), result.content});
+                results.append({call.callId, provider::openAiCompatibleFunctionName(call.toolId),
+                                result.content});
             }
             contents.append(QJsonObject{
                 {QStringLiteral("role"), QStringLiteral("user")},
@@ -262,7 +231,8 @@ ChatProviderReply nativeEndpointReply(LMStudioLocalInferenceClient::NativeProtoc
                                     const QString& continuation) -> QString {
         QString toolId;
         for (const auto& tool : options.tools)
-            if (tool.enabled && tool.exposedToModel && nativeFunctionName(tool.id) == name) {
+            if (tool.enabled && tool.exposedToModel &&
+                provider::openAiCompatibleFunctionName(tool.id) == name) {
                 toolId = tool.id;
                 break;
             }
@@ -463,65 +433,14 @@ public:
             return nativeEndpointReply(
                 LMStudioLocalInferenceClient::NativeProtocol::Gemini, binding_, config_,
                 options.deadlineMs > 0 ? options.deadlineMs : timeoutMs_, message, options);
-        QJsonArray messages{
-            QJsonObject{{QStringLiteral("role"), QStringLiteral("user")},
-                        {QStringLiteral("content"), chatImageContent(message, options.images)}}};
-        if (!options.priorToolCalls.isEmpty()) {
-            if (options.priorToolCalls.size() != options.toolResults.size())
-                return providerFailure(QStringLiteral("Native tool results are incomplete."),
-                                       ChatProviderErrorCategory::MalformedResponse,
-                                       ChatProviderReply::Error::InvalidResponse);
-            QJsonArray calls;
-            for (const auto& call : options.priorToolCalls) {
-                calls.append(QJsonObject{
-                    {QStringLiteral("id"), call.callId},
-                    {QStringLiteral("type"), QStringLiteral("function")},
-                    {QStringLiteral("function"),
-                     QJsonObject{{QStringLiteral("name"), nativeFunctionName(call.toolId)},
-                                 {QStringLiteral("arguments"),
-                                  QString::fromUtf8(QJsonDocument(call.arguments)
-                                                        .toJson(QJsonDocument::Compact))}}}});
-            }
-            messages.append(QJsonObject{{QStringLiteral("role"), QStringLiteral("assistant")},
-                                        {QStringLiteral("tool_calls"), calls}});
-            for (int i = 0; i < options.toolResults.size(); ++i) {
-                const auto& result = options.toolResults.at(i);
-                if (result.callId != options.priorToolCalls.at(i).callId)
-                    return providerFailure(QStringLiteral("Native tool result IDs do not match."),
-                                           ChatProviderErrorCategory::MalformedResponse,
-                                           ChatProviderReply::Error::InvalidResponse);
-                messages.append(
-                    QJsonObject{{QStringLiteral("role"), QStringLiteral("tool")},
-                                {QStringLiteral("tool_call_id"), result.callId},
-                                {QStringLiteral("content"), result.content.left(6800)}});
-            }
+        const auto normalizedRequest = provider::buildOpenAiCompatibleNativeRequest(
+            binding_.modelId, chatImageContent(message, options.images), options);
+        if (!normalizedRequest.error.isEmpty()) {
+            return providerFailure(normalizedRequest.error,
+                                   ChatProviderErrorCategory::MalformedResponse,
+                                   ChatProviderReply::Error::InvalidResponse);
         }
-        QJsonObject body{{QStringLiteral("model"), binding_.modelId},
-                         {QStringLiteral("messages"), messages},
-                         {QStringLiteral("stream"), false}};
-        if (options.nativeToolCalling) {
-            QJsonArray tools;
-            for (const auto& tool : options.tools)
-                if (tool.enabled && tool.exposedToModel)
-                    tools.append(nativeToolDefinition(tool));
-            if (!tools.isEmpty()) {
-                body.insert(QStringLiteral("tools"), tools);
-                body.insert(QStringLiteral("tool_choice"), QStringLiteral("auto"));
-            }
-        }
-        if (options.structuredOutput) {
-            if (options.structuredSchemaName.isEmpty() || options.structuredSchema.isEmpty())
-                return providerFailure(QStringLiteral("Structured planner schema is missing."),
-                                       ChatProviderErrorCategory::MalformedResponse,
-                                       ChatProviderReply::Error::InvalidResponse);
-            body.insert(
-                QStringLiteral("response_format"),
-                QJsonObject{{QStringLiteral("type"), QStringLiteral("json_schema")},
-                            {QStringLiteral("json_schema"),
-                             QJsonObject{{QStringLiteral("name"), options.structuredSchemaName},
-                                         {QStringLiteral("strict"), options.strictStructuredOutput},
-                                         {QStringLiteral("schema"), options.structuredSchema}}}});
-        }
+        auto body = normalizedRequest.body;
         // Budget the actual serialized native request, including schemas and tool
         // results omitted by ContextEngine's prompt estimate. This is an estimate,
         // not a tokenizer measurement; the provider may still reject the request.
@@ -630,8 +549,8 @@ public:
                                      ? QStringLiteral("response_format_failure")
                                      : QStringLiteral("transport_failure"));
         }
-        const auto choices = completion.body.value(QStringLiteral("choices")).toArray();
-        if (choices.isEmpty()) {
+        const auto parsed = provider::normalizeOpenAiCompatibleNativeResponse(completion.body);
+        if (!parsed.hasChoices) {
             auto reply =
                 providerFailure(QStringLiteral("Chat completion has no choices."),
                                 ChatProviderErrorCategory::MalformedResponse,
@@ -640,35 +559,9 @@ public:
             reply.requestId = completion.requestId;
             return finish(reply, QStringLiteral("response_format_failure"));
         }
-        const auto replyMessage =
-            choices.first().toObject().value(QStringLiteral("message")).toObject();
-        const auto rawFinish = choices.first().toObject().value(QStringLiteral("finish_reason"));
-        if (rawFinish.isString()) {
-            const auto reason = rawFinish.toString();
-            diagnostics.insert(QStringLiteral("finish_reason"),
-                               QStringList{QStringLiteral("stop"), QStringLiteral("length"),
-                                           QStringLiteral("tool_calls"),
-                                           QStringLiteral("content_filter")}
-                                       .contains(reason)
-                                   ? reason
-                                   : QStringLiteral("other"));
+        for (auto it = parsed.diagnostics.begin(); it != parsed.diagnostics.end(); ++it) {
+            diagnostics.insert(it.key(), it.value());
         }
-        const auto usage = completion.body.value(QStringLiteral("usage")).toObject();
-        for (const auto& key : {"prompt_tokens", "completion_tokens", "total_tokens"}) {
-            const auto value = usage.value(QLatin1String(key));
-            if (value.isDouble() && value.toDouble() >= 0)
-                diagnostics.insert(QString::fromLatin1(key), value);
-        }
-        const auto reasoningTokens = usage.value(QStringLiteral("completion_tokens_details"))
-                                         .toObject()
-                                         .value(QStringLiteral("reasoning_tokens"));
-        if (reasoningTokens.isDouble() && reasoningTokens.toDouble() >= 0)
-            diagnostics.insert(QStringLiteral("reasoning_tokens"), reasoningTokens);
-        diagnostics.insert(
-            QStringLiteral("response_content_bytes"),
-            replyMessage.value(QStringLiteral("content")).toString().toUtf8().size());
-        diagnostics.insert(QStringLiteral("response_tool_calls"),
-                           replyMessage.value(QStringLiteral("tool_calls")).toArray().size());
         ChatProviderReply result;
         result.httpStatus = completion.httpStatus;
         result.success = true;
@@ -676,7 +569,7 @@ public:
         result.attempts = completion.attempts;
         result.retrySummary = completion.retrySummary;
         result.requestId = completion.requestId;
-        result.message = replyMessage.value(QStringLiteral("content")).toString();
+        result.message = parsed.text;
         const auto malformed = [&](const QString& detail) {
             auto reply =
                 providerFailure(detail, ChatProviderErrorCategory::MalformedResponse,
@@ -685,7 +578,7 @@ public:
             reply.requestId = completion.requestId;
             return finish(reply, QStringLiteral("response_format_failure"));
         };
-        if (rawFinish.toString() == QLatin1String("length"))
+        if (parsed.outputLimit)
             return finish(
                 providerFailure(
                     QStringLiteral(
@@ -695,27 +588,24 @@ public:
                     ChatProviderReply::Error::InvalidResponse, completion.httpStatus,
                     completion.attempts, completion.retrySummary),
                 QStringLiteral("output_limit"));
-        for (const auto& call : provider::parseOpenAiCompatibleToolCalls(completion.body)) {
+        for (const auto& call : parsed.toolCalls) {
             QString toolId;
             for (const auto& tool : options.tools)
-                if (nativeFunctionName(tool.id) == call.name) {
+                if (provider::openAiCompatibleFunctionName(tool.id) == call.name) {
                     toolId = tool.id;
                     break;
                 }
-            QJsonParseError parseError;
             const auto arguments =
-                QJsonDocument::fromJson(call.arguments.toString().toUtf8(), &parseError);
-            if (toolId.isEmpty() || call.callId.isEmpty() || !arguments.isObject() ||
-                parseError.error != QJsonParseError::NoError)
+                provider::parseOpenAiCompatibleJsonObject(call.arguments.toString());
+            if (toolId.isEmpty() || call.callId.isEmpty() || !arguments)
                 return malformed(QStringLiteral("Invalid or unregistered native tool call."));
-            result.toolCalls.append({call.callId, toolId, arguments.object()});
+            result.toolCalls.append({call.callId, toolId, *arguments});
         }
         if (options.structuredOutput && result.toolCalls.isEmpty()) {
-            QJsonParseError parseError;
-            const auto document = QJsonDocument::fromJson(result.message.toUtf8(), &parseError);
-            if (parseError.error != QJsonParseError::NoError || !document.isObject())
+            const auto document = provider::parseOpenAiCompatibleJsonObject(result.message);
+            if (!document)
                 return malformed(QStringLiteral("Invalid native structured response."));
-            result.structuredResult = document.object();
+            result.structuredResult = *document;
         }
         if (result.message.isEmpty() && result.toolCalls.isEmpty())
             return finish(providerFailure(
@@ -830,7 +720,8 @@ makeSelectedEndpointChatProvider(ModelBinding binding, LMStudioConfig config, in
 }
 
 QJsonObject geminiFunctionDeclaration(const ToolDescriptor& tool) {
-    auto function = nativeToolDefinition(tool).value(QStringLiteral("function")).toObject();
+    auto function =
+        provider::openAiCompatibleToolDefinition(tool).value(QStringLiteral("function")).toObject();
     const auto schema = function.take(QStringLiteral("parameters"));
     function.insert(QStringLiteral("parametersJsonSchema"), schema);
     return function;
