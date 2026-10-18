@@ -120,3 +120,44 @@ remain required evidence gaps. Exact SHA/component receipts must precede any pro
    Compose a reviewed release manifest only after PD-D01/D02/D03/D04/D06/D07/D10/D11 and other
    applicable decisions close. Keep external component gaps explicit. Signing and native supervisor
    acceptance require separate authorized environments; no release dashboard is proposed here.
+
+## QA-02A bounded fixture collection
+
+Build the existing tests tree, then run `python3 tools/verification/e2e.py`. This fixed allowlist
+executes eight scenario probes, each with a 45-second process deadline and a disposable profile.
+POSIX profiles use a short `/tmp` path to keep nested sockets within `sockaddr_un` limits.
+It inherits only executable lookup and Windows system variables, never provider credentials or
+application configuration. Selected slots spawn no child processes. Python kills and reaps its
+owned test process on timeout. No model server is started or stopped. QtTest owns sockets, workers
+and disposable workspaces; fixtures release their bounded gates before joining workers.
+
+Receipts and sanitized, bounded diagnostics go to a unique ignored
+`build/tests/verification/run-*` directory. Inspect the printed directory; validate its schema,
+provenance, completeness and artifact hashes with:
+
+```sh
+python3 tools/verification/e2e.py --verify build/tests/verification/run-EXAMPLE
+```
+
+The collector uses QA-01's dirty digest and evidence schema. `blocked` and `unverified` extend the
+outcome enum; neither is eligible. Raw Qt outcomes remain visible in diagnostics, including
+SKIP/XFAIL. Exit zero permits explicitly Blocked scenarios; it does not mean eight Passed scenarios.
+Failed or Unverified probes produce nonzero exit. Missing executables produce Blocked receipts.
+The collector reports integration-level synthetic evidence conservatively, even when socket and
+persistence boundaries are real. Agent planner/executor fixtures cannot certify provider-driven
+planning or a production tool implementation. E2E-02, E2E-05 and E2E-07 remain Blocked for the
+complete requested scopes. E2E-04 covers cancellation before authorization, not all cancellation
+races. E2E-01 persists the daemon session projection, not the separate conversation store.
+
+Receipts stay outside the registry so collection never changes its own source digest. Scenario
+mappings do not alter historical criteria, verification or acceptance. Component version records
+in the historical registry must be deliberately rebased to a reviewed candidate before importing
+receipts; the collector never rewrites that provenance. Hashes bind diagnostic and executable
+manifest bytes; the manifest records the exact test binary hash. A successful build before
+collection remains required; a binary hash alone does not prove source-to-binary equivalence.
+
+After a maintainer commits, rebuild and rerun against that exact clean candidate SHA, then verify
+with `--verify` without editing source in between. Dirty-tree receipts become stale after any
+source edit, including the audit report. A pre-commit run never certifies the future commit.
+PD-D10 remains Proposed. Live-provider, native GUI, KDE/Wayland, Windows IPC, physical model leases,
+package installation/upgrade and cross-repository release closure require separate acceptance.

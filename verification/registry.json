@@ -860,6 +860,70 @@
       "scenario": "check_install_manifest.py",
       "scope": "Fedora staged-payload validation definition, not native RPM upgrade acceptance",
       "limitations": "Source-inspected map, not a run receipt"
+    },
+    {
+      "id": "E2E-01",
+      "runner": "python",
+      "source": "tests/core/test_daemon_ipc.cpp",
+      "scenario": "deterministicChatEvents",
+      "scope": "Fixture boundary only; Streaming and persisted projection",
+      "limitations": "Synthetic planner/provider/executor; no native or live acceptance"
+    },
+    {
+      "id": "E2E-02",
+      "runner": "python",
+      "source": "tests/desktop/test_agent_reliability_ipc.cpp",
+      "scenario": "cor17_disconnectReattachDuringActiveRun",
+      "scope": "Fixture boundary only; Blocked: synthetic planner/executor; provider-driven Agent planning not exercised",
+      "limitations": "Synthetic planner/provider/executor; no native or live acceptance"
+    },
+    {
+      "id": "E2E-03",
+      "runner": "python",
+      "source": "tests/desktop/test_agent_reliability_ipc.cpp",
+      "scenario": "e2eDeniedOrCancelledMutation",
+      "scope": "Fixture boundary only; Zero workspace mutation after denial",
+      "limitations": "Synthetic planner/provider/executor; no native or live acceptance"
+    },
+    {
+      "id": "E2E-04",
+      "runner": "python",
+      "source": "tests/desktop/test_agent_reliability_ipc.cpp",
+      "scenario": "e2eDeniedOrCancelledMutation",
+      "scope": "Fixture boundary only; Cancellation while awaiting approval only",
+      "limitations": "Synthetic planner/provider/executor; no native or live acceptance"
+    },
+    {
+      "id": "E2E-05",
+      "runner": "python",
+      "source": "tests/core/test_daemon_ipc.cpp",
+      "scenario": "interruptedRunningRunReconciledOnRestart",
+      "scope": "Fixture boundary only; Blocked: server reconstruction retains controller; no daemon process restart seam",
+      "limitations": "Synthetic planner/provider/executor; no native or live acceptance"
+    },
+    {
+      "id": "E2E-06",
+      "runner": "python",
+      "source": "tests/core/test_daemon_ipc.cpp",
+      "scenario": "disconnectDoesNotCancelChat",
+      "scope": "Fixture boundary only; Reconnect snapshot; synthetic delayed provider",
+      "limitations": "Synthetic planner/provider/executor; no native or live acceptance"
+    },
+    {
+      "id": "E2E-07",
+      "runner": "python",
+      "source": "tests/core/test_daemon_ipc.cpp",
+      "scenario": "completedRunSurvivesDaemonRestart",
+      "scope": "Fixture boundary only; Blocked: projection persistence does not prove conversation cross-session isolation",
+      "limitations": "Synthetic planner/provider/executor; no native or live acceptance"
+    },
+    {
+      "id": "E2E-08",
+      "runner": "python",
+      "source": "tests/desktop/test_agent_reliability_ipc.cpp",
+      "scenario": "cor19_eventSequenceMonotonicAndGenerationFencing",
+      "scope": "Fixture boundary only; Client snapshot, exact mutation and terminal event consistency",
+      "limitations": "Synthetic planner/provider/executor; no native or live acceptance"
     }
   ],
   "features": [
@@ -1375,7 +1439,11 @@
       ],
       "evidence_ids": [],
       "test_ids": [
-        "TEST-IPC"
+        "TEST-IPC",
+        "E2E-01",
+        "E2E-05",
+        "E2E-06",
+        "E2E-08"
       ],
       "source_refs": [
         "apps/sentinel-daemon/service/DaemonIpcServer.cpp"
@@ -1433,7 +1501,9 @@
       ],
       "evidence_ids": [],
       "test_ids": [
-        "TEST-CHAT"
+        "TEST-CHAT",
+        "E2E-01",
+        "E2E-06"
       ],
       "source_refs": [
         "core/src/chat/ChatModeService.cpp"
@@ -1491,7 +1561,10 @@
       ],
       "evidence_ids": [],
       "test_ids": [
-        "TEST-AGENT"
+        "TEST-AGENT",
+        "E2E-02",
+        "E2E-04",
+        "E2E-08"
       ],
       "source_refs": [
         "core/src/agent/AgentRuntime.cpp"
@@ -1549,7 +1622,8 @@
       ],
       "evidence_ids": [],
       "test_ids": [
-        "TEST-TOOLS"
+        "TEST-TOOLS",
+        "E2E-03"
       ],
       "source_refs": [
         "core/src/runtime/ToolExecutionGateway.cpp"
@@ -1607,7 +1681,10 @@
       ],
       "evidence_ids": [],
       "test_ids": [
-        "TEST-APPROVAL"
+        "TEST-APPROVAL",
+        "E2E-02",
+        "E2E-03",
+        "E2E-04"
       ],
       "source_refs": [
         "core/src/runtime/ToolExecutionGateway.cpp"
@@ -1938,7 +2015,8 @@
       ],
       "evidence_ids": [],
       "test_ids": [
-        "TEST-SESSIONS"
+        "TEST-SESSIONS",
+        "E2E-07"
       ],
       "source_refs": [
         "core/src/chat/ChatModeService.cpp"

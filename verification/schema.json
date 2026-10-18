@@ -521,7 +521,9 @@
             "fail",
             "skip",
             "xfail",
-            "unknown"
+            "unknown",
+            "blocked",
+            "unverified"
           ]
         },
         "level": {

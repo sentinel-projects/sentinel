@@ -370,6 +370,9 @@ find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
     add_test(NAME test_verification_registry
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/verification/test_registry.py)
+    add_test(NAME test_verification_e2e_collector
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/verification/test_e2e.py)
+    set_tests_properties(test_verification_e2e_collector PROPERTIES TIMEOUT 30)
     add_test(NAME test_verification_inventory
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/verification/validate.py --format json)
     add_test(NAME test_packaging_contract

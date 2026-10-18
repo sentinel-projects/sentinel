@@ -698,6 +698,8 @@ private slots:
               "Windows named-pipe transport is not implemented (see PD-DWIN-01).");
 #endif
         Harness h(test::DeterministicChatReply::Streaming);
+        const auto dbPath = h.directory.filePath("stream.sqlite3");
+        QVERIFY(h.server->openSessionProjectionStore(dbPath));
         QVERIFY(h.server->startServer(h.path));
         QLocalSocket s;
         hello(s, h.path);
@@ -715,6 +717,19 @@ private slots:
         }
         QVERIFY(completed);
         QCOMPARE(output, QString("SENTINEL_TEST_RESPONSE"));
+        s.abort();
+        h.server->stopServer();
+        h.server.reset();
+        daemon::DaemonIpcServer recovered(h.controller.get());
+        QVERIFY(recovered.openSessionProjectionStore(dbPath));
+        QVERIFY(recovered.startServer(h.path));
+        QLocalSocket fresh;
+        hello(fresh, h.path);
+        const auto snapshot =
+            request(fresh, "session.attach", {{"session_id", created["session_id"]}})["payload"]
+                .toObject();
+        QCOMPARE(snapshot["state"].toString(), QString("completed"));
+        QCOMPARE(snapshot["output"].toString(), output);
     }
     void cancellationHasNoLateCompletion() {
 #ifndef Q_OS_UNIX
@@ -941,7 +956,7 @@ private slots:
         const auto peerUid = daemon::DaemonIpcServer::querySocketPeerUid(fd);
         QVERIFY(peerUid.has_value());
         QCOMPARE(peerUid.value(), ::getuid());
-        const auto created = request(s, "session.create", {{ "title", "Native Auth Session" }});
+        const auto created = request(s, "session.create", {{"title", "Native Auth Session"}});
         QCOMPARE(created.value("type").toString(), QString("response"));
         QVERIFY(!created.value("payload").toObject().value("session_id").toString().isEmpty());
 #else
@@ -1047,10 +1062,9 @@ private slots:
 
         QLocalSocket fastClient;
         hello(fastClient, h.path);
-        const auto created = request(fastClient, "session.create",
-                                     {{ "title",
-                                        "Backpressure Session" }})["payload"]
-                                 .toObject();
+        const auto created =
+            request(fastClient, "session.create", {{"title", "Backpressure Session"}})["payload"]
+                .toObject();
         const auto sessionId = created["session_id"].toString();
         QVERIFY(!sessionId.isEmpty());
         QCOMPARE(request(fastClient, "session.attach",
@@ -1096,17 +1110,16 @@ private slots:
         ::fcntl(slowFd, F_SETFL, O_NONBLOCK);
 
         core::OllamaModelDiscoveryResult catalog;
-        catalog.models = {{ QStringLiteral("sentinel-test-model"), {}, 0 }};
+        catalog.models = {{QStringLiteral("sentinel-test-model"), {}, 0}};
         catalog.lifecycle = core::ChatRequestLifecycle::Completed;
         catalog.errorCategory = core::ChatProviderErrorCategory::None;
         catalog.safeDetail = QStringLiteral("Deterministic test catalog is ready.");
         h.controller->modelService()->acceptOllamaDiscovery(
             catalog, h.controller->modelService()->beginProviderHealthObservation());
 
-        const auto startResp = request(fastClient, "agent.start",
-                                       {{"session_id", sessionId},
-                                        { "text",
-                                          "produce backpressure" }});
+        const auto startResp =
+            request(fastClient, "agent.start",
+                    {{"session_id", sessionId}, {"text", "produce backpressure"}});
         QCOMPARE(startResp["type"].toString(), QString("response"));
         const auto runId = startResp["payload"].toObject()["run_id"].toString();
         QVERIFY(!runId.isEmpty());
