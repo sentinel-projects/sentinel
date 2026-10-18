@@ -6,6 +6,7 @@
 
 #include "sentinel/core/interfaces/IChatProvider.h"
 #include "sentinel/core/model/ModelRouting.h"
+#include "sentinel/core/provider/SelectedEndpointChatProvider.h"
 #include "sentinel/core/runtime/OllamaRuntime.h"
 
 #include <QHash>
@@ -21,8 +22,6 @@ namespace sentinel::core {
 class AppSettings;
 class IModelRouter;
 class ILocalInferenceNetworkFactory;
-// Gemini's full JSON Schema field preserves the authoritative tool contract.
-QJsonObject geminiFunctionDeclaration(const ToolDescriptor& tool);
 struct LMStudioConfig;
 struct ProviderHealthRegistry;
 
