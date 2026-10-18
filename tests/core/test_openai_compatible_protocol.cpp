@@ -46,6 +46,11 @@ class OpenAiCompatibleProtocolTest final : public QObject {
     Q_OBJECT
 
 private slots:
+    void nativeValueNormalization();
+    void nativeContinuationValidation();
+    void nativeResponseMetadata();
+    void objectOnlyDecoding_data();
+    void objectOnlyDecoding();
     void chatPathGeneration_data();
     void chatPathGeneration();
     void requestBodyByteEquivalence_data();
@@ -66,6 +71,110 @@ private slots:
     void localInferenceBodyByteEquivalence_data();
     void localInferenceBodyByteEquivalence();
 };
+
+void OpenAiCompatibleProtocolTest::nativeValueNormalization() {
+    using namespace sentinel::core;
+    using namespace sentinel::core::provider;
+    QCOMPARE(openAiCompatibleFunctionName("read-file"), QString("read-file"));
+    QCOMPARE(openAiCompatibleFunctionName(QString(64, 'a')), QString(64, 'a'));
+    QCOMPARE(openAiCompatibleFunctionName("read file!/unsafe"),
+             QString("tool_2d46bdc68136d0dbc706401fcc2908db3cac482228c7821e"));
+    QVERIFY(openAiCompatibleFunctionName(QString(65, 'a')).startsWith("tool_"));
+    ToolDescriptor tool;
+    tool.id = "read-file";
+    tool.description = QString(201, 'd');
+    tool.parameters = {{"path", "fixture", true}, {"optional", "", false}};
+    auto function = openAiCompatibleToolDefinition(tool).value("function").toObject();
+    QCOMPARE(function.value("description").toString(), QString(200, 'd'));
+    QCOMPARE(function.value("parameters").toObject().value("required").toArray(),
+             QJsonArray{"path"});
+    tool.inputSchema = {{"type", "object"}, {"additionalProperties", false}};
+    QCOMPARE(openAiCompatibleToolDefinition(tool)
+                 .value("function")
+                 .toObject()
+                 .value("parameters")
+                 .toObject(),
+             tool.inputSchema);
+    ChatRequestOptions options;
+    options.nativeToolCalling = true;
+    options.tools = {tool};
+    options.tools[0].enabled = false;
+    options.deadlineMs = 1;
+    options.maxOutputTokens = 77;
+    options.cancellationToken = std::make_shared<std::atomic_bool>(true);
+    const auto request = buildOpenAiCompatibleNativeRequest("model", "prompt", options);
+    QVERIFY(request.error.isEmpty());
+    // Budget, cancellation and capability policy are not performed by this pure builder.
+    QCOMPARE(
+        compactJson(request.body),
+        QByteArray(
+            R"({"messages":[{"content":"prompt","role":"user"}],"model":"model","stream":false})"));
+}
+
+void OpenAiCompatibleProtocolTest::nativeContinuationValidation() {
+    using namespace sentinel::core;
+    using namespace sentinel::core::provider;
+    ChatRequestOptions options;
+    options.structuredOutput = true;
+    options.priorToolCalls = {{"opaque-id", "unregistered", {}}};
+    QCOMPARE(buildOpenAiCompatibleNativeRequest("model", "prompt", options).error,
+             QString("Native tool results are incomplete."));
+    options.toolResults = {{"different-id", "observation"}};
+    QCOMPARE(buildOpenAiCompatibleNativeRequest("model", "prompt", options).error,
+             QString("Native tool result IDs do not match."));
+    options.toolResults[0].callId = "opaque-id";
+    QCOMPARE(buildOpenAiCompatibleNativeRequest("model", "prompt", options).error,
+             QString("Structured planner schema is missing."));
+    options.structuredOutput = false;
+    auto request = buildOpenAiCompatibleNativeRequest("model", "prompt", options);
+    QVERIFY(request.error.isEmpty()); // Registration is intentionally the adapter/gateway's job.
+    QCOMPARE(request.body.value("messages").toArray().size(), 3);
+    options.priorToolCalls.clear();
+    request = buildOpenAiCompatibleNativeRequest("model", "prompt", options);
+    QVERIFY(request.error.isEmpty()); // Preserve legacy orphan-result behavior.
+    QCOMPARE(request.body.value("messages").toArray().size(), 1);
+}
+
+void OpenAiCompatibleProtocolTest::nativeResponseMetadata() {
+    using namespace sentinel::core::provider;
+    QVERIFY(!normalizeOpenAiCompatibleNativeResponse({}).hasChoices);
+    const auto opaque = normalizeOpenAiCompatibleNativeResponse({{"choices", QJsonArray{7}}});
+    QVERIFY(opaque.hasChoices);
+    QVERIFY(opaque.text.isEmpty());
+    const auto body =
+        QJsonDocument::fromJson(
+            R"({"choices":[{"finish_reason":"length","message":{"content":"é","tool_calls":[{"function":{"name":"read-file","arguments":"{}"}},{"id":"duplicate","function":{}},{"id":"duplicate","function":{}}]}}],"usage":{"prompt_tokens":1.5,"completion_tokens":-1,"total_tokens":"7","completion_tokens_details":{"reasoning_tokens":0}},"private":"not-diagnostic"})")
+            .object();
+    const auto response = normalizeOpenAiCompatibleNativeResponse(body);
+    QVERIFY(response.outputLimit);
+    QCOMPARE(response.text, QString::fromUtf8("é"));
+    QCOMPARE(response.diagnostics.value("response_content_bytes").toInt(), 2);
+    QCOMPARE(response.diagnostics.value("prompt_tokens").toDouble(), 1.5);
+    QVERIFY(!response.diagnostics.contains("completion_tokens"));
+    QVERIFY(!response.diagnostics.contains("total_tokens"));
+    QVERIFY(!response.diagnostics.contains("private"));
+    QCOMPARE(response.toolCalls.size(), 3);
+    QVERIFY(response.toolCalls.first().callId.isEmpty()); // Never synthesize OpenAI IDs.
+    QCOMPARE(response.toolCalls[1].callId, response.toolCalls[2].callId);
+}
+
+void OpenAiCompatibleProtocolTest::objectOnlyDecoding_data() {
+    QTest::addColumn<QString>("text");
+    QTest::addColumn<bool>("valid");
+    QTest::newRow("object") << QString("{\"value\":2}") << true;
+    QTest::newRow("empty-object") << QString("{}") << true;
+    QTest::newRow("array") << QString("[]") << false;
+    QTest::newRow("null") << QString("null") << false;
+    QTest::newRow("empty") << QString("") << false;
+    QTest::newRow("invalid") << QString("{broken") << false;
+    QTest::newRow("trailing-data") << QString("{} trailing") << false;
+}
+
+void OpenAiCompatibleProtocolTest::objectOnlyDecoding() {
+    QFETCH(QString, text);
+    QFETCH(bool, valid);
+    QCOMPARE(sentinel::core::provider::parseOpenAiCompatibleJsonObject(text).has_value(), valid);
+}
 
 void OpenAiCompatibleProtocolTest::chatPathGeneration_data() {
     QTest::addColumn<QString>("endpoint");
