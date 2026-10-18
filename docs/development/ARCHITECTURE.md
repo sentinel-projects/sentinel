@@ -39,6 +39,9 @@ lives in `core/provider/SelectedEndpointChatProvider`, composed through a narrow
 `IChatProvider`. It owns request execution and protocol-specific continuation/response handling;
 ModelService retains selection, binding, configuration, health and capability orchestration.
 It reuses the existing LocalInference transport and protocol modules rather than creating vendor
-HTTP engines. See the [P2-M06 audit](../audits/P2_M06_SHARED_ENDPOINT_ADAPTER_EXTRACTION_RESULT.md).
+HTTP engines. OpenAI-compatible native request/continuation serialization, shared function-name/tool
+schema conversion, first-choice/usage normalization and object-only JSON decoding live in the
+existing OpenAiCompatibleProtocol module. The adapter retains capability/registration policy,
+request budgets, transport execution, lifecycle/error mapping and native Claude/Gemini orchestration. See the [P2-M06 audit](../audits/P2_M06_SHARED_ENDPOINT_ADAPTER_EXTRACTION_RESULT.md).
 
 Hardware capability facts and model-fit estimates exist, but a continuous CPU/RAM/GPU pressure-driven adaptive resource policy is not implemented. Linux global Quick Panel shortcuts use the session-bus GlobalShortcuts portal when the backend confirms a binding; unavailable portals and refused bindings remain unavailable. Native KDE/Wayland registration and focus acceptance remain unverified (see the [P6-04 report](../audits/P6_04_KDE_WAYLAND_NATIVE_INTEGRATION_RESULT.md)). Daemon clipboard tools require a GUI and are unavailable in the headless process; Linux application launching is explicitly unsupported. Native platform behavior remains subject to acceptance, including Rust Windows named-pipe transport, which is not implemented. Public distribution blockers remain in the [SEC-P1 register](SEC_P1_4_GITHUB_HARDENING_REPORT.md#5-consolidated-blocker-register).
