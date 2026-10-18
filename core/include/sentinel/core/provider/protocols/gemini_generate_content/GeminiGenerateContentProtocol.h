@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "sentinel/core/runtime/OllamaRuntime.h"
+
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
@@ -111,5 +113,10 @@ struct GeminiFunctionResult {
 // echoed to the provider; provider-supplied ids are forwarded verbatim.
 QJsonArray geminiFunctionResponseParts(const QList<GeminiFunctionResult>& results,
                                        int maxContentLength = 6800);
+
+// Pure discovery payload normalization. nullopt rejects the whole malformed catalog;
+// a present empty list is valid. Pagination metadata is intentionally ignored,
+// matching the existing single-response discovery contract. No network/policy access.
+std::optional<QList<OllamaModelSummary>> parseGeminiModelCatalog(const QJsonObject& body);
 
 } // namespace sentinel::core::provider
