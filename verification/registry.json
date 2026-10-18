@@ -872,10 +872,10 @@
     {
       "id": "E2E-02",
       "runner": "python",
-      "source": "tests/desktop/test_agent_reliability_ipc.cpp",
-      "scenario": "cor17_disconnectReattachDuringActiveRun",
-      "scope": "Fixture boundary only; Blocked: synthetic planner/executor; provider-driven Agent planning not exercised",
-      "limitations": "Synthetic planner/provider/executor; no native or live acceptance"
+      "source": "tests/desktop/test_provider_agent_e2e.cpp",
+      "scenario": "providerDrivenChain",
+      "scope": "Bounded scripted-provider IPC/application/LLM planner/AgentLoop/production gateway/real filesystem executor/persistence chain with seven positive and adverse rows",
+      "limitations": "Synthetic inference, in-process daemon service; no whole-process restart, cross-session isolation or native/live acceptance"
     },
     {
       "id": "E2E-03",

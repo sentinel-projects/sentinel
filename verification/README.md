@@ -144,9 +144,13 @@ outcome enum; neither is eligible. Raw Qt outcomes remain visible in diagnostics
 SKIP/XFAIL. Exit zero permits explicitly Blocked scenarios; it does not mean eight Passed scenarios.
 Failed or Unverified probes produce nonzero exit. Missing executables produce Blocked receipts.
 The collector reports integration-level synthetic evidence conservatively, even when socket and
-persistence boundaries are real. Agent planner/executor fixtures cannot certify provider-driven
-planning or a production tool implementation. E2E-02, E2E-05 and E2E-07 remain Blocked for the
-complete requested scopes. E2E-04 covers cancellation before authorization, not all cancellation
+persistence boundaries are real. QA-02B maps E2E-02 to seven scripted-provider rows through
+production LlmAgentRuntime, AgentLoop, ToolExecutionGateway and RealToolExecutor. Independently
+checked file bytes/hashes, persisted tool counts, accepted final and SQLite conversation/projection
+oracles are required; their bounded JSON manifest is hashed beside diagnostics and binary manifests.
+Missing/partial/corrupt oracles cannot become Passed. E2E-05 and E2E-07 remain Blocked for their
+complete requested scopes; recreating the server while retaining the controller is supporting
+stale-approval evidence, not a daemon process restart or session-isolation oracle. E2E-04 covers cancellation before authorization, not all cancellation
 races. E2E-01 persists the daemon session projection, not the separate conversation store.
 
 Receipts stay outside the registry so collection never changes its own source digest. Scenario
