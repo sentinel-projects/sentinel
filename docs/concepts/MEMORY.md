@@ -54,3 +54,66 @@ Old key/value backups can be imported into an empty store as unclassified Legacy
 data; they cannot overwrite managed records. There is no automatic durable
 promotion, embedding/indexing, or Personal sharing change. P8-02's fail-closed image
 token accounting limitation remains unchanged.
+
+## Ranked scoped retrieval and index lifecycle (P8-04)
+
+Schema 6 adds an optional FTS5 projection `scoped_memory_search` in the existing
+memory database. Three SQLite triggers update only the affected projection row in
+the same transaction as a scoped insert/update/delete. This includes correction,
+scope moves (delete/insert), imports and clears. Legacy FTS remains a separate
+compatibility index and never supplies automatic Chat/Agent memory.
+
+Scoped SQL authority is applied before candidate delivery or lexical scoring. A
+trusted `retrievalScope` can only restrict an existing MemoryAccessContext; it cannot
+add authority. Candidate discovery considers at most six terms and returns at most
+200 source records. It combines literal substring matches with optional FTS token
+matches, always joining/filtering the authoritative scoped source. FTS bm25 is not
+used: global corpus statistics must not become a cross-scope scoring signal. SQL
+prioritizes literal exact keys and phrases before recency when preparing this bounded
+pool. This is bounded relevance selection, not an exhaustive global top-k guarantee.
+
+Within that pool, shared deterministic integer **lexical** scoring uses case-folded,
+whitespace-simplified text: exact key +10000; key phrase +1200; value phrase +600;
+per-term key hit +80 and value hit +20; full term coverage +200. Equal scores resolve
+by Session/Project/explicit Personal scope, modification time descending, then UUID
+ascending. Recency/provenance never grant authority or turn generated data into user
+statements. SQLite LIKE/lower fallback retains SQLite's ASCII case behavior; Qt
+case-folding is used after candidate discovery, and ready FTS5 additionally supplies
+Unicode token matches. No stemming, semantic equivalence or complete Unicode recall
+is promised by the fallback. Empty queries return bounded recent scoped candidates.
+
+Chat preserves this ranking as optional-memory priority inside ContextBudgetManager.
+ContextEngine keeps ranked order instead of reordering every Session record above
+an exact Project hit. Existing complete-item omission, output reserve, ModelBinding,
+request identity, image refusal, mandatory security/evidence admission and AgentLoop
+completion acceptance remain unchanged. No embeddings, provider calls, compaction
+or durable summary promotion are activated. The older SemanticRetrieval component
+contains explicit fake/test and metadata overlap simulations and an opt-in provider
+adapter; none of those scores are used as production scoped semantic measurements.
+Semantic similarity remains explicitly unavailable/null in this path.
+
+Index status is Ready, Stale, Unavailable, or Direct (the locked InMemoryStore has no
+persistent index). Status verifies the optional FTS module with a read-only query,
+trigger definitions, authorized source/projection UUID/revision/content/ownership
+consistency and authorized orphan entries. It exposes no foreign counts, query text,
+values or similarity diagnostics. A stale/missing/failed index uses authoritative
+lexical fallback and reports its state, rather than returning unrestricted memory.
+An unusable source record is an explicit InvalidInput result.
+
+The Memory page offers ranked recall preview with exact/phrase/term explanations and
+index status. Explicit confirmed REFRESH repairs at most 100 authorized source rows
+and 100 authorized orphan projection rows per transaction. It does not edit memory
+facts or receipts. A missing FTS table/triggers can be recreated, while incompatible
+FTS/module failures stay unavailable. No full index rebuild runs after every mutation;
+there is no polling, background worker, embedding job or automatic retention deletion.
+Missing revisions determine the next repair batch, so a restart resumes deterministically
+without a volatile cursor. Migration adds the projection without an unbounded startup
+backfill; existing scoped data uses fallback until explicit bounded refresh completes.
+
+Health and candidate SQL may scan authorized rows to validate consistency; the
+candidate/result and repair row counts are bounded, not a hard CPU/deadline guarantee.
+The read-only FTS probe is not a comprehensive physical database integrity certification.
+Severe SQLite/FTS corruption can remain unavailable for a separately reviewed recovery
+migration. The 500-record/96-KiB archive, 64-receipt limit, combined-backup block and
+cross-process archive snapshot limitation remain for P8-05; import trigger maintenance
+is atomic with existing scope-preserving transactional restore.

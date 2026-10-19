@@ -153,6 +153,7 @@ private slots:
     void geminiPreservesAuthoritativeJsonSchema();
     void responseProfileChangesRequestWithoutChangingUserMessage();
     void scopedMemoryControlsProductionPrompt();
+    void rankedMemoryDrivesProductionPrompt();
     void managedCorrectionsAndDeletionAffectSubsequentRequests();
     void shortPromptCharacterization();
     void largeHistoryPreservesActiveAndReportsReduction();
@@ -284,6 +285,36 @@ void ChatModeServiceTest::managedCorrectionsAndDeletionAffectSubsequentRequests(
     for (const auto& item : ContextEngine{}.build(input).items) {
         QVERIFY(item.kind != AgentContextKind::Memory);
     }
+}
+
+void ChatModeServiceTest::rankedMemoryDrivesProductionPrompt() {
+    Harness h(FixtureProvider::ReplyMode::EchoPrompt);
+    InMemoryStore memory;
+    MemoryAccessContext authority{h.conversationId, "p1", {"p1"}, false};
+    const auto exact =
+        memory
+            .writeScopedMemory({MemoryScope::Project, "release checklist", "verified release steps",
+                                MemoryProvenance::GeneratedSummary, "summary:original"},
+                               authority)
+            .records.first();
+    for (int i = 0; i < 12; ++i) {
+        memory.writeScopedMemory(
+            {MemoryScope::Session, QString("partial%1").arg(i), "release only"}, authority);
+    }
+    memory.put("release checklist", "LEGACY_P804_SECRET");
+    memory.writeScopedMemory({MemoryScope::Project, "release checklist", "FOREIGN_P804_SECRET"},
+                             {"other", "p2", {"p2"}, false});
+    ChatModeService service(h.models, h.session, h.store);
+    service.setScopedMemory(&memory, [&](const QString&) { return authority; });
+    QVERIFY(service.send(h.conversationId, "release checklist", {}, {"ollama", "fixture"}));
+    QTRY_VERIFY(!service.busy());
+    const auto prompt = h.session.messages().last().content;
+    QVERIFY(prompt.startsWith("Retrieved scoped memory"));
+    QVERIFY(prompt.contains(exact.id));
+    QVERIFY(prompt.contains("generated-summary"));
+    QVERIFY(!prompt.contains("LEGACY_P804_SECRET"));
+    QVERIFY(!prompt.contains("FOREIGN_P804_SECRET"));
+    QVERIFY(prompt.indexOf(exact.id) < prompt.indexOf("partial"));
 }
 
 void ChatModeServiceTest::scopedMemoryControlsProductionPrompt() {

@@ -331,6 +331,19 @@ private slots:
                                &sentinel::core::ApplicationController::memoryRecallChanged);
         QCOMPARE(call(make).value("status").toString(), QString("Ready"));
         QVERIFY(!invalidated.isEmpty());
+        const auto ranked = call({{"operation", "search"}, {"scope", 1}, {"search", "orchid"}});
+        QCOMPARE(ranked.value("status").toString(), QString("Ready"));
+        QCOMPARE(ranked.value("semantic").toString(), QString("Unavailable"));
+        const auto relevance =
+            ranked.value("records").toList().first().toMap().value("relevance").toMap();
+        QVERIFY(relevance.value("exactKey").toBool());
+        QVERIFY(relevance.value("semanticSimilarity").isNull());
+        auto refresh = base;
+        refresh["operation"] = "refreshIndex";
+        QCOMPARE(call(refresh).value("status").toString(), QString("InvalidInput"));
+        refresh["confirmed"] = true;
+        refresh["confirmation"] = "REFRESH";
+        QCOMPARE(call(refresh).value("status").toString(), QString("Ready"));
         listed = call({{"operation", "list"}, {"scope", 1}});
         auto row = listed.value("records").toList().first().toMap();
         auto exported = call({{"operation", "export"}, {"scope", 1}});

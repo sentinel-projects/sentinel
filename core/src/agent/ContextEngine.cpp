@@ -279,9 +279,6 @@ AgentPlanningContext ContextEngine::build(const AgentContextInput& input) const 
             : ScopedMemoryResult{};
     auto memories = memoryResult.status == ScopedMemoryStatus::Ready ? memoryResult.records
                                                                      : QList<ScopedMemoryRecord>{};
-    std::stable_sort(memories.begin(), memories.end(), [](const auto& a, const auto& b) {
-        return static_cast<int>(a.scope) < static_cast<int>(b.scope);
-    });
     for (const auto& entry : memories) {
         AgentContextItem item{AgentContextKind::Memory, AgentContextPriority::Normal, entry.id,
                               ContextBudgetManager::memoryItem(entry, input.memoryAccess).text,

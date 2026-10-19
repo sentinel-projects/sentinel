@@ -164,11 +164,9 @@ ContextBudgetResult ChatModeService::contextFor(const QString& conversationId, i
             identity.workspaceId = access.workspaceId;
             const auto memory = memory_->retrieveMemory(query, access, 8);
             if (memory.status == ScopedMemoryStatus::Ready) {
+                int priority = 500;
                 for (const auto& record : memory.records) {
-                    const int priority = record.scope == MemoryScope::Session   ? 500
-                                         : record.scope == MemoryScope::Project ? 400
-                                                                                : 300;
-                    items.append(ContextBudgetManager::memoryItem(record, access, priority));
+                    items.append(ContextBudgetManager::memoryItem(record, access, priority--));
                 }
             }
         }

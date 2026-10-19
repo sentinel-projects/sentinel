@@ -52,6 +52,12 @@ public:
                                               int = 10) const {
         return {};
     }
+    virtual MemoryIndexStatus memoryIndexStatus(const MemoryAccessContext&) const {
+        return {};
+    }
+    virtual MemoryIndexStatus refreshMemoryIndex(const MemoryAccessContext&, int = 100) {
+        return {};
+    }
     virtual MemoryManagementResult listManagedMemory(const MemoryPageQuery&,
                                                      const MemoryManagementContext&) const {
         return {};

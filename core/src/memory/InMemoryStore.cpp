@@ -112,6 +112,9 @@ ScopedMemoryResult InMemoryStore::retrieveMemory(const QString& text,
     ScopedMemoryResult result{ScopedMemoryStatus::Ready, {}};
     const auto terms = scopedMemoryQueryTerms(text);
     for (const auto& record : scoped_) {
+        if (!visibleMemory(record, context)) {
+            continue;
+        }
         const bool matches =
             terms.isEmpty() || std::any_of(terms.cbegin(), terms.cend(), [&](const auto& term) {
                 return record.key.contains(term, Qt::CaseInsensitive) ||
@@ -121,11 +124,27 @@ ScopedMemoryResult InMemoryStore::retrieveMemory(const QString& text,
             result.records.append(record);
         }
     }
-    std::sort(result.records.begin(), result.records.end(), [](const auto& a, const auto& b) {
+    const auto phrase = text.simplified();
+    std::sort(result.records.begin(), result.records.end(), [&](const auto& a, const auto& b) {
+        const auto priority = [&](const auto& r) {
+            return (r.key.compare(phrase, Qt::CaseInsensitive) == 0 ? 4 : 0) +
+                   (r.key.contains(phrase, Qt::CaseInsensitive) ? 2 : 0) +
+                   (r.value.contains(phrase, Qt::CaseInsensitive) ? 1 : 0);
+        };
+        if (priority(a) != priority(b)) {
+            return priority(a) > priority(b);
+        }
         return a.updatedAtUtc == b.updatedAtUtc ? a.id < b.id : a.updatedAtUtc > b.updatedAtUtc;
     });
-    result.records = result.records.mid(0, qBound(1, limit, 50));
-    return result;
+    return rankScopedMemory(result.records.mid(0, memoryCandidateLimit), text, limit,
+                            {MemoryIndexState::Direct});
+}
+MemoryIndexStatus InMemoryStore::memoryIndexStatus(const MemoryAccessContext& c) const {
+    return authorizedMemoryContext(c) ? MemoryIndexStatus{MemoryIndexState::Direct}
+                                      : MemoryIndexStatus{};
+}
+MemoryIndexStatus InMemoryStore::refreshMemoryIndex(const MemoryAccessContext& c, int limit) {
+    return limit > 0 && limit <= 100 ? memoryIndexStatus(c) : MemoryIndexStatus{};
 }
 
 bool InMemoryStore::hasScopedMemory() const {

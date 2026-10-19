@@ -63,7 +63,8 @@ QVariantMap ApplicationController::manageMemory(const QVariantMap& request) {
         return answer("Unauthorized");
     }
     const auto op = input.value("operation").toString();
-    const bool reading = op == "list" || op == "read" || op == "export";
+    const bool reading =
+        op == "list" || op == "read" || op == "export" || op == "search" || op == "indexStatus";
     if (!reading && (input.value("session").toString() != context.access.sessionId ||
                      input.value("workspace").toString() != context.access.workspaceId)) {
         return answer("Conflict");
@@ -74,7 +75,59 @@ QVariantMap ApplicationController::manageMemory(const QVariantMap& request) {
         emit memoryRecallChanged();
         emit contextAssemblyChanged();
     };
+    if (op == "search" || op == "indexStatus" || op == "refreshIndex") {
+        if (scope == MemoryScope::Legacy) {
+            return answer("Unauthorized");
+        }
+        context.access.retrievalScope = scope;
+        if (op == "refreshIndex" &&
+            (!input.value("confirmed").toBool() || input.value("confirmation") != "REFRESH")) {
+            return answer("InvalidInput");
+        }
+        auto index = op == "refreshIndex"  ? memoryStore_->refreshMemoryIndex(context.access, 100)
+                     : op == "indexStatus" ? memoryStore_->memoryIndexStatus(context.access)
+                                           : MemoryIndexStatus{};
+        QJsonObject data{{"index", memoryIndexStateName(index.state)},
+                         {"semantic", "Unavailable"},
+                         {"refreshed", index.refreshed},
+                         {"session", context.access.sessionId},
+                         {"workspace", context.access.workspaceId}};
+        if (op == "search") {
+            if (input.value("search").toString().size() > 256) {
+                return answer("InvalidInput");
+            }
+            const auto found =
+                memoryStore_->retrieveMemory(input.value("search").toString(), context.access, 10);
+            QJsonArray rows;
+            for (int i = 0; i < found.records.size(); ++i) {
+                auto row = managedMemoryJson(found.records[i], true);
+                if (i < found.relevance.size()) {
+                    const auto rank = found.relevance[i];
+                    row["relevance"] = QJsonObject{{"lexicalScore", rank.lexicalScore},
+                                                   {"exactKey", rank.exactKey},
+                                                   {"phrase", rank.phrase},
+                                                   {"matchedTerms", rank.matchedTerms},
+                                                   {"totalTerms", rank.totalTerms},
+                                                   {"semanticSimilarity", QJsonValue::Null}};
+                }
+                rows.append(row);
+            }
+            data["records"] = rows;
+            data["nextCursor"] = "";
+            data["index"] = memoryIndexStateName(found.index.state);
+            data["candidatesExamined"] = found.candidatesExamined;
+            data["candidateLimitReached"] = found.candidateLimitReached;
+            return answer(found.status == ScopedMemoryStatus::Ready          ? "Ready"
+                          : found.status == ScopedMemoryStatus::Unauthorized ? "Unauthorized"
+                          : found.status == ScopedMemoryStatus::InvalidInput ? "InvalidInput"
+                                                                             : "Unavailable",
+                          data);
+        }
+        return answer(index.state == MemoryIndexState::Unavailable ? "Unavailable" : "Ready", data);
+    }
     if (op == "list") {
+        auto listingAccess = context.access;
+        listingAccess.retrievalScope = scope;
         const auto page = memoryStore_->listManagedMemory(
             {scope, input.value("search").toString(), input.value("cursor").toString(), 10},
             context);
@@ -84,6 +137,11 @@ QVariantMap ApplicationController::manageMemory(const QVariantMap& request) {
         }
         return answer(memoryManagementStatusName(page.status),
                       {{"records", rows},
+                       {"index", scope == MemoryScope::Legacy
+                                     ? QStringLiteral("Unavailable")
+                                     : memoryIndexStateName(
+                                           memoryStore_->memoryIndexStatus(listingAccess).state)},
+                       {"semantic", "Unavailable"},
                        {"nextCursor", page.nextCursor},
                        {"session", context.access.sessionId},
                        {"workspace", context.access.workspaceId}});

@@ -160,3 +160,29 @@ and clears its state when conversation/workspace changes. Memory replies refresh
 projections without reattaching or redirecting the current session. Archive and
 value bounds preserve the existing IPC frame limit; no streamed model/provider
 request is introduced.
+
+### P8-04 retrieval and index operations
+
+The existing typed `manageMemory` action additionally accepts `operation:"search"`,
+`"indexStatus"` and `"refreshIndex"`; no new wire command or method signature was
+introduced. Existing canonical IPC/bridge generators remain authoritative and pass
+`--check`. These operations keep the same active session/workspace and explicit
+Personal management rules; Legacy ranked recall/index operations are refused.
+
+`search` accepts `scope` and `search` (at most 256 characters), returning up to ten
+ranked record previews. Each result's `relevance` contains integer `lexicalScore`,
+`exactKey`, `phrase`, `matchedTerms`, `totalTerms` and null `semanticSimilarity`.
+The reply also contains `candidatesExamined` (at most 200), `candidateLimitReached`,
+`index`, `semantic:"Unavailable"` and actual session/workspace identity. Scores only
+explain authorized lexical candidates; serialized fields do not grant access.
+There is no ranked cursor: the page shows the top bounded recall preview; management
+inventory keeps the existing UUID keyset pagination.
+
+`indexStatus` returns the authorized index state without content/counts from foreign
+scopes. Ordinary scoped inventory also returns the selected scope's index state.
+`refreshIndex` requires current mutation `session`/`workspace`, `confirmed:true` and
+`confirmation:"REFRESH"`, and returns `index` and `refreshed`. One batch repairs at
+most 100 source and 100 orphan projection rows in a transaction. Stale means more
+work remains or hooks are inconsistent; unavailable means unsupported/unusable index
+or storage. No background refresh or job polling is implied. Existing Cancel-first
+DELETE/MOVE confirmations are preserved; index refresh also defaults to Cancel.

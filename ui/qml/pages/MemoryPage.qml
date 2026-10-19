@@ -20,6 +20,8 @@ FocusScope {
     property string pendingTag: ""
     property string pendingOp: ""
     property int generation: 0
+    property string indexStatus: "Unavailable"
+    property bool rankedSearch: false
     property bool busy: false
     property bool initialized: false
     readonly property string activeConversation: viewModel.activeConversationId || ""
@@ -39,7 +41,7 @@ FocusScope {
 
     function resetScope() {
         if (!initialized) return
-        generation++; busy = false; pendingTag = ""; rows = []; selected = ({}); cursor = ""; nextCursor = "";
+        generation++; busy = false; pendingTag = ""; rows = []; indexStatus = "Unavailable"; selected = ({}); cursor = ""; nextCursor = "";
         session = ""; workspace = ""; editor.close(); confirmation.close(); importConfirm.close();
         if (visible) refresh("")
     }
@@ -51,7 +53,7 @@ FocusScope {
         for (let key in extra) payload[key] = extra[key]
         viewModel.manageMemory(payload)
     }
-    function refresh(after) { cursor = after; request("list", {search: search.text, cursor: after}) }
+    function refresh(after) { cursor = after; request(rankedSearch && scope !== 0 ? "search" : "list", {search: search.text, cursor: after}) }
     function describe(code) {
         if (code === "Ready") return rows.length ? qsTr("Authorized records") : qsTr("No authorized records in this scope.")
         if (code === "Conflict") return qsTr("The record or active context changed. Reload before trying again. No overwrite was applied.")
@@ -72,16 +74,20 @@ FocusScope {
             root.busy = false
             const operation = root.pendingOp
             root.status = root.describe(result.status)
+            if (result.index !== undefined) root.indexStatus = result.index
             if (result.status !== "Ready") return
-            if (operation === "list") {
+            if (operation === "list" || operation === "search") {
                 root.rows = result.records || []; root.nextCursor = result.nextCursor || ""; root.session = result.session; root.workspace = result.workspace; root.selected = ({});
-                root.status = root.describe("Ready")
+                root.status = root.describe("Ready") + (operation === "search" ? qsTr(" · Lexical ranking; %1 candidates examined%2. Semantic similarity unavailable.").arg(result.candidatesExamined).arg(result.candidateLimitReached ? qsTr(" (candidate cap reached)") : "") : "")
             } else if (operation === "read") {
                 const record = result.record
                 if (record.revision !== root.editing.revision) { root.status = root.describe("Conflict"); return }
                 root.loadedValue += record.value
                 if (root.loadedValue.length < record.valueLength) { root.request("read", {id: record.id, offset: root.loadedValue.length}); return }
                 root.editing = record; valueField.text = root.loadedValue; editor.open()
+            } else if (operation === "refreshIndex") {
+                confirmation.close()
+                root.status = qsTr("Index: %1. %2 projection rows refreshed. Repeat a batch if stale; stored memory is unchanged.").arg(result.index).arg(result.refreshed)
             } else if (operation === "export") {
                 root.exportData = result.archive; saveArchive.open(); root.status = qsTr("Choose where to save this scope archive.")
             } else {
@@ -102,6 +108,8 @@ FocusScope {
             ComboBox { id: scopeChoice; objectName: "memoryScopeChoice"; width: 150; model: [qsTr("Session"), qsTr("Project"), qsTr("Personal"), qsTr("Legacy")]; onActivated: { personalConsent.checked = false; root.resetScope() } }
             TextField { id: search; objectName: "memorySearch"; width: 220; maximumLength: 256; placeholderText: qsTr("Search this scope"); onAccepted: root.refresh("") }
             Button { objectName: "memoryReload"; text: qsTr("Reload"); enabled: !root.busy; onClicked: root.refresh("") }
+            CheckBox { objectName: "memoryRankedSearch"; text: qsTr("Ranked recall preview"); enabled: !root.busy && root.scope !== 0; onToggled: { root.rankedSearch = checked; root.refresh("") } }
+            Button { objectName: "memoryRefreshIndex"; text: qsTr("Refresh index batch"); enabled: !root.busy && root.session.length > 0 && root.scope !== 0; onClicked: { root.destructiveOp = "refreshIndex"; confirmation.open() } }
             Button { objectName: "memoryCreate"; text: qsTr("New memory"); enabled: !root.busy && root.session.length > 0 && root.scope !== 0; onClicked: { root.editing = ({}); keyField.text = ""; valueField.text = ""; editor.open() } }
             Button { text: qsTr("Export this scope"); enabled: !root.busy && root.session.length > 0; onClicked: root.request("export", {}) }
             Button { text: qsTr("Import archive…"); enabled: !root.busy && root.session.length > 0; onClicked: openArchive.open() }
@@ -111,6 +119,7 @@ FocusScope {
         CheckBox { id: personalConsent; objectName: "memoryPersonalConsent"; visible: root.scope === 3; text: qsTr("I explicitly authorize Personal memory management in this profile (recall stays off)"); onToggled: root.resetScope() }
         Label { Layout.fillWidth: true; wrapMode: Text.WrapAnywhere; textFormat: Text.PlainText; color: SentinelTheme.textMuted; text: qsTr("Conversation: %1 · Workspace: %2").arg(root.session || qsTr("Unavailable")).arg(root.workspace || qsTr("None")) }
         Label { objectName: "memoryStatus"; Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: root.status; color: SentinelTheme.textPrimary; Accessible.role: Accessible.AlertMessage }
+        Label { objectName: "memoryIndexStatus"; Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; text: qsTr("Search index: %1 · Semantic similarity unavailable. Stale/unavailable indexes use authorized lexical fallback. Refresh is explicit and bounded.").arg(root.indexStatus); color: SentinelTheme.textMuted }
         BusyIndicator { running: root.busy; visible: root.busy; Layout.preferredHeight: 24 }
         ListView {
             id: list
@@ -134,6 +143,8 @@ FocusScope {
                         id: detail; Layout.fillWidth: true
                         Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: entry.modelData.key; color: SentinelTheme.textPrimary; wrapMode: Text.WrapAnywhere; font.bold: true }
                         Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: entry.modelData.value; maximumLineCount: 2; elide: Text.ElideRight; color: SentinelTheme.textMuted; wrapMode: Text.WrapAnywhere }
+                        Label { Layout.fillWidth: true; visible: !!entry.modelData.relevance; textFormat: Text.PlainText; wrapMode: Text.WordWrap; color: SentinelTheme.textMuted
+                            text: entry.modelData.relevance ? qsTr("Lexical score %1 · Exact key: %2 · Phrase: %3 · Terms: %4/%5 · Semantic: unavailable").arg(entry.modelData.relevance.lexicalScore).arg(entry.modelData.relevance.exactKey).arg(entry.modelData.relevance.phrase).arg(entry.modelData.relevance.matchedTerms).arg(entry.modelData.relevance.totalTerms) : "" }
                         Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: root.provenanceNames[entry.modelData.provenance] + " · " + entry.modelData.id; color: SentinelTheme.textMuted; wrapMode: Text.WrapAnywhere }
                     }
                     Button { objectName: "memoryInspectRecord"; text: qsTr("Inspect / edit"); enabled: !root.busy; onClicked: root.edit(entry.modelData) }
@@ -173,18 +184,18 @@ FocusScope {
     }
     Dialog {
         id: confirmation; objectName: "memoryDestructiveConfirmation"; parent: Overlay.overlay; anchors.centerIn: parent; modal: true
-        width: Math.min(560, root.width - 24); title: root.destructiveOp === "move" ? qsTr("Explicit scope migration") : qsTr("Confirm deletion")
+        width: Math.min(560, root.width - 24); title: root.destructiveOp === "refreshIndex" ? qsTr("Confirm bounded index refresh") : root.destructiveOp === "move" ? qsTr("Explicit scope migration") : qsTr("Confirm deletion")
         onOpened: { confirmText.text = ""; movePersonal.checked = false; cancelDestructive.forceActiveFocus(Qt.PopupFocusReason) }
         onClosed: { if (editor.visible) keyField.forceActiveFocus(Qt.PopupFocusReason); else scopeChoice.forceActiveFocus(Qt.PopupFocusReason) }
         contentItem: ColumnLayout {
             Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; textFormat: Text.PlainText; color: SentinelTheme.textPrimary
-                text: qsTr("Scope: %1. This action affects stored memory only. It does not retract data sent to providers, erase historical backups or promise physical secure erasure. A scope move requires both source and destination authorization.").arg(root.scopeNames[root.scope]) }
+                text: root.destructiveOp === "refreshIndex" ? qsTr("Refresh only the authorized scope index in bounded batches. No memory content is changed, no embeddings are generated. Type REFRESH to proceed.") : qsTr("Scope: %1. This action affects stored memory only. It does not retract data sent to providers, erase historical backups or promise physical secure erasure. A scope move requires both source and destination authorization.").arg(root.scopeNames[root.scope]) }
             ComboBox { id: destination; visible: root.destructiveOp === "move"; model: [qsTr("Session"), qsTr("Project"), qsTr("Personal")] }
             CheckBox { id: movePersonal; visible: root.destructiveOp === "move" && destination.currentIndex === 2; text: qsTr("Explicitly authorize this Personal destination only") }
-            TextField { id: confirmText; objectName: "memoryConfirmationText"; Layout.fillWidth: true; placeholderText: qsTr("Type DELETE to delete, or MOVE to change scope") }
+            TextField { id: confirmText; objectName: "memoryConfirmationText"; Layout.fillWidth: true; placeholderText: qsTr("Type DELETE, MOVE or REFRESH for the selected action") }
             RowLayout {
                 Button { id: cancelDestructive; objectName: "memoryCancelDestructive"; text: qsTr("Cancel"); onClicked: confirmation.close() }
-                Button { objectName: "memoryConfirmDestructive"; text: qsTr("Confirm"); enabled: !root.busy && confirmText.text === (root.destructiveOp === "move" ? "MOVE" : "DELETE") && (root.destructiveOp !== "move" || destination.currentIndex !== 2 || movePersonal.checked)
+                Button { objectName: "memoryConfirmDestructive"; text: qsTr("Confirm"); enabled: !root.busy && confirmText.text === (root.destructiveOp === "refreshIndex" ? "REFRESH" : root.destructiveOp === "move" ? "MOVE" : "DELETE") && (root.destructiveOp !== "move" || destination.currentIndex !== 2 || movePersonal.checked)
                     onClicked: {
                         let extra = {confirmed: true, confirmation: confirmText.text, id: root.editing.id || "", revision: root.editing.revision || "", destination: destination.currentIndex + 1}
                         if (root.destructiveOp === "deleteSelected") extra.selected = Object.keys(root.selected).map(function(id) { return {id: id, revision: root.selected[id]} })

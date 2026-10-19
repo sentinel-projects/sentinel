@@ -276,7 +276,7 @@ private slots:
                 store.listManagedMemory({MemoryScope::Project, {}, page.nextCursor, 10}, access());
             QCOMPARE(next.records.size(), 5);
             QVERIFY(next.nextCursor.isEmpty());
-            QCOMPARE(store.schemaVersion(), 5);
+            QCOMPARE(store.schemaVersion(), 6);
         }
         SQLiteMemoryStore reopened(path);
         QCOMPARE(reopened.listManagedMemory({MemoryScope::Project}, access()).records.size(), 10);

@@ -31,6 +31,8 @@ public:
                                          const MemoryAccessContext&) override;
     ScopedMemoryResult retrieveMemory(const QString&, const MemoryAccessContext&,
                                       int limit = 10) const override;
+    MemoryIndexStatus memoryIndexStatus(const MemoryAccessContext&) const override;
+    MemoryIndexStatus refreshMemoryIndex(const MemoryAccessContext&, int limit = 100) override;
     MemoryManagementResult listManagedMemory(const MemoryPageQuery&,
                                              const MemoryManagementContext&) const override;
     MemoryManagementResult readManagedMemory(const QString&,
@@ -50,9 +52,11 @@ public:
 private:
     void open();
     void initializeSchema();
+    void initializeRetrievalIndex();
+    static MemoryIndexStatus indexStatus(QSqlDatabase&, const MemoryAccessContext&);
     void setLastError(QString error) const;
 
-    static constexpr int currentSchemaVersion = 5;
+    static constexpr int currentSchemaVersion = 6;
 
     QString databasePath_;
     QString connectionName_;

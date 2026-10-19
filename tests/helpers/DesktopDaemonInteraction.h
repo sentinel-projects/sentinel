@@ -412,6 +412,30 @@ inline int runDesktopDaemonInteraction(QQuickWindow* window, desktop::DesktopShe
     P606_CHECK(activate("memorySave"));
     P606_CHECK(
         wait([&] { return item("memoryInspectRecord") && controller.memoryEntryCount() == 1; }));
+    P606_CHECK(activate("memoryRankedSearch"));
+    P606_CHECK(wait([&] {
+        return desktopContains(window->contentItem(), "Lexical score") &&
+               desktopContains(window->contentItem(), "Semantic: unavailable");
+    }));
+    P606_CHECK(activate("memoryRefreshIndex"));
+    P606_CHECK(wait([&] { return item("memoryCancelDestructive")->hasActiveFocus(); }));
+    QTest::keyClick(window, Qt::Key_Return);
+    P606_CHECK(controller.memoryEntryCount() == 1);
+    P606_CHECK(activate("memoryRefreshIndex"));
+    P606_CHECK(wait([&] { return item("memoryConfirmationText")->isVisible(); }));
+    memoryType("memoryConfirmationText", "REFRESH");
+    P606_CHECK(activate("memoryConfirmDestructive"));
+    P606_CHECK(wait([&] {
+        const auto* cancel = item("memoryCancelDestructive");
+        const auto* scopeChoice = item("memoryScopeChoice");
+        return desktopContains(window->contentItem(), "projection rows refreshed") && !cancel &&
+               scopeChoice && scopeChoice->hasActiveFocus();
+    }));
+    P606_CHECK(capture("memory-retrieval"));
+    record("memory-retrieval", {{"real_ipc", true},
+                                {"semantic_unavailable", true},
+                                {"bounded_refresh", true},
+                                {"keyboard_cancel_safe", true}});
     P606_CHECK(activate("memoryInspectRecord"));
     P606_CHECK(wait([&] {
         return item("memoryValue")->isVisible() &&

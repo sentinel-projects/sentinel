@@ -414,6 +414,8 @@ add_library(sentinel_core STATIC
     src/memory/SQLiteMemoryManagement.cpp
     src/memory/InMemoryManagement.cpp
     src/memory/ScopedMemory.cpp
+    src/memory/ScopedMemoryRetrieval.cpp
+    src/memory/SQLiteMemoryRetrieval.cpp
     src/memory/SQLiteMemoryStore.cpp
     src/memory/SqlitePragmas.cpp
     src/memory/StaticMemoryCatalog.cpp

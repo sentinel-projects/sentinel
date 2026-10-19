@@ -37,8 +37,11 @@ use runtime-owned session/workspace identity, including the gateway's sealed inv
 Stable UUIDs, UTC metadata, typed provenance and bounded source references survive retrieval;
 generated/inferred/unknown content remains untrusted data. Personal inclusion is off in production
 composition until an explicit sharing policy is supplied. Existing JSON memory backup is refused
-when scoped rows exist, avoiding lossy export or rollback; scoped management/export/deletion UI
-remains later P8 work. See [P8-01](../audits/P8_01_SCOPED_MEMORY_IMPLEMENTATION_RESULT.md).
+when scoped rows exist, avoiding lossy export or rollback; P8-03 supplies scoped management/correction/deletion UI and versioned scope archives.
+Schema 5 retains Legacy UUIDs and correction receipts; combined legacy backup stays blocked
+for all managed records. P8-04 schema 6 adds transactional per-record scoped FTS5 triggers
+and explicit bounded repair. Shared lexical ranking selects authorized candidates before
+ContextBudgetManager admission, with explicit index fallback and unavailable semantic scores. See [P8-01](../audits/P8_01_SCOPED_MEMORY_IMPLEMENTATION_RESULT.md).
 
 
 Provider-bound Chat and Agent requests pass through `ContextBudgetManager` before dispatch.
