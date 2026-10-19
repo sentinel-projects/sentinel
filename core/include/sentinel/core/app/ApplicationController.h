@@ -2117,6 +2117,7 @@ private:
                                                const QString& candidateId) const;
     MemoryCommitReadiness memoryCommitReadinessForCandidateId(const QString& candidateId) const;
     bool memoryKeyExists(const QString& key) const;
+    MemoryAccessContext currentMemoryAccessContext() const;
     MemoryEntries currentMemoryEntries() const;
     void refreshMemoryRecallForCurrentEntries();
     ContextAssemblySource contextAssemblySource(ContextAssemblySourceKind kind) const;

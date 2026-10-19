@@ -51,6 +51,7 @@
 #include <QTextStream>
 #include <QThread>
 #include <QTimer>
+#include <QUuid>
 
 #include <algorithm>
 #include <cstdint>
@@ -950,6 +951,12 @@ ApplicationController::ApplicationController(
     if (conversationStore_ && conversationStore_->status() == ConversationStoreStatus::Ready) {
         chatMode_ = std::make_unique<ChatModeService>(*modelService_, *chatSession_,
                                                        *conversationStore_, this);
+        chatMode_->setScopedMemory(memoryStore_.get(), [this](const QString& conversationId) {
+            auto context = currentMemoryAccessContext();
+            if (context.sessionId != conversationId)
+                return MemoryAccessContext{};
+            return context;
+        });
         connect(chatMode_.get(), &ChatModeService::messagesChanged, this, [this]() {
             refreshConversationHistorySummary();
             emit chatMessagesChanged();
@@ -7108,8 +7115,21 @@ QList<PromptContextBlock> ApplicationController::promptContextBlocks(const QStri
 
 PromptContextInjectionResult
 ApplicationController::preparePromptContextInjection(const QString& prompt) {
-    auto result =
-        injectPromptContext(prompt, promptContextBlocks(prompt), promptContextInjectionPolicy_);
+    auto blocks = promptContextBlocks(prompt);
+    const auto before = blocks.size();
+    // Legacy salience blocks flatten provenance and may truncate metadata. Do not activate
+    // memory there until it can carry the typed context used by ChatModeService/AgentLoop.
+    blocks.erase(std::remove_if(blocks.begin(), blocks.end(),
+                                [](const auto& block) {
+                                    return block.source ==
+                                           ContextAssemblySourceKind::CommittedMemory;
+                                }),
+                 blocks.end());
+    auto result = injectPromptContext(prompt, blocks, promptContextInjectionPolicy_);
+    if (before != blocks.size() && promptContextInjectionPolicy_.enabled) {
+        result.summary += QStringLiteral(" Scoped memory omitted from legacy local-inference "
+                                         "context: provenance-preserving budgeting unavailable.");
+    }
     const auto assembly = semanticSupplementAssemblyResult();
     const auto authority =
         sentinel::core::evaluateSemanticPromptAuthority(assembly, semanticPromptAuthorityPolicy_);
@@ -7444,7 +7464,7 @@ bool ApplicationController::memoryKeyExists(const QString& key) const {
     }
 
     const auto trimmed = key.trimmed();
-    for (const auto& entry : memoryStore_->entries()) {
+    for (const auto& entry : currentMemoryEntries()) {
         if (entry.first == trimmed) {
             return true;
         }
@@ -7452,11 +7472,39 @@ bool ApplicationController::memoryKeyExists(const QString& key) const {
     return false;
 }
 
+MemoryAccessContext ApplicationController::currentMemoryAccessContext() const {
+    MemoryAccessContext context;
+    context.sessionId = activeConversationId_.isEmpty() ? runtimeSession_.context().sessionId.value
+                                                        : activeConversationId_;
+    if (workspaceSettings_) {
+        const WorkspaceService workspaces;
+        const auto requested = workspaceSettings_->selectedWorkspaceId();
+        const auto workspace =
+            workspaces.selectedWorkspace(requested, workspaceSettings_->workspaceCatalogJson());
+        context.workspaceId = requested.isEmpty() ? workspace.id : requested;
+        if (workspace.id == context.workspaceId && !workspace.archived &&
+            workspace.accessState != QLatin1String("Denied") &&
+            workspace.accessState != QLatin1String("Unavailable")) {
+            context.authorizedWorkspaceIds.insert(workspace.id);
+        }
+    }
+    // Personal content requires a separate explicit sharing policy; never infer it from text.
+    return context;
+}
+
 MemoryEntries ApplicationController::currentMemoryEntries() const {
     if (!memoryStore_ || !memoryStore_->isAvailable()) {
         return {};
     }
-    return memoryStore_->entries();
+    MemoryEntries entries;
+    const auto result = memoryStore_->retrieveMemory({}, currentMemoryAccessContext(), 50);
+    if (result.status == ScopedMemoryStatus::Ready) {
+        for (const auto& record : result.records)
+            entries.append({record.key, record.value});
+    }
+    std::sort(entries.begin(), entries.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    return entries;
 }
 
 void ApplicationController::refreshMemoryRecallForCurrentEntries() {
@@ -7475,6 +7523,10 @@ ApplicationController::memoryCandidateFromConversationText(const QString& text) 
     const auto normalized = text.simplified();
     MemoryCandidate candidate;
     candidate.source = MemoryCandidateSource::ConversationText;
+    const auto context = currentMemoryAccessContext();
+    candidate.sourceCaptureId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    candidate.sourceSessionId = context.sessionId;
+    candidate.sourceWorkspaceId = context.workspaceId;
     candidate.category = MemoryCandidateCategory::Semantic;
     candidate.confidence = MemoryCandidateConfidence::Medium;
     candidate.reviewState = MemoryReviewState::PendingReview;
@@ -8019,6 +8071,17 @@ bool ApplicationController::requestMemoryCandidateCommit(const QString& candidat
         return false;
     }
 
+    const auto commitContext = currentMemoryAccessContext();
+    if (candidate->sourceCaptureId.isEmpty() ||
+        candidate->sourceSessionId != commitContext.sessionId ||
+        candidate->sourceWorkspaceId != commitContext.workspaceId) {
+        latestMemoryCommitResult_.status = QStringLiteral("Refused");
+        latestMemoryCommitResult_.summary = QStringLiteral(
+            "Memory commit refused: candidate belongs to a different session or workspace.");
+        emit memoryCandidatesChanged();
+        return false;
+    }
+
     if (memoryKeyExists(readiness.plan.key) &&
         memoryCommitPolicy_.conflictPolicy == MemoryCommitConflictPolicy::Refuse) {
         latestMemoryCommitResult_.status = QStringLiteral("Refused");
@@ -8039,10 +8102,14 @@ bool ApplicationController::requestMemoryCandidateCommit(const QString& candidat
         return false;
     }
 
-    memoryStore_->put(readiness.plan.key, value);
+    const auto written = memoryStore_->writeScopedMemory(
+        {MemoryScope::Session, readiness.plan.key, value, MemoryProvenance::Unknown,
+         QStringLiteral("capture:") + candidate->sourceCaptureId,
+         memoryCommitPolicy_.conflictPolicy != MemoryCommitConflictPolicy::Refuse},
+        currentMemoryAccessContext());
     // Inspect the write result before a read/refresh can clear the backend error.
     // Keep the reviewed candidate retryable and do not expose backend diagnostics.
-    if (!memoryStore_->lastError().isEmpty()) {
+    if (written.status != ScopedMemoryStatus::Ready) {
         latestMemoryCommitResult_.status = QStringLiteral("Refused");
         latestMemoryCommitResult_.summary =
             QStringLiteral("Memory commit refused: storage write failed. The approved candidate "
@@ -9526,6 +9593,15 @@ void ApplicationController::setToolPermissionPolicyState(const QString& state) {
 
 void ApplicationController::attachControlledTaskSettings(AppSettings& settings) {
     workspaceSettings_ = &settings;
+    const auto resetRecall = [this] {
+        latestMemoryRecallSummary_ = MemoryRecallSummary{};
+        emit memoryEntriesChanged();
+        emit memoryRecallChanged();
+        emit contextAssemblyChanged();
+    };
+    connect(&settings, &AppSettings::selectedWorkspaceIdChanged, this, resetRecall);
+    connect(&settings, &AppSettings::workspaceSettingsChanged, this, resetRecall);
+    resetRecall();
     auto updateResponseProfile = [this, &settings] {
         if (chatMode_) chatMode_->setResponseProfileInstructions(settings.responseProfileInstructions());
     };
@@ -9668,6 +9744,11 @@ void ApplicationController::refreshConversationSession() {
 }
 
 void ApplicationController::resetConversationRuntimeState() {
+    // Recall results and queries belong to the previous scope, even if both scopes have equal
+    // counts.
+    latestMemoryRecallSummary_ = MemoryRecallSummary{};
+    emit memoryEntriesChanged();
+    emit memoryRecallChanged();
     // Terminal text projection can be queued after the terminal IPC event.
     // Once another conversation is selected, old Agent events must not append
     // to its transcript. Active runs cannot switch/create conversations above.
@@ -10530,7 +10611,11 @@ void ApplicationController::remember(const QString& key, const QString& value) {
         return;
     }
 
-    memoryStore_->put(key.trimmed(), value.trimmed());
+    const auto context = currentMemoryAccessContext();
+    memoryStore_->writeScopedMemory({MemoryScope::Session, key.trimmed(), value.trimmed(),
+                                     MemoryProvenance::UserProvided,
+                                     QStringLiteral("session:") + context.sessionId},
+                                    context);
     refreshMemoryRecallForCurrentEntries();
     emit memoryEntriesChanged();
     emit memoryRecallChanged();

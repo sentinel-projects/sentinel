@@ -2,7 +2,10 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/DeterministicChatFixture.h"
+#include "../support/LocalInferenceWorkerFixture.h"
 #include "sentinel/core/agent/NullAgentRuntime.h"
+#include "sentinel/core/app/AppSettings.h"
 #include "sentinel/core/app/ApplicationController.h"
 #include "sentinel/core/app/ApplicationControllerBuilder.h"
 #include "sentinel/core/chat/IChatHistoryStore.h"
@@ -10,13 +13,12 @@
 #include "sentinel/core/chat/LocalEchoProvider.h"
 #include "sentinel/core/chat/SQLiteConversationStore.h"
 #include "sentinel/core/memory/InMemoryStore.h"
+#include "sentinel/core/memory/JsonSettingsStore.h"
 #include "sentinel/core/model/ModelManagement.h"
 #include "sentinel/core/runtime/LocalInference.h"
 #include "sentinel/core/runtime/RuntimePermissions.h"
 #include "sentinel/core/voice/PiperTts.h"
 #include "sentinel/core/voice/Voice.h"
-#include "../support/DeterministicChatFixture.h"
-#include "../support/LocalInferenceWorkerFixture.h"
 
 #include <QDir>
 #include <QCoreApplication>
@@ -353,6 +355,8 @@ private slots:
     void clearsPersistentChatHistoryWhenAvailable();
     void keepsRuntimeChatWorkingWhenHistoryStoreUnavailable();
     void storesRuntimeMemoryEntries();
+    void memoryFollowsAuthoritativeConversation();
+    void candidateCannotBeMovedToAnotherSession();
     void createsMemoryCandidatesPendingReview();
     void recordsMemoryCandidateApprovalAndRejectionMetadata();
     void resetsMemoryCandidateReviewMetadata();
@@ -2210,7 +2214,10 @@ void ApplicationControllerTest::runsInjectedLocalInferenceWhenPermissionAllows()
         std::make_unique<LocalEchoProvider>(), std::make_unique<InMemoryStore>(), nullptr, nullptr,
         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
         nullptr, nullptr, std::make_unique<AllowLocalInferencePolicy>(), nullptr, nullptr, nullptr,
-        nullptr, nullptr, nullptr, nullptr, nullptr, std::move(fakeClient));
+        nullptr, nullptr, nullptr, nullptr,
+        std::make_unique<FakeOllamaRuntimeClient>(
+            QList<OllamaModelSummary>{{QStringLiteral("local-model"), {}, 0}}),
+        std::move(fakeClient));
     QSignalSpy spy(controller.get(), &ApplicationController::localInferenceChanged);
 
     const auto ran =
@@ -2233,6 +2240,20 @@ void ApplicationControllerTest::runsInjectedLocalInferenceWhenPermissionAllows()
     QVERIFY(controller->localInferenceTraceSummaries().contains(
         QStringLiteral("2. Safety Policy [Compliant]: Runtime safety policy report: local-only "
                        "and no-execution posture is enforced with deterministic metadata rules.")));
+    const sentinel::core::MemoryAccessContext context{
+        controller->activeConversationId(), {}, {}, false};
+    QCOMPARE(controller->memoryStore()
+                 ->writeScopedMemory({sentinel::core::MemoryScope::Session, "orchid",
+                                      "DO_NOT_FLATTEN_GENERATED_MEMORY",
+                                      sentinel::core::MemoryProvenance::GeneratedSummary,
+                                      "summary:fixture"},
+                                     context)
+                 .status,
+             sentinel::core::ScopedMemoryStatus::Ready);
+    controller->setPromptContextInjectionEnabled(true);
+    QVERIFY2(controller->runLocalInference("orchid", "local-model"),
+             qPrintable(controller->localInferenceSummary()));
+    QVERIFY(!fakeClientPtr->lastRequest.prompt.contains("DO_NOT_FLATTEN_GENERATED_MEMORY"));
 }
 
 
@@ -2494,6 +2515,58 @@ void ApplicationControllerTest::keepsRuntimeChatWorkingWhenHistoryStoreUnavailab
     QCOMPARE(controller->chatHistory().at(1).content, QStringLiteral("status"));
 }
 
+void ApplicationControllerTest::candidateCannotBeMovedToAnotherSession() {
+    auto controller = makeController();
+    const auto candidate =
+        controller->createMemoryCandidateFromConversationText("old session source");
+    QVERIFY(controller->approveMemoryCandidate(candidate));
+    const auto next = controller->createConversation("Other session");
+    QVERIFY(controller->switchConversation(next));
+    QVERIFY(!controller->requestMemoryCandidateCommit(candidate));
+    QCOMPARE(controller->memoryEntryCount(), 0);
+    QVERIFY(controller->lastMemoryCommitResultSummary().contains("different session"));
+}
+
+void ApplicationControllerTest::memoryFollowsAuthoritativeConversation() {
+    QTemporaryDir dir;
+    sentinel::core::AppSettings settings(
+        std::make_unique<sentinel::core::JsonSettingsStore>(dir.filePath("settings.json")),
+        sentinel::core::inMemoryTestCredentialStore());
+    auto controller = makeController();
+    const auto first = controller->activeConversationId();
+    controller->remember("orchid", "FIRST_SESSION");
+    QCOMPARE(controller->memoryEntryCount(), 1);
+    QVERIFY(controller->recallLocalMemory("FIRST_SESSION"));
+    QCOMPARE(controller->memoryRecallResultCount(), 1);
+    const auto next = controller->createConversation("Separate conversation");
+    QVERIFY(!next.isEmpty());
+    QVERIFY(controller->switchConversation(next));
+    QCOMPARE(controller->memoryEntryCount(), 0);
+    QCOMPARE(controller->memoryRecallResultCount(), 0);
+    QVERIFY(controller->memoryRecallQueryText().isEmpty());
+    QVERIFY(!controller->memoryRecallResultSummaries().join(" ").contains("FIRST_SESSION"));
+    controller->remember("orchid", "SECOND_SESSION");
+    QCOMPARE(controller->memoryEntryCount(), 1);
+    QVERIFY(controller->memoryEntries().join(" ").contains("SECOND_SESSION"));
+    QVERIFY(!controller->memoryEntries().join(" ").contains("FIRST_SESSION"));
+    QVERIFY(controller->recallLocalMemory("SECOND_SESSION"));
+    QCOMPARE(controller->memoryRecallResultCount(), 1);
+    QVERIFY(controller->switchConversation(first));
+    QCOMPARE(controller->memoryEntryCount(), 1);
+    QCOMPARE(controller->memoryRecallResultCount(), 0);
+    QVERIFY(controller->memoryRecallQueryText().isEmpty());
+    QVERIFY(!controller->memoryRecallResultSummaries().join(" ").contains("SECOND_SESSION"));
+    controller->attachControlledTaskSettings(settings);
+    controller->remember("orchid", "WORKSPACE_ONE");
+    QCOMPARE(controller->memoryEntryCount(), 1);
+    QVERIFY(controller->recallLocalMemory("WORKSPACE_ONE"));
+    settings.setSelectedWorkspaceId("coding");
+    QCOMPARE(controller->memoryEntryCount(), 0);
+    QCOMPARE(controller->memoryRecallResultCount(), 0);
+    QVERIFY(controller->memoryRecallQueryText().isEmpty());
+    QVERIFY(!controller->memoryRecallResultSummaries().join(" ").contains("WORKSPACE_ONE"));
+}
+
 void ApplicationControllerTest::storesRuntimeMemoryEntries() {
     const auto controller = makeController();
     QSignalSpy spy(controller.get(), &ApplicationController::memoryEntriesChanged);
@@ -2632,6 +2705,12 @@ void ApplicationControllerTest::approvedMemoryCandidateCommitsToKeyValueMemory()
     QCOMPARE(controller->lastMemoryCommitStatus(), QStringLiteral("Committed"));
     QVERIFY(controller->lastMemoryCommitResultSummary().contains(
         QStringLiteral("memory.semantic.conversation-memory-candidate.memory-candidate-1")));
+    const auto committed = controller->memoryStore()->retrieveMemory(
+        {}, {controller->activeConversationId(), {}, {}, false});
+    QCOMPARE(committed.records.size(), 1);
+    QCOMPARE(committed.records.first().provenance, sentinel::core::MemoryProvenance::Unknown);
+    QVERIFY(committed.records.first().sourceReference.startsWith("capture:"));
+    QVERIFY(committed.records.first().sourceReference.size() > 40);
     QCOMPARE(controller->committedMemoryCandidateCount(), 1);
     QVERIFY(controller->memoryCandidateSummaries().first().contains(QStringLiteral("Committed")));
     QCOMPARE(controller->memoryEntries(),
@@ -2653,6 +2732,21 @@ void ApplicationControllerTest::failedMemoryCommitPreservesCandidateAndAllowsRet
             }
             data.put(std::move(key), std::move(value));
             error.clear();
+        }
+        sentinel::core::ScopedMemoryResult
+        writeScopedMemory(const sentinel::core::ScopedMemoryWrite& write,
+                          const sentinel::core::MemoryAccessContext& context) override {
+            if (rejectWrites) {
+                error = "private-storage-detail-must-not-be-published";
+                return {};
+            }
+            error.clear();
+            return data.writeScopedMemory(write, context);
+        }
+        sentinel::core::ScopedMemoryResult
+        retrieveMemory(const QString& query, const sentinel::core::MemoryAccessContext& context,
+                       int limit) const override {
+            return data.retrieveMemory(query, context, limit);
         }
         QString get(const QString& key) const override {
             error.clear();
@@ -2815,12 +2909,17 @@ void ApplicationControllerTest::clearChatKeepsCommittedMemoryRecallAvailable() {
     QVERIFY(controller->approveMemoryCandidate(id));
     QVERIFY(controller->requestMemoryCandidateCommit(id));
 
+    const auto previous = controller->activeConversationId();
     QVERIFY(controller->sendMessage(QStringLiteral("status")));
     controller->clearChat();
-    QVERIFY(controller->recallLocalMemory(QStringLiteral("survives")));
+    QVERIFY(!controller->recallLocalMemory(QStringLiteral("survives")));
+    QCOMPARE(controller->memoryStore()
+                 ->retrieveMemory("survives", {previous, {}, {}, false})
+                 .records.size(),
+             1);
 
     QCOMPARE(controller->chatHistory().size(), 1);
-    QCOMPARE(controller->memoryRecallResultCount(), 1);
+    QCOMPARE(controller->memoryRecallResultCount(), 0);
     QCOMPARE(controller->committedMemoryCandidateCount(), 1);
 }
 
@@ -3463,14 +3562,17 @@ void ApplicationControllerTest::clearChatKeepsCommittedMemory() {
     QVERIFY(controller->approveMemoryCandidate(id));
     QVERIFY(controller->requestMemoryCandidateCommit(id));
 
+    const auto previous = controller->activeConversationId();
     controller->sendMessage(QStringLiteral("status"));
     controller->clearChat();
 
     QCOMPARE(controller->committedMemoryCandidateCount(), 1);
-    QCOMPARE(controller->memoryEntries(),
-             QStringList{QStringLiteral("memory.semantic.conversation-memory-candidate."
-                                        "memory-candidate-1: Committed memory survives chat "
-                                        "clear.")});
+    QVERIFY(controller->memoryEntries().isEmpty());
+    const auto retained =
+        controller->memoryStore()->retrieveMemory("survives", {previous, {}, {}, false});
+    QCOMPARE(retained.status, sentinel::core::ScopedMemoryStatus::Ready);
+    QCOMPARE(retained.records.size(), 1);
+    QCOMPARE(retained.records.first().value, QString("Committed memory survives chat clear."));
 }
 
 void ApplicationControllerTest::clearsRuntimeMemoryEntries() {

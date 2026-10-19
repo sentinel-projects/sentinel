@@ -8,6 +8,7 @@
 
 #include <QSqlDatabase>
 #include <QString>
+#include <QThread>
 
 namespace sentinel::core {
 
@@ -26,6 +27,11 @@ public:
     MemoryEntries entries() const override;
     MemoryEntries searchRelevant(const QString& query, int limit) const override;
     QList<MemoryRecord> searchRelevantRecords(const QString& query, int limit) const override;
+    ScopedMemoryResult writeScopedMemory(const ScopedMemoryWrite&,
+                                         const MemoryAccessContext&) override;
+    ScopedMemoryResult retrieveMemory(const QString&, const MemoryAccessContext&,
+                                      int limit = 10) const override;
+    bool hasScopedMemory() const override;
     void clear() override;
     bool isAvailable() const override;
     QString lastError() const override;
@@ -38,10 +44,11 @@ private:
     void initializeSchema();
     void setLastError(QString error) const;
 
-    static constexpr int currentSchemaVersion = 3;
+    static constexpr int currentSchemaVersion = 4;
 
     QString databasePath_;
     QString connectionName_;
+    QThread* const connectionThread_ = QThread::currentThread();
     QSqlDatabase database_;
     bool identityReady_ = false;
     bool ftsReady_ = false;

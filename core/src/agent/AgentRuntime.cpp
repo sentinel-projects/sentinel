@@ -114,6 +114,19 @@ AgentRuntime::AgentRuntime(std::unique_ptr<IAgentRuntime> metadata, IAgentStepPl
     });
     if (auto* nativeExecutor = dynamic_cast<RealToolExecutor*>(&executor_)) {
         nativeExecutor->setExternalDirectoryGate(&externalDirectoryGate_);
+        nativeExecutor->setMemoryContextResolver([this](const QString& sessionId) {
+            std::lock_guard lock(mutex_);
+            MemoryAccessContext context;
+            if (sessionId.isEmpty() || !sessions_.contains(sessionId))
+                return context;
+            context.sessionId = sessionId;
+            const auto options = options_.constFind(sessionId);
+            if (options != options_.cend())
+                context.workspaceId = options->workspaceContext.id;
+            if (!context.workspaceId.isEmpty())
+                context.authorizedWorkspaceIds.insert(context.workspaceId);
+            return context;
+        });
         BuiltInToolProvider::registerTools(toolRegistry_, *nativeExecutor);
     } else {
         auto compatibility = std::make_shared<ExecutorCompatibilityHandler>(executor_);
@@ -147,6 +160,10 @@ void AgentRuntime::setMcpService(std::shared_ptr<IMcpService> service) {
 AgentRuntime::~AgentRuntime() {
     shutdown();
     pluginManager_.unloadAll();
+    if (auto* executor = dynamic_cast<RealToolExecutor*>(&executor_)) {
+        executor->setMemoryContextResolver({});
+        executor->setMemoryAccessContext({});
+    }
 }
 
 void AgentRuntime::setToolPermissionState(QString state) {

@@ -52,6 +52,12 @@ public:
         memoryStore_ = memory;
         chatHistoryStore_ = history;
     }
+    void setMemoryAccessContext(MemoryAccessContext context) {
+        memoryContext_ = std::move(context);
+    }
+    void setMemoryContextResolver(std::function<MemoryAccessContext(const QString&)> resolver) {
+        memoryContextResolver_ = std::move(resolver);
+    }
     // Replaces the MCP server set used by the dynamic MCP provider and connects
     // to every enabled server.
     void configureMcpServers(const QList<McpServerConfig>& configs);
@@ -166,6 +172,8 @@ private:
     mutable WebSearchTool webSearchTool_;
     mutable WebFetchTool webFetchTool_;
     std::shared_ptr<AlarmStore> alarmStore_;
+    MemoryAccessContext memoryContext_;
+    std::function<MemoryAccessContext(const QString&)> memoryContextResolver_;
     const IMemoryStore* memoryStore_ = nullptr;
     const IChatHistoryStore* chatHistoryStore_ = nullptr;
     std::shared_ptr<IMcpService> mcpService_;

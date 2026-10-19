@@ -53,6 +53,7 @@ struct AgentContextInput {
         QString retrievalPreference;
         QString memoryScope;
     } workspaceContext;
+    MemoryAccessContext memoryAccess;
     QString responseProfileInstructions;
     QString goal;
     QString workspace;
