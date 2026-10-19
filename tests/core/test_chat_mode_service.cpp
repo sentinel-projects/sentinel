@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "sentinel/core/agent/ContextEngine.h"
 #include "sentinel/core/app/IClock.h"
 #include "sentinel/core/chat/ChatModeService.h"
 #include "sentinel/core/chat/ChatSession.h"
@@ -152,6 +153,7 @@ private slots:
     void geminiPreservesAuthoritativeJsonSchema();
     void responseProfileChangesRequestWithoutChangingUserMessage();
     void scopedMemoryControlsProductionPrompt();
+    void managedCorrectionsAndDeletionAffectSubsequentRequests();
     void shortPromptCharacterization();
     void largeHistoryPreservesActiveAndReportsReduction();
     void insufficientBudgetNeverDispatches();
@@ -229,6 +231,59 @@ void ChatModeServiceTest::shortPromptCharacterization() {
     QVERIFY(service.send(h.conversationId, "Explain recursion", {}, {"ollama", "fixture"}));
     QTRY_VERIFY(!service.busy());
     QCOMPARE(h.session.messages().last().content, QString("User: Explain recursion"));
+}
+
+void ChatModeServiceTest::managedCorrectionsAndDeletionAffectSubsequentRequests() {
+    Harness h(FixtureProvider::ReplyMode::EchoPrompt);
+    InMemoryStore memory;
+    MemoryManagementContext authority{{h.conversationId, "p1", {"p1"}, false}, false};
+    auto made = memory
+                    .writeScopedMemory({MemoryScope::Session, "orchid", "BEFORE_P803",
+                                        MemoryProvenance::GeneratedSummary, "summary:original"},
+                                       authority.access)
+                    .records.first();
+    ChatModeService service(h.models, h.session, h.store);
+    service.setScopedMemory(&memory, [&](const QString&) { return authority.access; });
+    QVERIFY(service.send(h.conversationId, "Recall orchid", {}, {"ollama", "fixture"}));
+    QTRY_VERIFY(!service.busy());
+    QVERIFY(h.session.messages().last().content.startsWith("Retrieved scoped memory"));
+    MemoryMutation edit;
+    edit.kind = MemoryMutation::Kind::Correct;
+    edit.record = made;
+    edit.record.value = "AFTER_P803";
+    edit.expectedRevision = made.revision;
+    const auto corrected = memory.mutateManagedMemory({edit}, authority);
+    QCOMPARE(corrected.status, MemoryManagementStatus::Ready);
+    QCOMPARE(corrected.records.first().provenance, MemoryProvenance::GeneratedSummary);
+    QVERIFY(service.send(h.conversationId, "Recall orchid again", {}, {"ollama", "fixture"}));
+    QTRY_VERIFY(!service.busy());
+    const auto prompt = h.session.messages().last().content;
+    const auto memoryBlock = prompt.left(prompt.indexOf("\n\nUser:"));
+    QVERIFY(memoryBlock.contains("AFTER_P803"));
+    QVERIFY(!memoryBlock.contains("BEFORE_P803"));
+    QVERIFY(memoryBlock.contains("generated-summary"));
+    AgentContextInput input;
+    input.goal = "orchid";
+    input.memoryStore = &memory;
+    input.memoryAccess = authority.access;
+    QString agentMemory;
+    for (const auto& item : ContextEngine{}.build(input).items) {
+        if (item.kind == AgentContextKind::Memory) {
+            agentMemory += item.content;
+        }
+    }
+    QVERIFY(agentMemory.contains("AFTER_P803"));
+    MemoryMutation remove;
+    remove.kind = MemoryMutation::Kind::Delete;
+    remove.record = corrected.records.first();
+    remove.expectedRevision = remove.record.revision;
+    QCOMPARE(memory.mutateManagedMemory({remove}, authority).status, MemoryManagementStatus::Ready);
+    QVERIFY(service.send(h.conversationId, "Recall orchid once more", {}, {"ollama", "fixture"}));
+    QTRY_VERIFY(!service.busy());
+    QVERIFY(h.session.messages().last().content.startsWith("User:"));
+    for (const auto& item : ContextEngine{}.build(input).items) {
+        QVERIFY(item.kind != AgentContextKind::Memory);
+    }
 }
 
 void ChatModeServiceTest::scopedMemoryControlsProductionPrompt() {

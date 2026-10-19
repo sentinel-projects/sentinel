@@ -2810,7 +2810,9 @@ public:
     QString semanticEmbeddingModel() const;
     void setSemanticEmbeddingModel(const QString& model);
 
+    Q_INVOKABLE void manageMemory(const QVariantMap& request);
 signals:
+    void memoryManagementCompleted(const QVariantMap& result);
     void runtimeProjectionChanged();
     void providerStatusChanged();
     void persistentPermissionGrantsChanged();

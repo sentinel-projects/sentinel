@@ -154,10 +154,13 @@ private slots:
         AppSettings settings(std::make_unique<JsonSettingsStore>(dir.filePath("settings.json")),
                              inMemoryTestCredentialStore());
         InMemoryStore memory;
-        memory.put("old", "legacy");
         BackupService backup(settings, nullptr, &memory);
         const auto legacy = backup.exportJson({"memory"});
         QVERIFY(legacy.succeeded());
+        memory.put("old", "legacy");
+        QVERIFY(!backup.exportJson({"memory"}).succeeded());
+        QVERIFY(!backup.importJson(legacy.data, {"memory"}, ImportMode::ReplaceSelectedDomains)
+                     .succeeded());
         QCOMPARE(
             memory.writeScopedMemory({MemoryScope::Session, "key", "retained"}, access()).status,
             ScopedMemoryStatus::Ready);
@@ -236,7 +239,7 @@ private slots:
         {
             SQLiteMemoryStore store(path);
             QVERIFY(store.isAvailable());
-            QCOMPARE(store.schemaVersion(), 4);
+            QCOMPARE(store.schemaVersion(), 5);
             QCOMPARE(store.searchRelevantRecords("orchid", 10).first().id, qint64(42));
             QVERIFY(store.retrieveMemory({}, access("s1", "p1", true)).records.isEmpty());
             auto result =

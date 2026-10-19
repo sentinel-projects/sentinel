@@ -293,6 +293,89 @@ struct RuntimePeer : Peer {
 class DesktopIpcTest final : public QObject {
     Q_OBJECT
 private slots:
+    void scopedMemoryManagementUsesRealDesktopAction() {
+        QTemporaryDir directory{QDir::tempPath() + "/mm-XXXXXX"};
+        QVERIFY(directory.isValid());
+        sentinel::test::DeterministicModelServiceFixture fixture;
+        sentinel::core::ApplicationControllerBuilder builder;
+        auto controller = builder.withModelService(fixture.takeModelService())
+                              .withOllamaRuntimeClient(std::make_unique<MetadataClient>())
+                              .withMemoryStore(std::make_unique<sentinel::core::InMemoryStore>())
+                              .build();
+        sentinel::daemon::DaemonIpcServer server(controller.get());
+        QVERIFY(server.startServer(directory.filePath("memory.sock")));
+        DaemonClient transport(directory.filePath("memory.sock"), 3000, 10);
+        sentinel::desktop::DesktopRuntimeClient adapter(transport);
+        QTRY_VERIFY(adapter.ready());
+        int tag = 0;
+        const auto call = [&](QVariantMap request) {
+            request["requestTag"] = QString::number(++tag);
+            QSignalSpy done(&adapter,
+                            &sentinel::desktop::DesktopRuntimeClient::memoryManagementCompleted);
+            adapter.dispatch("manageMemory", {request});
+            if (!QTest::qWaitFor([&] { return !done.isEmpty(); }, 5000)) {
+                return QVariantMap{{"status", "Timeout"}};
+            }
+            return done.last().first().toMap();
+        };
+        auto listed = call({{"operation", "list"}, {"scope", 1}});
+        QCOMPARE(listed.value("status").toString(), QString("Ready"));
+        QVariantMap base{{"scope", 1},
+                         {"session", listed.value("session")},
+                         {"workspace", listed.value("workspace")}};
+        auto make = base;
+        make["operation"] = "create";
+        make["key"] = "orchid";
+        make["value"] = "before";
+        QSignalSpy invalidated(controller.get(),
+                               &sentinel::core::ApplicationController::memoryRecallChanged);
+        QCOMPARE(call(make).value("status").toString(), QString("Ready"));
+        QVERIFY(!invalidated.isEmpty());
+        listed = call({{"operation", "list"}, {"scope", 1}});
+        auto row = listed.value("records").toList().first().toMap();
+        auto exported = call({{"operation", "export"}, {"scope", 1}});
+        QCOMPARE(exported.value("status").toString(), QString("Ready"));
+        sentinel::desktop::DesktopBackupHelper helper(&adapter);
+        const auto path = QUrl::fromLocalFile(directory.filePath("scope.json"));
+        QVERIFY(helper.saveMemoryArchive(path, exported.value("archive").toString()));
+        QCOMPARE(helper.loadMemoryArchive(path).value("status").toString(), QString("Ready"));
+        auto edit = base;
+        edit["operation"] = "correct";
+        edit["id"] = row.value("id");
+        edit["revision"] = row.value("revision");
+        edit["key"] = "orchid";
+        edit["value"] = "after";
+        QCOMPARE(call(edit).value("status").toString(), QString("Ready"));
+        QCOMPARE(call(edit).value("status").toString(), QString("Conflict"));
+        auto stale = make;
+        stale["workspace"] = "foreign";
+        QCOMPARE(call(stale).value("status").toString(), QString("Conflict"));
+        listed = call({{"operation", "list"}, {"scope", 1}});
+        row = listed.value("records").toList().first().toMap();
+        auto remove = base;
+        remove["operation"] = "delete";
+        remove["id"] = row.value("id");
+        remove["revision"] = row.value("revision");
+        invalidated.clear();
+        QCOMPARE(call(remove).value("status").toString(), QString("InvalidInput"));
+        QCOMPARE(invalidated.count(), 0);
+        remove["confirmed"] = true;
+        remove["confirmation"] = "DELETE";
+        QCOMPARE(call(remove).value("status").toString(), QString("Ready"));
+        QVERIFY(!invalidated.isEmpty());
+        QCOMPARE(call({{"operation", "list"}, {"scope", 1}}).value("records").toList().size(), 0);
+        QCOMPARE(controller->memoryEntryCount(), 0);
+        auto restore = base;
+        restore["operation"] = "import";
+        restore["confirmed"] = true;
+        restore["conflict"] = "reject";
+        restore["archive"] = exported.value("archive");
+        QCOMPARE(call(restore).value("status").toString(), QString("Ready"));
+        QCOMPARE(controller->memoryEntryCount(), 1);
+        QCOMPARE(call({{"operation", "list"}, {"scope", 3}}).value("status").toString(),
+                 QString("Unauthorized"));
+    }
+
     void initTestCase() {
         QStandardPaths::setTestModeEnabled(true);
         QCoreApplication::setApplicationName("sentinel-phase3-test-" +

@@ -749,4 +749,5 @@ SENTINEL_DESKTOP_FORWARD(whisperTranscriptionReadinessSummary)
 SENTINEL_DESKTOP_FORWARD(whisperTranscriptionSafetySummary)
 SENTINEL_DESKTOP_FORWARD(whisperTranscriptionStatus)
 SENTINEL_DESKTOP_FORWARD(whisperTranscriptionTraceSummaries)
+SENTINEL_DESKTOP_FORWARD(manageMemory)
 // clang-format on

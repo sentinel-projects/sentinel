@@ -127,3 +127,36 @@ finish the current command. In the TUI, the first terminal outcome closes the ru
 duplicate terminals and late approvals/activity cannot overwrite it. Only an
 authoritative new-run snapshot reopens execution. The protocol schema and Core
 permission decisions are unchanged. P3 development remains based on the unmerged PR #17 branch.
+
+## Scoped memory management
+
+P8-03 adds the canonical Desktop action `manageMemory(const QVariantMap &request)`
+returning a `QVariantMap`; it uses the existing `desktop.action` session ownership
+and busy-run gate. The generated bridge/daemon descriptors are derived from
+`protocol/ipc-v1.json` and `protocol/DesktopBridgeMethods.json`.
+
+`operation` is `list`, `read`, `create`, `correct`, `delete`, `deleteSelected`,
+`clear`, `move`, `export` or `import`. Scope numbers are Legacy=0, Session=1,
+Project=2, Personal=3. `personal` and `legacy` are explicit management opt-ins only.
+Core resolves identity; mutation `session`/`workspace` fields must match the current
+context and never grant authority. Unknown fields/types fail validation.
+
+Listing uses `search` (256 characters max), `cursor` (UUID keyset), ten records/page
+and returns metadata/value previews plus `nextCursor`, actual `session`/`workspace`.
+Exact `read` returns `record` with a 4096-character value chunk from `offset`,
+`valueLength` and revision; Desktop checks revisions across chunks. Create/correct
+use `key`/`value`; corrections/deletions/moves use `id` and `revision`. Selected
+batch deletion uses `selected:[{id,revision}]`. Deletion/clear requires
+`confirmed:true, confirmation:"DELETE"`; move additionally uses `destination` and
+`confirmation:"MOVE"`. Import requires `confirmed:true`, `archive` and explicit
+`conflict:"reject"` or `"skipIdentical"`. Export/import use the scope-only memory
+archive documented in [Memory](../concepts/MEMORY.md).
+
+Replies echo `requestTag` and report `Ready`, `Unavailable`, `Unauthorized`,
+`InvalidInput`, `Conflict`, `NotFound` or `LimitExceeded`. Empty authorized lists
+are `Ready` with no records; foreign record IDs are hidden as `NotFound`.
+Transport failures produce an unavailable completion; the UI ignores stale tags
+and clears its state when conversation/workspace changes. Memory replies refresh
+projections without reattaching or redirecting the current session. Archive and
+value bounds preserve the existing IPC frame limit; no streamed model/provider
+request is introduced.

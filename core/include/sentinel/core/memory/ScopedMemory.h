@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <QDateTime>
+#include <QJsonArray>
 #include <QList>
 #include <QSet>
 #include <QString>
@@ -37,6 +38,8 @@ struct ScopedMemoryRecord {
     QString sourceReference;
     QDateTime createdAtUtc;
     QDateTime updatedAtUtc;
+    QString revision;
+    QJsonArray corrections;
 };
 struct ScopedMemoryWrite {
     MemoryScope scope = MemoryScope::Session;
@@ -105,6 +108,7 @@ inline bool visibleMemory(const ScopedMemoryRecord& record, const MemoryAccessCo
     }
     return false;
 }
+bool isImportedMemory(const ScopedMemoryRecord&);
 QStringList scopedMemoryQueryTerms(const QString& text);
 QString memoryScopeName(MemoryScope scope);
 QString memoryProvenanceName(MemoryProvenance provenance);

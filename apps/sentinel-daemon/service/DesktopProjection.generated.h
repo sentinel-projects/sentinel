@@ -283,6 +283,9 @@ return true; }
 if (name == "unpinConversation") { if(args.size() != 1) return false;
 if (!(args[0].isString())) return false;
 return true; }
+if (name == "manageMemory") { if(args.size() != 1) return false;
+if (!(args[0].isObject())) return false;
+return true; }
 return false; }
 inline bool action(core::ApplicationController* c, const QString& name, const QJsonArray& args, QVariant* result) {
 if (name == "approveMemoryCandidate") { if(args.size() != 1) return false;
@@ -451,6 +454,9 @@ if (!(args[0].isString())) return false;
 if (name == "unpinConversation") { if(args.size() != 1) return false;
 if (!(args[0].isString())) return false;
 *result = c->unpinConversation(args[0].toString()); return true; }
+if (name == "manageMemory") { if(args.size() != 1) return false;
+if (!(args[0].isObject())) return false;
+*result = c->manageMemory(args[0].toObject().toVariantMap()); return true; }
 return false; }
 inline bool globalAction(const QString& name) { return name == "configureMcpServers" || name == "configureSpeechTts" || name == "configureWebSearch" || name == "refreshModelDiscovery" || name == "refreshOllamaStatus" || name == "setAgentAutonomousMode" || name == "setLlamaCppEndpoint" || name == "setLmStudioEndpoint" || name == "setLocalChatInferenceEnabled" || name == "setLocalInferenceMaxTokens" || name == "setLocalInferenceStreamingEnabled" || name == "setLocalInferenceTemperature" || name == "setLocalInferenceTimeoutMs" || name == "setLocalInferenceTopP" || name == "setModelCapabilityNumberOverride" || name == "setModelCapabilityOverride" || name == "setOllamaEndpoint" || name == "setPiperBinaryPath" || name == "setPiperFileOutputExecutionEnabled" || name == "setPiperModelPath" || name == "setPromptContextInjectionEnabled" || name == "setRoutingModeByName" || name == "setSelectedLocalModel" || name == "setSelectedRuntimeProvider" || name == "setSemanticPromptInclusionEnabled" || name == "setSemanticProvider" || name == "setToolPermissionPolicyState" || name == "setWhisperBinaryPath" || name == "setWhisperModelPath" || name == "setWhisperTranscriptionExecutionEnabled"; }
 inline QJsonObject settings(core::AppSettings* s) { QJsonObject result; if (!s) return result;

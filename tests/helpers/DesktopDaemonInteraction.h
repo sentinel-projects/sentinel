@@ -395,6 +395,61 @@ inline int runDesktopDaemonInteraction(QQuickWindow* window, desktop::DesktopShe
     P606_CHECK(persisted.loadMessages(firstSession).last().content == "p606_delta completed");
     record("delete-confirmation",
            {{"deliberate_activation", true}, {"other_session_unchanged", true}, {"deleted", true}});
+    const auto memoryType = [&](const QString& field, const QByteArray& text) {
+        item(field)->forceActiveFocus();
+        for (auto c : text) {
+            QTest::keyClick(window, c);
+        }
+    };
+    // P8-03: exercise the production Memory page through the real daemon/client bridge.
+    P606_CHECK(wait([&] { return runtime.ready(); }));
+    P606_CHECK(activate("MemoryNavigationButton"));
+    P606_CHECK(wait([&] { return item("memoryCreate") && item("memoryCreate")->isEnabled(); }));
+    P606_CHECK(activate("memoryCreate"));
+    P606_CHECK(wait([&] { return item("memoryKey") && item("memoryKey")->isVisible(); }));
+    memoryType("memoryKey", "p803-ui-key");
+    memoryType("memoryValue", "p803-ui-value");
+    P606_CHECK(activate("memorySave"));
+    P606_CHECK(
+        wait([&] { return item("memoryInspectRecord") && controller.memoryEntryCount() == 1; }));
+    P606_CHECK(activate("memoryInspectRecord"));
+    P606_CHECK(wait([&] {
+        return item("memoryValue")->isVisible() &&
+               item("memoryValue")->property("text").toString() == "p803-ui-value";
+    }));
+    item("memoryValue")->forceActiveFocus();
+    QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+    memoryType("memoryValue", "p803-corrected");
+    P606_CHECK(activate("memorySave"));
+    P606_CHECK(
+        wait([&] { return controller.memoryEntries().join(' ').contains("p803-corrected"); }));
+    P606_CHECK(activate("memoryInspectRecord"));
+    P606_CHECK(
+        wait([&] { return item("memoryDeleteOne") && item("memoryDeleteOne")->isVisible(); }));
+    P606_CHECK(activate("memoryDeleteOne"));
+    P606_CHECK(wait([&] {
+        return item("memoryCancelDestructive") && item("memoryCancelDestructive")->hasActiveFocus();
+    }));
+    QTest::keyClick(window, Qt::Key_Return);
+    P606_CHECK(controller.memoryEntryCount() == 1);
+    P606_CHECK(activate("memoryDeleteOne"));
+    P606_CHECK(wait([&] {
+        return item("memoryConfirmationText") && item("memoryConfirmationText")->isVisible();
+    }));
+    P606_CHECK(!item("memoryConfirmDestructive")->isEnabled());
+    memoryType("memoryConfirmationText", "DELETE");
+    P606_CHECK(activate("memoryConfirmDestructive"));
+    P606_CHECK(wait([&] { return controller.memoryEntryCount() == 0; }));
+    window->setWidth(640);
+    QTest::qWait(50);
+    P606_CHECK(item("memoryReload")->isVisible());
+    P606_CHECK(capture("memory-compact"));
+    record("memory-management", {{"real_ipc", true},
+                                 {"created", true},
+                                 {"corrected", true},
+                                 {"keyboard_cancel_safe", true},
+                                 {"deleted", true},
+                                 {"compact_width", 640}});
     P606_CHECK(!script->timedOut.load());
 #undef P606_CHECK
     return 0;

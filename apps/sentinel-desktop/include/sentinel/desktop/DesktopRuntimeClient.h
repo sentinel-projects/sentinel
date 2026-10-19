@@ -62,6 +62,7 @@ public:
 signals:
     void changed();
     void sessionChanged(const QString& sessionId);
+    void memoryManagementCompleted(const QVariantMap& result);
     void operationFailed(const QString& code);
     void conversationDeleteCompleted(const QString& conversationId, bool succeeded, const QString& summary);
 
@@ -71,6 +72,7 @@ private:
         QString target;
         QString runId;
         QString conversationId;
+        QString memoryTag;
     };
     QString send(DaemonClient::Command command, const QJsonObject& payload = {},
                  const QString& target = {});

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sentinel/desktop/DesktopBackupHelper.h"
+#include "sentinel/core/memory/MemoryManagement.h"
 #include "sentinel/desktop/DesktopRuntimeClient.h"
 #include <QCryptographicHash>
 #include <QFile>
@@ -37,6 +38,37 @@ void DesktopBackupHelper::finish(const QString& status) {
     if (runtime_ && !transfer_.isEmpty()) runtime_->transport().request(DaemonClient::Command::backup_transfer, {{"action", "cancel"}, {"value", QJsonObject{}}});
     transfer_.clear(); emit changed();
     if (runtime_) runtime_->refresh();
+}
+QVariantMap DesktopBackupHelper::loadMemoryArchive(const QUrl& path) {
+    QFile file(path.toLocalFile());
+    if (!path.isLocalFile() || !file.open(QIODevice::ReadOnly) || file.size() > 98304) {
+        return {{"status", "Unavailable"}};
+    }
+    const auto bytes = file.read(98305);
+    const auto parsed = core::decodeMemoryArchive(bytes);
+    if (parsed.status != core::MemoryManagementStatus::Ready) {
+        return {{"status", core::memoryManagementStatusName(parsed.status)}};
+    }
+    return {{"status", "Ready"},
+            {"archive", QString::fromUtf8(bytes)},
+            {"count", parsed.records.size()}};
+}
+bool DesktopBackupHelper::saveMemoryArchive(const QUrl& path, const QString& archive) {
+    const auto bytes = archive.toUtf8();
+    if (!path.isLocalFile() ||
+        core::decodeMemoryArchive(bytes).status != core::MemoryManagementStatus::Ready) {
+        return false;
+    }
+    QSaveFile file(path.toLocalFile());
+    if (!file.open(QIODevice::WriteOnly)) {
+        return false;
+    }
+    if (!file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner) ||
+        file.write(bytes) != bytes.size()) {
+        file.cancelWriting();
+        return false;
+    }
+    return file.commit();
 }
 bool DesktopBackupHelper::exportFile(const QUrl& path, const QStringList& domains) {
     if (busy_) return false;

@@ -888,6 +888,7 @@ inline QJsonObject desktopActions() { return {
 {QStringLiteral("setWhisperTranscriptionExecutionEnabled"), QJsonDocument::fromJson(R"json({"return":"void","arguments":[{"name":"enabled","cpp":"bool","type":"boolean"}],"scope":"global"})json").object()},
 {QStringLiteral("unarchiveConversation"), QJsonDocument::fromJson(R"json({"return":"bool","arguments":[{"name":"conversationId","cpp":"const QString&","type":"string"}],"scope":"session"})json").object()},
 {QStringLiteral("unpinConversation"), QJsonDocument::fromJson(R"json({"return":"bool","arguments":[{"name":"conversationId","cpp":"const QString&","type":"string"}],"scope":"session"})json").object()},
+{QStringLiteral("manageMemory"), QJsonDocument::fromJson(R"json({"return":"QVariantMap","arguments":[{"name":"request","cpp":"const QVariantMap&","type":"object"}],"scope":"session"})json").object()},
 }; }
 inline QJsonObject desktopSettingsActions() { return {
 {QStringLiteral("extensionsHubState"), QJsonDocument::fromJson(R"json({"query":true,"arguments":[]})json").object()},

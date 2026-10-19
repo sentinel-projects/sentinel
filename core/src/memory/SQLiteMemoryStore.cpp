@@ -9,6 +9,7 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <QJsonDocument>
 #include <QScopeGuard>
 #include <QSqlError>
 #include <QSqlQuery>
@@ -40,15 +41,15 @@ void SQLiteMemoryStore::put(QString key, QString value) {
     }
 
     QSqlQuery query(database_);
-    if (key.isEmpty()) {
-        query.prepare(QStringLiteral("INSERT INTO memory_entries(key, value) VALUES('', ?) "
-                                     "ON CONFLICT(key) DO UPDATE SET value = excluded.value"));
-    } else {
-        query.prepare(QStringLiteral("INSERT INTO memory_entries(key, value) VALUES(?, ?) "
-                                     "ON CONFLICT(key) DO UPDATE SET value = excluded.value"));
-        query.addBindValue(key);
-    }
+    query.prepare(
+        "INSERT INTO memory_entries(key,value,record_uuid,revision,updated_at) VALUES(?,?,?,?,?) "
+        "ON CONFLICT(key) DO UPDATE SET "
+        "value=excluded.value,revision=excluded.revision,updated_at=excluded.updated_at");
+    query.addBindValue(key.isNull() ? QStringLiteral("") : key);
     query.addBindValue(value);
+    query.addBindValue(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    query.addBindValue(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    query.addBindValue(QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
     if (!query.exec()) {
         setLastError(query.lastError().text());
     } else {
@@ -205,10 +206,11 @@ ScopedMemoryResult SQLiteMemoryStore::writeScopedMemory(const ScopedMemoryWrite&
     q.prepare(
         "INSERT INTO "
         "scoped_memory_entries(id,scope,owner_id,workspace_id,key,value,provenance,source_ref,"
-        "created_at,updated_at) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(scope,owner_id,workspace_id,key) DO UPDATE SET "
+        "created_at,updated_at,revision) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,lower(hex(randomblob(16)))) ON "
+        "CONFLICT(scope,owner_id,workspace_id,key) DO UPDATE SET "
         "value=excluded.value,provenance=excluded.provenance,source_ref=excluded.source_ref,"
-        "updated_at=excluded.updated_at WHERE ?=1");
+        "updated_at=excluded.updated_at,revision=lower(hex(randomblob(16))) WHERE ?=1");
     q.addBindValue(QUuid::createUuid().toString(QUuid::WithoutBraces));
     q.addBindValue(static_cast<int>(write.scope));
     q.addBindValue(owner.isNull() ? QStringLiteral("") : owner);
@@ -228,8 +230,9 @@ ScopedMemoryResult SQLiteMemoryStore::writeScopedMemory(const ScopedMemoryWrite&
         return {ScopedMemoryStatus::InvalidInput, {}};
     }
     q.finish();
-    q.prepare("SELECT id,created_at FROM scoped_memory_entries WHERE scope=? AND owner_id=? AND "
-              "workspace_id=? AND key=?");
+    q.prepare(
+        "SELECT id,created_at,revision FROM scoped_memory_entries WHERE scope=? AND owner_id=? AND "
+        "workspace_id=? AND key=?");
     q.addBindValue(static_cast<int>(write.scope));
     q.addBindValue(owner.isNull() ? QStringLiteral("") : owner);
     q.addBindValue(workspace.isNull() ? QStringLiteral("") : workspace);
@@ -247,6 +250,7 @@ ScopedMemoryResult SQLiteMemoryStore::writeScopedMemory(const ScopedMemoryWrite&
                               write.sourceReference,
                               QDateTime::fromString(q.value(1).toString(), Qt::ISODateWithMs),
                               QDateTime::fromString(now, Qt::ISODateWithMs)};
+    record.revision = q.value(2).toString();
     q.finish();
     if (!database_.commit()) {
         return {};
@@ -306,7 +310,8 @@ ScopedMemoryResult SQLiteMemoryStore::retrieveMemory(const QString& text,
     q.prepare(
         QStringLiteral(
             "SELECT "
-            "id,scope,owner_id,workspace_id,key,value,provenance,source_ref,created_at,updated_at "
+            "id,scope,owner_id,workspace_id,key,value,provenance,source_ref,created_at,updated_at,"
+            "revision,corrections "
             "FROM scoped_memory_entries WHERE ((scope=1 AND owner_id=? AND workspace_id=?) OR "
             "(scope=2 AND owner_id=? AND workspace_id=? AND ?<>'') OR "
             "(scope=3 AND owner_id='' AND workspace_id='' AND ?=1)) AND (%1) "
@@ -343,6 +348,8 @@ ScopedMemoryResult SQLiteMemoryStore::retrieveMemory(const QString& text,
                                   q.value(7).toString(),
                                   QDateTime::fromString(q.value(8).toString(), Qt::ISODateWithMs),
                                   QDateTime::fromString(q.value(9).toString(), Qt::ISODateWithMs)};
+        record.revision = q.value(10).toString();
+        record.corrections = QJsonDocument::fromJson(q.value(11).toByteArray()).array();
         if (visibleMemory(record, context)) {
             result.records.append(record);
         }
@@ -359,6 +366,18 @@ bool SQLiteMemoryStore::hasScopedMemory() const {
     }
     QSqlQuery query(database_);
     if (!query.exec("SELECT 1 FROM scoped_memory_entries LIMIT 1")) {
+        return true;
+    }
+    return query.next();
+}
+
+bool SQLiteMemoryStore::hasManagedMemory() const {
+    if (QThread::currentThread() != connectionThread_ || !isAvailable()) {
+        return true;
+    }
+    QSqlQuery query(database_);
+    if (!query.exec(
+            "SELECT 1 FROM scoped_memory_entries UNION ALL SELECT 1 FROM memory_entries LIMIT 1")) {
         return true;
     }
     return query.next();
@@ -605,6 +624,63 @@ void SQLiteMemoryStore::initializeSchema() {
                            "scoped_memory_entries(scope,owner_id,workspace_id,updated_at)"))) {
         identityReady_ = false;
         setLastError(QStringLiteral("Scoped memory migration failed."));
+        return;
+    }
+    // v5: management concurrency tokens and correction receipts; no scope/provenance
+    // reclassification.
+    const auto ensureColumn = [&](const QString& table, const QString& column,
+                                  const QString& definition) {
+        QSqlQuery info(database_);
+        if (!info.exec("PRAGMA table_info(" + table + ")")) {
+            return false;
+        }
+        bool found = false;
+        while (info.next()) {
+            found |= info.value(1).toString() == column;
+        }
+        info.finish();
+        return found ||
+               info.exec("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
+    };
+    bool managementReady = true;
+    for (const auto& table :
+         {QStringLiteral("memory_entries"), QStringLiteral("scoped_memory_entries")}) {
+        managementReady &= ensureColumn(table, "revision", "TEXT NOT NULL DEFAULT ''");
+        managementReady &= ensureColumn(table, "corrections", "TEXT NOT NULL DEFAULT '[]'");
+        if (table == "memory_entries") {
+            managementReady &= ensureColumn(table, "record_uuid", "TEXT NOT NULL DEFAULT ''");
+            managementReady &= ensureColumn(table, "created_at", "TEXT");
+            managementReady &= ensureColumn(table, "updated_at", "TEXT");
+        }
+        QSqlQuery rows(database_);
+        if (!rows.exec("SELECT id FROM " + table + " WHERE revision=''")) {
+            managementReady = false;
+            break;
+        }
+        QList<QVariant> ids;
+        while (rows.next()) {
+            ids.append(rows.value(0));
+        }
+        rows.finish();
+        for (const auto& id : ids) {
+            QSqlQuery update(database_);
+            update.prepare(
+                "UPDATE " + table + " SET revision=?" +
+                (table == "memory_entries" ? QStringLiteral(",record_uuid=?") : QString{}) +
+                " WHERE id=?");
+            update.addBindValue(QUuid::createUuid().toString(QUuid::WithoutBraces));
+            if (table == "memory_entries") {
+                update.addBindValue(QUuid::createUuid().toString(QUuid::WithoutBraces));
+            }
+            update.addBindValue(id);
+            managementReady &= update.exec();
+        }
+    }
+    managementReady &= query.exec(
+        "CREATE UNIQUE INDEX IF NOT EXISTS memory_management_uuid ON memory_entries(record_uuid)");
+    if (!managementReady) {
+        identityReady_ = false;
+        setLastError("Memory management migration failed.");
         return;
     }
     query.prepare(QStringLiteral("INSERT INTO memory_schema_metadata(key, value) VALUES(?, ?) "

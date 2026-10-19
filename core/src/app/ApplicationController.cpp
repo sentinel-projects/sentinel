@@ -10522,19 +10522,9 @@ bool ApplicationController::clearMemory() {
         setMemoryMaintenanceStatus(QStringLiteral("Unavailable"));
         return false;
     }
-
-    memoryStore_->clear();
-    const auto succeeded = memoryStore_->lastError().isEmpty();
-    setMemoryMaintenanceStatus(succeeded ? QStringLiteral("Clear completed")
-                                         : QStringLiteral("Clear failed"));
-    if (succeeded) {
-        latestMemoryRecallSummary_ = MemoryRecallSummary{};
-        latestMemoryRecallSummary_.memoryEntryCount = 0;
-    }
-    emit memoryEntriesChanged();
-    emit memoryRecallChanged();
-    emit contextAssemblyChanged();
-    return succeeded;
+    setMemoryMaintenanceStatus(
+        QStringLiteral("Blocked: use Memory management to confirm an authorized scope deletion."));
+    return false;
 }
 
 bool ApplicationController::clearChat() {

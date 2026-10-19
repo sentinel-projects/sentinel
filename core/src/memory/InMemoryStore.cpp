@@ -11,16 +11,25 @@
 namespace sentinel::core {
 
 void InMemoryStore::put(QString key, QString value) {
+    QWriteLocker lock(&scopedLock_);
+    auto& meta = legacyMetadata_[key];
+    if (meta.id.isEmpty()) {
+        meta.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    }
+    meta.revision = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    meta.updatedAtUtc = QDateTime::currentDateTimeUtc();
     if (!ids_.contains(key))
         ids_.insert(key, nextId_++);
     entries_.insert(key, value);
 }
 
 QString InMemoryStore::get(const QString& key) const {
+    QReadLocker lock(&scopedLock_);
     return entries_.value(key);
 }
 
 MemoryEntries InMemoryStore::entries() const {
+    QReadLocker lock(&scopedLock_);
     MemoryEntries result;
     result.reserve(entries_.size());
 
@@ -39,6 +48,7 @@ MemoryEntries InMemoryStore::searchRelevant(const QString& query, int limit) con
 }
 
 QList<MemoryRecord> InMemoryStore::searchRelevantRecords(const QString& query, int limit) const {
+    QReadLocker lock(&scopedLock_);
     QList<MemoryRecord> result;
     if (query.trimmed().isEmpty() || limit <= 0)
         return result;
@@ -71,6 +81,7 @@ ScopedMemoryResult InMemoryStore::writeScopedMemory(const ScopedMemoryWrite& wri
             record.provenance = write.provenance;
             record.sourceReference = write.sourceReference;
             record.updatedAtUtc = now;
+            record.revision = QUuid::createUuid().toString(QUuid::WithoutBraces);
             return {ScopedMemoryStatus::Ready, {record}};
         }
     }
@@ -84,6 +95,7 @@ ScopedMemoryResult InMemoryStore::writeScopedMemory(const ScopedMemoryWrite& wri
                               write.sourceReference,
                               now,
                               now};
+    record.revision = QUuid::createUuid().toString(QUuid::WithoutBraces);
     scoped_.append(record);
     return {ScopedMemoryStatus::Ready, {record}};
 }
@@ -121,10 +133,16 @@ bool InMemoryStore::hasScopedMemory() const {
     return !scoped_.isEmpty();
 }
 
+bool InMemoryStore::hasManagedMemory() const {
+    QReadLocker lock(&scopedLock_);
+    return !scoped_.isEmpty() || !entries_.isEmpty();
+}
+
 void InMemoryStore::clear() {
     QWriteLocker lock(&scopedLock_);
     scoped_.clear();
     entries_.clear();
+    legacyMetadata_.clear();
     ids_.clear();
 }
 

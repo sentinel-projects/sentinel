@@ -31,7 +31,15 @@ public:
                                          const MemoryAccessContext&) override;
     ScopedMemoryResult retrieveMemory(const QString&, const MemoryAccessContext&,
                                       int limit = 10) const override;
+    MemoryManagementResult listManagedMemory(const MemoryPageQuery&,
+                                             const MemoryManagementContext&) const override;
+    MemoryManagementResult readManagedMemory(const QString&,
+                                             const MemoryManagementContext&) const override;
+    MemoryManagementResult mutateManagedMemory(const QList<MemoryMutation>&,
+                                               const MemoryManagementContext&) override;
+    MemoryManagementResult clearManagedMemory(MemoryScope, const MemoryManagementContext&) override;
     bool hasScopedMemory() const override;
+    bool hasManagedMemory() const override;
     void clear() override;
     bool isAvailable() const override;
     QString lastError() const override;
@@ -44,7 +52,7 @@ private:
     void initializeSchema();
     void setLastError(QString error) const;
 
-    static constexpr int currentSchemaVersion = 4;
+    static constexpr int currentSchemaVersion = 5;
 
     QString databasePath_;
     QString connectionName_;

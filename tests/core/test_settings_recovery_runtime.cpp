@@ -349,7 +349,9 @@ private slots:
         message.status = ChatMessageStatus::Completed;
         QVERIFY(chat.appendMessage(message));
         BackupService backup(settings, &chat, &memory);
-        auto exported = backup.exportJson({"settings", "workspaceProfiles", "chat", "memory"});
+        QVERIFY(
+            !backup.exportJson({"settings", "workspaceProfiles", "chat", "memory"}).succeeded());
+        auto exported = backup.exportJson({"settings", "workspaceProfiles", "chat"});
         QVERIFY(exported.succeeded());
         QFile disk(dir.filePath("backup.json"));
         QVERIFY(disk.open(QIODevice::WriteOnly));
@@ -362,17 +364,19 @@ private slots:
         settings.setAppLanguage("en");
         settings.setThemeName("Liquid Glass Light");
         memory.put("certification", "MODIFIED");
-        QVERIFY(backup.importJson(bytes, {"settings", "workspaceProfiles", "memory"},
-            ImportMode::ReplaceSelectedDomains).succeeded());
+        QVERIFY(backup
+                    .importJson(bytes, {"settings", "workspaceProfiles"},
+                                ImportMode::ReplaceSelectedDomains)
+                    .succeeded());
         QCOMPARE(settings.appLanguage(), QStringLiteral("tr"));
-        QCOMPARE(memory.get("certification"), QStringLiteral("MEMORY_OK"));
+        QCOMPARE(memory.get("certification"), QStringLiteral("MODIFIED"));
         QVERIFY(backup.importJson(bytes, {"chat"}, ImportMode::Merge).succeeded());
         QCOMPARE(chat.listConversations().size(), 2);
         QCOMPARE(chat.loadMessages(chat.listConversations().last().id).first().content, QStringLiteral("CHAT_OK"));
         auto rejected = backup.importJson("{broken", {"settings", "memory"}, ImportMode::ReplaceSelectedDomains);
         QCOMPARE(rejected.error, BackupError::ImportValidationFailure);
         QCOMPARE(settings.appLanguage(), QStringLiteral("tr"));
-        QCOMPARE(memory.get("certification"), QStringLiteral("MEMORY_OK"));
+        QCOMPARE(memory.get("certification"), QStringLiteral("MODIFIED"));
         QCOMPARE(chat.listConversations().size(), 2);
         QVERIFY(!backup.exportJson({"credentials"}).succeeded());
     }

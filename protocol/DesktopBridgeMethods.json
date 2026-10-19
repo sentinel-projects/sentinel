@@ -4151,5 +4151,16 @@
     "return": "QStringList",
     "arguments": [],
     "const": true
+  },
+  "manageMemory": {
+    "return": "QVariantMap",
+    "arguments": [
+      {
+        "name": "request",
+        "cpp": "const QVariantMap&",
+        "type": "object"
+      }
+    ],
+    "const": false
   }
 }

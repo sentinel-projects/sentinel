@@ -124,10 +124,12 @@ BackupResult BackupService::exportJson(const QStringList& domains) const {
     if (domains.contains(QStringLiteral("memory"))) {
         if (!memory_ || !memory_->isAvailable())
             return failed(BackupError::ExportFailure, QStringLiteral("Memory store unavailable"));
-        if (memory_->hasScopedMemory())
-            return failed(BackupError::ExportFailure,
-                          QStringLiteral("Scoped memory export requires a scope-preserving format; "
-                                         "legacy export refused"));
+        if (memory_->hasManagedMemory()) {
+            return failed(
+                BackupError::ExportFailure,
+                QStringLiteral("Managed memory export requires a scope-preserving format; "
+                               "legacy export refused"));
+        }
         const auto entries = memory_->entries();
         if (entries.size() > 10000)
             return failed(BackupError::ExportFailure, QStringLiteral("Memory export exceeds limit"));
@@ -249,10 +251,11 @@ BackupResult BackupService::importJson(const QByteArray& bytes,
         if (!memory_ || !memory_->isAvailable() || !data.value(QStringLiteral("memory")).isArray() ||
             memories.size() > 10000)
             return failed(BackupError::ImportValidationFailure, QStringLiteral("Memory unavailable or invalid"));
-        if (memory_->hasScopedMemory())
+        if (memory_->hasManagedMemory()) {
             return failed(
                 BackupError::ImportConflict,
-                QStringLiteral("Legacy memory import cannot replace or roll back scoped records"));
+                QStringLiteral("Legacy memory import cannot replace or roll back managed records"));
+        }
         QSet<QString> keys;
         for (const auto& item : memories) {
             const auto entry = item.toObject();
@@ -415,4 +418,65 @@ BackupResult BackupService::importJson(const QByteArray& bytes,
     return {BackupError::None, {}, clearedRecovery ? QString{} :
         QStringLiteral("Import committed, but recovery status could not be cleared")};
 }
+BackupResult BackupService::exportScopedMemory(IMemoryStore& store, MemoryScope scope,
+                                               const MemoryManagementContext& context) {
+    QList<ScopedMemoryRecord> records;
+    QString cursor;
+    do {
+        const auto page = store.listManagedMemory({scope, {}, cursor, 50}, context);
+        if (page.status != MemoryManagementStatus::Ready) {
+            return {BackupError::ExportFailure, {}, memoryManagementStatusName(page.status)};
+        }
+        records.append(page.records);
+        cursor = page.nextCursor;
+        if (records.size() > 500) {
+            return {BackupError::ExportFailure, {}, "LimitExceeded"};
+        }
+    } while (!cursor.isEmpty());
+    for (const auto& r : records) {
+        if (r.corrections.size() >= 64) {
+            return {BackupError::ExportFailure, {}, "LimitExceeded"};
+        }
+    }
+    const auto bytes = encodeMemoryArchive(records);
+    if (decodeMemoryArchive(bytes).status != MemoryManagementStatus::Ready) {
+        return {BackupError::ExportFailure, {}, "InvalidInput"};
+    }
+    if (bytes.size() > 98304) {
+        return {BackupError::ExportFailure, {}, "LimitExceeded"};
+    }
+    return {BackupError::None, bytes, {}};
+}
+BackupResult BackupService::importScopedMemory(IMemoryStore& store, MemoryScope scope,
+                                               const MemoryManagementContext& context,
+                                               const QByteArray& data, bool skipIdentical) {
+    if (!authorizedMemoryScope(scope, context)) {
+        return {BackupError::ImportValidationFailure, {}, "Unauthorized"};
+    }
+    const auto parsed = decodeMemoryArchive(data);
+    if (parsed.status != MemoryManagementStatus::Ready) {
+        return {
+            BackupError::ImportValidationFailure, {}, memoryManagementStatusName(parsed.status)};
+    }
+    QList<MemoryMutation> changes;
+    for (const auto& r : parsed.records) {
+        if (r.scope != scope || !manageableMemory(r, context)) {
+            return {BackupError::ImportValidationFailure, {}, "Unauthorized"};
+        }
+        MemoryMutation m;
+        m.kind = MemoryMutation::Kind::Import;
+        m.record = r;
+        m.skipIdentical = skipIdentical;
+        changes.append(m);
+    }
+    if (changes.isEmpty()) {
+        return {};
+    }
+    const auto applied = store.mutateManagedMemory(changes, context);
+    if (applied.status != MemoryManagementStatus::Ready) {
+        return {BackupError::ImportCommitFailure, {}, memoryManagementStatusName(applied.status)};
+    }
+    return {};
+}
+
 } // namespace sentinel::core

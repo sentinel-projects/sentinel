@@ -353,6 +353,7 @@ add_library(sentinel_core STATIC
     src/policy/ResourcePolicyCalibration.cpp
     src/policy/ResourcePolicyShadowEvaluation.cpp
     src/policy/ResourcePolicyTelemetryAdapter.cpp
+    src/app/ApplicationMemoryManagement.cpp
     src/app/ApplicationController.cpp
     src/app/AgentInspectorService.cpp
     src/app/ControlledTaskService.cpp
@@ -409,6 +410,9 @@ add_library(sentinel_core STATIC
     src/memory/MemoryCandidate.cpp
     src/memory/MemoryRecall.cpp
     src/memory/SemanticRetrieval.cpp
+    src/memory/MemoryManagement.cpp
+    src/memory/SQLiteMemoryManagement.cpp
+    src/memory/InMemoryManagement.cpp
     src/memory/ScopedMemory.cpp
     src/memory/SQLiteMemoryStore.cpp
     src/memory/SqlitePragmas.cpp

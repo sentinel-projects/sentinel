@@ -5,6 +5,14 @@
 #include <QJsonObject>
 #include <QRegularExpression>
 namespace sentinel::core {
+bool isImportedMemory(const ScopedMemoryRecord& record) {
+    for (const auto& value : record.corrections) {
+        if (value.toObject().value("action") == "import") {
+            return true;
+        }
+    }
+    return false;
+}
 QStringList scopedMemoryQueryTerms(const QString& text) {
     QStringList terms;
     if (text.trimmed().isEmpty()) {
@@ -69,7 +77,8 @@ QString scopedMemoryContextText(const ScopedMemoryResult& result) {
                         {"provenance", memoryProvenanceName(record.provenance)},
                         {"source", record.sourceReference},
                         {"key", record.key},
-                        {"value", record.value.left(400)}};
+                        {"value", record.value.left(400)},
+                        {"importedUnverified", isImportedMemory(record)}};
         auto next = rows;
         next.append(row);
         if (next.size() > 8 || QJsonDocument(next).toJson(QJsonDocument::Compact).size() > 4096) {

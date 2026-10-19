@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "sentinel/core/memory/MemoryManagement.h"
 #include <QByteArray>
 #include <QStringList>
 
@@ -29,6 +30,11 @@ class BackupService final {
 public:
     BackupService(AppSettings& settings, IConversationStore* conversations = nullptr,
                   IMemoryStore* memory = nullptr);
+    static BackupResult exportScopedMemory(IMemoryStore&, MemoryScope,
+                                           const MemoryManagementContext&);
+    static BackupResult importScopedMemory(IMemoryStore&, MemoryScope,
+                                           const MemoryManagementContext&, const QByteArray&,
+                                           bool skipIdentical);
     BackupResult exportJson(const QStringList& domains) const;
     BackupResult importJson(const QByteArray& data, const QStringList& selectedDomains,
                             ImportMode mode);

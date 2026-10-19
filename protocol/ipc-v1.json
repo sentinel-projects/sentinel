@@ -5055,6 +5055,17 @@
         }
       ],
       "scope": "session"
+    },
+    "manageMemory": {
+      "return": "QVariantMap",
+      "arguments": [
+        {
+          "name": "request",
+          "cpp": "const QVariantMap&",
+          "type": "object"
+        }
+      ],
+      "scope": "session"
     }
   },
   "optional_events": {

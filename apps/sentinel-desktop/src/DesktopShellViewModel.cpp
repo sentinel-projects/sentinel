@@ -241,6 +241,8 @@ DesktopShellViewModel::DesktopShellViewModel(DesktopRuntimeClient& client,
             [this] { refreshDaemonErrorProjection(); });
     connect(&client, &DesktopRuntimeClient::changed, this,
             &DesktopShellViewModel::runtimeProjectionChanged);
+    connect(&client, &DesktopRuntimeClient::memoryManagementCompleted, this,
+            &DesktopShellViewModel::memoryManagementCompleted);
     connect(&client, &DesktopRuntimeClient::conversationDeleteCompleted, this,
             &DesktopShellViewModel::conversationDeleteCompleted);
     connect(&client, &DesktopRuntimeClient::changed, this, [this, &client] {
@@ -3924,6 +3926,20 @@ QStringList DesktopShellViewModel::availablePages() const {
 
 ChatMessageListModel* DesktopShellViewModel::chatMessages() {
     return &chatMessages_;
+}
+
+void DesktopShellViewModel::manageMemory(const QVariantMap& request) {
+    if (controller_.isRemote()) {
+        if (!controller_.remote()->ready()) {
+            emit memoryManagementCompleted(
+                {{"status", "Unavailable"}, {"requestTag", request.value("requestTag")}});
+            return;
+        }
+        controller_.manageMemory(request);
+    } else {
+        const auto result = controller_.manageMemory(request);
+        QTimer::singleShot(0, this, [this, result] { emit memoryManagementCompleted(result); });
+    }
 }
 
 QStringList DesktopShellViewModel::memoryEntries() const {

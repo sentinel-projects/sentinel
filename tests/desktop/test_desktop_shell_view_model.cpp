@@ -104,7 +104,7 @@ private slots:
     void exposesStartupLoadedMessages();
     void forwardsChatActions();
     void ignoresBlankChatActions();
-    void clearsMemoryActions();
+    void legacyGlobalMemoryClearIsBlocked();
     void clearsChatActions();
     void reportsRuntimeOnlyChatMaintenanceWhenStoreUnavailable();
     void forwardsModeChanges();
@@ -3038,7 +3038,7 @@ void DesktopShellViewModelTest::clearsChatActions() {
     QVERIFY(spy.count() >= 2);
 }
 
-void DesktopShellViewModelTest::clearsMemoryActions() {
+void DesktopShellViewModelTest::legacyGlobalMemoryClearIsBlocked() {
     ViewModelFixture fixture;
     QSignalSpy memorySpy(&fixture.viewModel, &DesktopShellViewModel::memoryEntriesChanged);
     QSignalSpy maintenanceSpy(&fixture.viewModel, &DesktopShellViewModel::maintenanceStatusChanged);
@@ -3046,10 +3046,10 @@ void DesktopShellViewModelTest::clearsMemoryActions() {
 
     const auto cleared = fixture.viewModel.clearMemory();
 
-    QVERIFY(cleared);
-    QVERIFY(fixture.viewModel.memoryEntries().isEmpty());
-    QCOMPARE(fixture.viewModel.memoryMaintenanceStatus(), QStringLiteral("Clear completed"));
-    QCOMPARE(memorySpy.count(), 2);
+    QVERIFY(!cleared);
+    QCOMPARE(fixture.viewModel.memoryEntries().size(), 1);
+    QVERIFY(fixture.viewModel.memoryMaintenanceStatus().startsWith(QStringLiteral("Blocked:")));
+    QCOMPARE(memorySpy.count(), 1);
     QCOMPARE(maintenanceSpy.count(), 1);
 }
 

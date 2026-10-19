@@ -22,13 +22,22 @@ public:
                                          const MemoryAccessContext&) override;
     ScopedMemoryResult retrieveMemory(const QString&, const MemoryAccessContext&,
                                       int limit = 10) const override;
+    MemoryManagementResult listManagedMemory(const MemoryPageQuery&,
+                                             const MemoryManagementContext&) const override;
+    MemoryManagementResult readManagedMemory(const QString&,
+                                             const MemoryManagementContext&) const override;
+    MemoryManagementResult mutateManagedMemory(const QList<MemoryMutation>&,
+                                               const MemoryManagementContext&) override;
+    MemoryManagementResult clearManagedMemory(MemoryScope, const MemoryManagementContext&) override;
     bool hasScopedMemory() const override;
+    bool hasManagedMemory() const override;
     void clear() override;
 
 private:
     mutable QReadWriteLock scopedLock_;
     QList<ScopedMemoryRecord> scoped_;
     QMap<QString, QString> entries_;
+    QMap<QString, ScopedMemoryRecord> legacyMetadata_;
     QMap<QString, qint64> ids_;
     qint64 nextId_ = 1;
 };

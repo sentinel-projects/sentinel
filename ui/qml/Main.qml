@@ -92,7 +92,7 @@ ApplicationWindow {
             extensionsHub.openSection(pageName === "Tools" ? "tools" : "plugins")
             return
         }
-        if (pageName === "Dashboard" || pageName === "Models" || pageName === "Inspector") {
+        if (pageName === "Dashboard" || pageName === "Models" || pageName === "Inspector" || pageName === "Memory") {
             root.currentShellPage = pageName
             return
         }
@@ -229,6 +229,12 @@ ApplicationWindow {
                         visible: root.currentShellPage === "Extensions" || root.currentShellPage === "Tools"
                         viewModel: root.viewModel
                         onSettingsRequested: function(category) { root.openSettings(category) }
+                    }
+
+                    MemoryPage {
+                        anchors.fill: parent
+                        viewModel: root.viewModel
+                        visible: root.currentShellPage === "Memory"
                     }
 
                     AgentInspectorPage {

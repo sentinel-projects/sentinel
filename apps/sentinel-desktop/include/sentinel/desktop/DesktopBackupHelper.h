@@ -22,6 +22,8 @@ public:
     QStringList importDomains() const { return importDomains_; }
     QString preview() const { return preview_; }
     double progress() const { return expected_ > 0 ? double(offset_) / expected_ : 0; }
+    Q_INVOKABLE QVariantMap loadMemoryArchive(const QUrl& path);
+    Q_INVOKABLE bool saveMemoryArchive(const QUrl& path, const QString& archive);
     Q_INVOKABLE bool exportFile(const QUrl& path, const QStringList& domains);
     Q_INVOKABLE bool inspectFile(const QUrl& path);
     Q_INVOKABLE bool importFile(const QStringList& domains, bool replace);

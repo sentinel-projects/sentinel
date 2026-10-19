@@ -76,6 +76,10 @@ DesktopRuntimeClient::DesktopRuntimeClient(DaemonClient& transport, QObject* par
                     return;
                 }
                 const auto failed = m_requests.take(id);
+                if (failed.target == "manageMemory") {
+                    emit memoryManagementCompleted(
+                        {{"status", "Unavailable"}, {"requestTag", failed.memoryTag}});
+                }
                 if (id == m_extensionActionPending) {
                     m_extensionActionPending.clear();
                     m_extensionActionState["phase"] = "unconfirmed";
@@ -540,6 +544,13 @@ QVariant DesktopRuntimeClient::dispatch(const QString& name, const QVariantList&
         emit operationFailed(QStringLiteral("unsupported-desktop-action"));
         return false;
     }
+    if (name == "manageMemory" &&
+        QJsonDocument(QJsonArray::fromVariantList(args)).toJson(QJsonDocument::Compact).size() >
+            ipc::max_frame_bytes - 4096) {
+        emit memoryManagementCompleted({{"status", "LimitExceeded"},
+                                        {"requestTag", args.first().toMap().value("requestTag")}});
+        return false;
+    }
     const auto id = send(DaemonClient::Command::desktop_action,
                          {{"action", name},
                           {"arguments", QJsonArray::fromVariantList(args)},
@@ -547,6 +558,15 @@ QVariant DesktopRuntimeClient::dispatch(const QString& name, const QVariantList&
                          name);
     if (name == "requestPermanentDeleteConversation")
         m_requests[id].conversationId = text;
+    if (name == "manageMemory") {
+        if (id.isEmpty()) {
+            emit memoryManagementCompleted(
+                {{"status", "Unavailable"},
+                 {"requestTag", args.first().toMap().value("requestTag")}});
+            return false;
+        }
+        m_requests[id].memoryTag = args.first().toMap().value("requestTag").toString();
+    }
     return name == "duplicateConversation" ? QVariant(id) : QVariant(true);
 }
 void DesktopRuntimeClient::clearSession() {
@@ -810,6 +830,15 @@ void DesktopRuntimeClient::onResponse(const QString& id, const QString& name,
         attach(m_sessionId);
         send(DaemonClient::Command::session_list);
     } else if (name == "desktop.action" || name == "model.select") {
+        if (request.target == "manageMemory") {
+            if (m_projectionRemaining == 0) {
+                m_projectionRemaining = -1;
+                send(DaemonClient::Command::desktop_projection, {{"page", 0}});
+            }
+            emit memoryManagementCompleted(
+                payload.value("result").toObject().value("value").toObject().toVariantMap());
+            return; // Memory results never reattach/redirect the accepted conversation.
+        }
         if (request.target == "requestPermanentDeleteConversation")
             emit conversationDeleteCompleted(request.conversationId, payload.value("accepted").toBool(),
                 payload.value("accepted").toBool() ? QString{} : tr("The conversation store rejected deletion."));

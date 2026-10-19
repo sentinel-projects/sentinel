@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "sentinel/core/memory/MemoryManagement.h"
 #include "sentinel/core/memory/ScopedMemory.h"
 
 #include <QList>
@@ -51,8 +52,27 @@ public:
                                               int = 10) const {
         return {};
     }
+    virtual MemoryManagementResult listManagedMemory(const MemoryPageQuery&,
+                                                     const MemoryManagementContext&) const {
+        return {};
+    }
+    virtual MemoryManagementResult readManagedMemory(const QString&,
+                                                     const MemoryManagementContext&) const {
+        return {};
+    }
+    virtual MemoryManagementResult mutateManagedMemory(const QList<MemoryMutation>&,
+                                                       const MemoryManagementContext&) {
+        return {};
+    }
+    virtual MemoryManagementResult clearManagedMemory(MemoryScope, const MemoryManagementContext&) {
+        return {};
+    }
     virtual bool hasScopedMemory() const {
         return false;
+    }
+    // Legacy JSON cannot preserve management identities or correction receipts.
+    virtual bool hasManagedMemory() const {
+        return hasScopedMemory();
     }
     virtual void clear() = 0;
     virtual bool isAvailable() const {

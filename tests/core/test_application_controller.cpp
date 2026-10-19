@@ -3583,10 +3583,10 @@ void ApplicationControllerTest::clearsRuntimeMemoryEntries() {
 
     const auto cleared = controller->clearMemory();
 
-    QVERIFY(cleared);
-    QVERIFY(controller->memoryEntries().isEmpty());
-    QCOMPARE(controller->memoryMaintenanceStatus(), QStringLiteral("Clear completed"));
-    QCOMPARE(spy.count(), 2);
+    QVERIFY(!cleared);
+    QVERIFY(!controller->memoryEntries().isEmpty());
+    QVERIFY(controller->memoryMaintenanceStatus().startsWith(QStringLiteral("Blocked:")));
+    QCOMPARE(spy.count(), 1);
     QCOMPARE(maintenanceSpy.count(), 1);
 }
 

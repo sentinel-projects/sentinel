@@ -1978,6 +1978,7 @@ public:
     }
     Q_INVOKABLE bool clearMemory();
     Q_INVOKABLE bool clearChat();
+    Q_INVOKABLE QVariantMap manageMemory(const QVariantMap& request);
     Q_INVOKABLE void remember(const QString& key, const QString& value);
     Q_INVOKABLE void refreshOllamaStatus();
 
