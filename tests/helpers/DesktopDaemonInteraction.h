@@ -2,6 +2,7 @@
 #pragma once
 #include "DesktopDaemonFixture.h"
 #include "sentinel/core/chat/SQLiteConversationStore.h"
+#include "sentinel/desktop/DesktopBackupHelper.h"
 #include "sentinel/desktop/DesktopRuntimeClient.h"
 #include "sentinel/desktop/DesktopShellViewModel.h"
 #include "sentinel/desktop/viewmodels/AgentInspectorViewModel.h"
@@ -474,6 +475,54 @@ inline int runDesktopDaemonInteraction(QQuickWindow* window, desktop::DesktopShe
                                  {"keyboard_cancel_safe", true},
                                  {"deleted", true},
                                  {"compact_width", 640}});
+    // P8-05: native file boundary plus actual QML preflight/Cancel/confirm flow.
+    auto* backup = qobject_cast<desktop::DesktopBackupHelper*>(vm.backupManager());
+    P606_CHECK(backup);
+    vm.remember("p805-key", "restored through v2");
+    P606_CHECK(wait([&] { return controller.memoryEntryCount() == 1 && runtime.ready(); }));
+    const auto listed = controller.manageMemory({{"operation", "list"}, {"scope", 1}});
+    const QVariantMap archiveContext{{"scope", 1},
+                                     {"session", listed.value("session")},
+                                     {"workspace", listed.value("workspace")}};
+    const auto archiveUrl = QUrl::fromLocalFile(profile.filePath("keyboard.smem"));
+    P606_CHECK(backup->exportMemoryFile(archiveUrl, archiveContext));
+    P606_CHECK(wait([&] { return !backup->busy(); }));
+    P606_CHECK(backup->status().contains("saved successfully"));
+    auto clear = archiveContext;
+    clear["operation"] = "clear";
+    clear["confirmed"] = true;
+    clear["confirmation"] = "DELETE";
+    P606_CHECK(controller.manageMemory(clear).value("status") == "Ready");
+    P606_CHECK(backup->inspectMemoryFile(archiveUrl, archiveContext));
+    P606_CHECK(wait([&] {
+        return backup->memoryReady() && item("memoryLargeImportCancel") &&
+               item("memoryLargeImportCancel")->hasActiveFocus();
+    }));
+    QTest::keyClick(window, Qt::Key_Space);
+    P606_CHECK(wait([&] { return !backup->memoryTransferActive(); }));
+    P606_CHECK(controller.memoryEntryCount() == 0);
+    P606_CHECK(backup->inspectMemoryFile(archiveUrl, archiveContext));
+    P606_CHECK(wait([&] { return backup->memoryReady() && item("memoryLargeImportApply"); }));
+    P606_CHECK(activate("memoryLargeImportApply"));
+    P606_CHECK(wait([&] { return !backup->busy() && controller.memoryEntryCount() == 1; }));
+    P606_CHECK(backup->status().contains("restored successfully"));
+    P606_CHECK(wait([&] { return item("memoryInspectRecord"); }));
+    P606_CHECK(activate("memoryInspectRecord"));
+    P606_CHECK(wait([&] { return item("memoryHistory") && item("memoryHistory")->isVisible(); }));
+    P606_CHECK(activate("memoryHistory"));
+    P606_CHECK(wait([&] {
+        return item("memoryHistoryClose") && item("memoryHistoryClose")->hasActiveFocus() &&
+               desktopContains(window->contentItem(), "local-recorded-event");
+    }));
+    QTest::keyClick(window, Qt::Key_Space);
+    QTest::keyClick(window, Qt::Key_Escape);
+    P606_CHECK(wait([&] { return !item("memoryValue"); }));
+    P606_CHECK(capture("memory-archive-complete"));
+    record("memory-archive", {{"native_file", true},
+                              {"preflight", true},
+                              {"cancel_safe", true},
+                              {"keyboard_confirm", true},
+                              {"restored", true}});
     P606_CHECK(!script->timedOut.load());
 #undef P606_CHECK
     return 0;

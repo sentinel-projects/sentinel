@@ -37,6 +37,7 @@ add_library(sentinel_desktop_viewmodels STATIC
     src/ExtensionsHubPresentation.cpp
     include/sentinel/desktop/DesktopBackupHelper.h
     src/DesktopBackupHelper.cpp
+    src/DesktopMemoryArchive.cpp
     include/sentinel/desktop/QuickPanelController.h
     src/QuickPanelController.cpp
     include/sentinel/desktop/DesktopModelHelper.h

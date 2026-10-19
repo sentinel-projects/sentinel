@@ -8,6 +8,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSaveFile>
+#include <QTemporaryFile>
 namespace sentinel::desktop {
 namespace {
 constexpr int maximumBytes = 16 * 1024 * 1024;
@@ -17,6 +18,12 @@ const QStringList supported{"settings", "workspaceProfiles", "extensions", "chat
 DesktopBackupHelper::DesktopBackupHelper(DesktopRuntimeClient* runtime, QObject* parent)
     : QObject(parent), runtime_(runtime) {
     if (!runtime_) return;
+    connect(runtime_, &DesktopRuntimeClient::memoryManagementCompleted, this,
+            [this](const QVariantMap& result) {
+                if (memoryActive_ && result.value("requestTag").toString() == memoryTag_) {
+                    receiveMemory(result);
+                }
+            });
     connect(&runtime_->transport(), &DaemonClient::responseReceived, this,
         [this](const QString& id, const QString& name, const QJsonObject& payload) {
             if (busy_ && id == request_ && name == "backup.transfer") receive(payload.value("result").toObject());
@@ -71,14 +78,18 @@ bool DesktopBackupHelper::saveMemoryArchive(const QUrl& path, const QString& arc
     return file.commit();
 }
 bool DesktopBackupHelper::exportFile(const QUrl& path, const QStringList& domains) {
-    if (busy_) return false;
+    if (busy_ || memoryActive_) {
+        return false;
+    }
     if (!runtime_ || !runtime_->ready() || !path.isLocalFile() || domains.isEmpty()) { finish(tr("Choose a destination and connect to the daemon.")); return false; }
     importing_ = false; destination_ = path; bytes_.clear(); transfer_.clear(); offset_ = 0; expected_ = 0;
     busy_ = true; status_ = tr("Preparing backup…"); emit changed();
     send("export", {{"domains", QJsonArray::fromStringList(domains)}}); return true;
 }
 bool DesktopBackupHelper::inspectFile(const QUrl& path) {
-    if (busy_) return false;
+    if (busy_ || memoryActive_) {
+        return false;
+    }
     importDomains_.clear(); importBytes_.clear(); preview_.clear();
     QFile file(path.toLocalFile());
     if (!path.isLocalFile() || !file.open(QIODevice::ReadOnly) || file.size() <= 0 || file.size() > maximumBytes) { finish(tr("Choose a readable Sentinel JSON backup no larger than 16 MB.")); return false; }
@@ -99,7 +110,9 @@ bool DesktopBackupHelper::inspectFile(const QUrl& path) {
     status_ = tr("Backup inspected. Select the data to restore and confirm the import."); emit changed(); return true;
 }
 bool DesktopBackupHelper::importFile(const QStringList& domains, bool replace) {
-    if (busy_) return false;
+    if (busy_ || memoryActive_) {
+        return false;
+    }
     if (!runtime_ || !runtime_->ready() || importBytes_.isEmpty() || domains.isEmpty()) { finish(tr("Inspect a backup and connect to the daemon first.")); return false; }
     for (const auto& domain : domains) if (!importDomains_.contains(domain)) { finish(tr("Select only data present in this backup.")); return false; }
     importing_ = true; bytes_ = importBytes_; transfer_.clear(); offset_ = 0; expected_ = bytes_.size();
@@ -107,7 +120,22 @@ bool DesktopBackupHelper::importFile(const QStringList& domains, bool replace) {
     busy_ = true; status_ = tr("Uploading and validating backup…"); emit changed();
     send("importBegin", {{"domains", QJsonArray::fromStringList(domains)}, {"size", expected_}, {"sha256", QString::fromLatin1(digest_)}, {"replace", replace}}); return true;
 }
-void DesktopBackupHelper::cancel() { if (cancellable()) finish(tr("Backup transfer cancelled.")); }
+void DesktopBackupHelper::cancel() {
+    if (!cancellable()) {
+        return;
+    }
+    if (memoryActive_) {
+        if (memoryJob_.isEmpty()) {
+            memoryCancelPending_ = true;
+            status_ = tr("Archive cancellation requested; waiting for the job identity.");
+            emit changed();
+        } else {
+            sendMemory("archiveCancel");
+        }
+    } else {
+        finish(tr("Backup transfer cancelled."));
+    }
+}
 void DesktopBackupHelper::receive(const QJsonObject& result) {
     if (!result.value("succeeded").toBool()) { finish(tr("The backup operation was rejected (%1). Existing data has not been reported as successfully changed.").arg(result.value("code").toString(result.value("detail").toString()))); return; }
     if (action_ == "export" || action_ == "importBegin") {

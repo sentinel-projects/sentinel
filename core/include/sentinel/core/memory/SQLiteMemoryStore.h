@@ -5,6 +5,7 @@
 #pragma once
 
 #include "sentinel/core/interfaces/IMemoryStore.h"
+#include "sentinel/core/memory/MemoryArchive.h"
 
 #include <QSqlDatabase>
 #include <QString>
@@ -46,17 +47,26 @@ public:
     bool isAvailable() const override;
     QString lastError() const override;
 
+    static MemoryArchiveResult exportArchiveSnapshot(const QString&, QIODevice&, MemoryScope,
+                                                     const MemoryManagementContext&,
+                                                     const MemoryArchiveLimits&,
+                                                     const MemoryArchiveControl&);
+    MemoryArchiveResult restoreArchive(QIODevice&, MemoryScope, const MemoryManagementContext&,
+                                       const MemoryArchiveLimits&, const MemoryArchiveControl&,
+                                       bool skipIdentical);
     QString databasePath() const;
     int schemaVersion() const;
 
 private:
+    MemoryManagementResult applyManagedMutations(const QList<MemoryMutation>&,
+                                                 const MemoryManagementContext&);
     void open();
     void initializeSchema();
     void initializeRetrievalIndex();
     static MemoryIndexStatus indexStatus(QSqlDatabase&, const MemoryAccessContext&);
     void setLastError(QString error) const;
 
-    static constexpr int currentSchemaVersion = 6;
+    static constexpr int currentSchemaVersion = 7;
 
     QString databasePath_;
     QString connectionName_;

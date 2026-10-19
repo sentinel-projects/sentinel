@@ -5,24 +5,26 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "../../protocol/QtIpcContract.generated.h"
 #include "../support/DeterministicChatFixture.h"
-#include "sentinel/core/agent/IAgentStepPlanner.h"
 #include "sentinel/core/agent/AgentRuntime.h"
-#include "sentinel/core/mcp/McpToolProvider.h"
+#include "sentinel/core/agent/IAgentStepPlanner.h"
 #include "sentinel/core/agent/NullAgentRuntime.h"
 #include "sentinel/core/app/ApplicationControllerBuilder.h"
 #include "sentinel/core/app/OnboardingService.h"
+#include "sentinel/core/mcp/McpToolProvider.h"
 #include "sentinel/core/memory/InMemorySettingsStore.h"
 #include "sentinel/core/memory/InMemoryStore.h"
+#include "sentinel/core/memory/SQLiteMemoryStore.h"
 #include "sentinel/core/model/ModelLibrary.h"
 #include "sentinel/core/security/StaticSandboxPolicy.h"
 #include "sentinel/desktop/DaemonClient.h"
+#include "sentinel/desktop/DesktopBackupHelper.h"
 #include "sentinel/desktop/DesktopControllerBridge.h"
 #include "sentinel/desktop/DesktopModelHelper.h"
-#include "sentinel/desktop/DesktopBackupHelper.h"
 #include "sentinel/desktop/DesktopRuntimeClient.h"
 #include "sentinel/desktop/DesktopSettingsStore.h"
 #include "sentinel/desktop/QuickPanelController.h"
 #include "service/DaemonIpcServer.h"
+#include <QTimer>
 
 #include <QDir>
 #include <QCryptographicHash>
@@ -293,6 +295,84 @@ struct RuntimePeer : Peer {
 class DesktopIpcTest final : public QObject {
     Q_OBJECT
 private slots:
+    void largeMemoryArchiveUsesNativeDesktopBoundary() {
+        using namespace sentinel::core;
+        QTemporaryDir directory{QDir::tempPath() + "/ma-XXXXXX"};
+        QVERIFY(directory.isValid());
+        sentinel::test::DeterministicModelServiceFixture fixture;
+        auto memory = std::make_unique<SQLiteMemoryStore>(directory.filePath("memory.db"));
+        auto* store = memory.get();
+        ApplicationControllerBuilder builder;
+        auto controller = builder.withModelService(fixture.takeModelService())
+                              .withOllamaRuntimeClient(std::make_unique<MetadataClient>())
+                              .withMemoryStore(std::move(memory))
+                              .build();
+        sentinel::daemon::DaemonIpcServer server(controller.get());
+        QVERIFY(server.startServer(directory.filePath("archive.sock")));
+        DaemonClient transport(directory.filePath("archive.sock"), 3000, 10);
+        sentinel::desktop::DesktopRuntimeClient adapter(transport);
+        QTRY_VERIFY(adapter.ready());
+        const auto listed = controller->manageMemory({{"operation", "list"}, {"scope", 1}});
+        QCOMPARE(listed.value("status").toString(), QString("Ready"));
+        const auto session = listed.value("session").toString(),
+                   workspace = listed.value("workspace").toString();
+        MemoryAccessContext access{session, workspace, {workspace}, false};
+        QString id;
+        for (int i = 0; i < 550; ++i) {
+            const auto result = store->writeScopedMemory(
+                {MemoryScope::Session, QString("large%1").arg(i), QString(400, 'x')}, access);
+            QCOMPARE(result.status, ScopedMemoryStatus::Ready);
+            if (i == 549) {
+                id = result.records.first().id;
+            }
+        }
+        QVariantMap context{{"scope", 1},
+                            {"session", session},
+                            {"workspace", workspace},
+                            {"maxBytes", 64 * 1024 * 1024},
+                            {"maxRecords", 10000}};
+        sentinel::desktop::DesktopBackupHelper helper(&adapter);
+        const auto url = QUrl::fromLocalFile(directory.filePath("scope.smem"));
+        int ticks = 0;
+        QTimer heartbeat;
+        connect(&heartbeat, &QTimer::timeout, &helper, [&] { ++ticks; });
+        heartbeat.start(1);
+        QVERIFY(helper.exportMemoryFile(url, context));
+        QTRY_VERIFY_WITH_TIMEOUT(!helper.busy(), 15000);
+        QVERIFY2(helper.status().contains("saved successfully"), qPrintable(helper.status()));
+        QVERIFY(ticks > 0);
+        QVERIFY(QFileInfo(url.toLocalFile()).size() > 98304);
+        QVERIFY(!helper.exportMemoryFile(url, context));
+        auto clear = context;
+        clear["operation"] = "clear";
+        clear["confirmed"] = true;
+        clear["confirmation"] = "DELETE";
+        clear.remove("maxBytes");
+        clear.remove("maxRecords");
+        QCOMPARE(controller->manageMemory(clear).value("status").toString(), QString("Ready"));
+        QVERIFY(helper.inspectMemoryFile(url, context));
+        QTRY_VERIFY_WITH_TIMEOUT(helper.memoryReady(), 15000);
+        QVERIFY(helper.preview().contains("550 records"));
+        QCOMPARE(store->retrieveMemory("large549", access).records.size(), 0);
+        helper.cancel();
+        QTRY_VERIFY(!helper.memoryTransferActive());
+        QCOMPARE(store->retrieveMemory("large549", access).records.size(), 0);
+        QVERIFY(helper.inspectMemoryFile(url, context));
+        QTRY_VERIFY_WITH_TIMEOUT(helper.memoryReady(), 15000);
+        QSignalSpy invalidated(controller.get(), &ApplicationController::memoryRecallChanged);
+        QVERIFY(helper.restoreMemoryFile(false));
+        QTRY_VERIFY_WITH_TIMEOUT(!helper.busy(), 15000);
+        QVERIFY2(helper.status().contains("restored successfully"), qPrintable(helper.status()));
+        QTRY_VERIFY(!invalidated.isEmpty());
+        const auto restored = store->retrieveMemory("large549", access);
+        QCOMPARE(restored.records.first().id, id);
+        QVERIFY(isImportedMemory(restored.records.first()));
+        const auto cancelled = QUrl::fromLocalFile(directory.filePath("cancelled.smem"));
+        QVERIFY(helper.exportMemoryFile(cancelled, context));
+        helper.cancel();
+        QTRY_VERIFY_WITH_TIMEOUT(!helper.busy(), 15000);
+        QVERIFY(!QFile::exists(cancelled.toLocalFile()));
+    }
     void scopedMemoryManagementUsesRealDesktopAction() {
         QTemporaryDir directory{QDir::tempPath() + "/mm-XXXXXX"};
         QVERIFY(directory.isValid());

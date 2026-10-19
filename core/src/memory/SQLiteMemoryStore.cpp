@@ -583,6 +583,12 @@ void SQLiteMemoryStore::initializeSchema() {
         setLastError("Memory management migration failed.");
         return;
     }
+    if (!query.exec("CREATE INDEX IF NOT EXISTS memory_archive_order ON "
+                    "scoped_memory_entries(scope,owner_id,workspace_id,id)")) {
+        identityReady_ = false;
+        setLastError("Memory archive index migration failed.");
+        return;
+    }
     initializeRetrievalIndex();
     query.prepare(QStringLiteral("INSERT INTO memory_schema_metadata(key, value) VALUES(?, ?) "
                                  "ON CONFLICT(key) DO UPDATE SET value = excluded.value"));

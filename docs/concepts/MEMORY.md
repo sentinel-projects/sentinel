@@ -37,15 +37,10 @@ assembly marks imported history `importedUnverified`. Serialized identifiers mus
 match the authorized target context; they are never remapped to another workspace.
 No archive data is executed or used as a filesystem destination.
 
-Exports/imports are bounded to 500 records and 96 KiB and refuse partial results.
-The default duplicate policy rejects the entire import; the explicit alternative
-skips logically identical records and rejects differing UUID conflicts. Imports are
-transactional. Internal concurrency revisions are regenerated to avoid stale-token
-reuse. Correction receipts are bounded to 64; export refuses records at that bound
-because a restore must retain room for its import receipt. A larger or long-lived
-archive/history policy is deferred. Export pagination is serialized within a daemon
-request, but is not a cross-process database snapshot; coordinate external writers
-when taking an archive.
+The v1 path remains bounded to 500 records / 96 KiB and 64 receipts. Prefer the
+P8-05 native file archive below for larger collections and consistent snapshots.
+Both paths reject duplicate UUID conflicts by default; explicit skip-identical never
+replaces a differing record. Imports regenerate concurrency revisions.
 
 Generic legacy JSON memory backup/replace stays blocked whenever managed records
 (including Legacy records with identities) exist. Other backup domains remain
@@ -114,6 +109,62 @@ Health and candidate SQL may scan authorized rows to validate consistency; the
 candidate/result and repair row counts are bounded, not a hard CPU/deadline guarantee.
 The read-only FTS probe is not a comprehensive physical database integrity certification.
 Severe SQLite/FTS corruption can remain unavailable for a separately reviewed recovery
-migration. The 500-record/96-KiB archive, 64-receipt limit, combined-backup block and
-cross-process archive snapshot limitation remain for P8-05; import trigger maintenance
-is atomic with existing scope-preserving transactional restore.
+migration. P8-05 adds the consistent large archive below. The combined-backup block remains;
+import trigger maintenance is atomic with scope-preserving transactional restore.
+
+
+## Large memory-only archives and recovery (P8-05)
+
+The native Memory page file workflow writes version 2 NDJSON. Its header fixes
+format `sentinel-scoped-memory`, version 2, schema 7 and one scope. Each chunk
+contains ordered records plus its canonical-records SHA-256. A final manifest binds
+the exact header/chunk bytes, UUID sequence, chunk/record counts and versions.
+Each record preserves its metadata and receipts; `exportRevision` is snapshot
+metadata, never an accepted optimistic-concurrency token on import. These hashes
+provide integrity, without encryption or authenticity.
+
+Defaults are 64 MiB and 10,000 records; explicit bounds allow 96 KiB–256 MiB and
+1–100,000 records. Desktop uses whole MiB controls. Chunks hold at most 100 records
+and 1 MiB, with a single serialized record limited to 1 MiB minus 1024 bytes.
+Oversize records/collections fail explicitly. No full archive is loaded into RAM.
+A forward-only authorized UUID cursor runs in one dedicated read transaction on a
+worker-owned SQLite connection. Schema 7 adds an ordered scope/owner/workspace/UUID
+index; metadata and FTS behavior remain intact. Concurrent writers cannot mix
+snapshot states. The cooperative 30-second worker deadline and 1-second SQL busy
+wait bound ordinary jobs; filesystem stalls are not a hard real-time guarantee.
+Snapshots can retain WAL pages until their transaction ends.
+
+Native selected files never cross IPC as paths. Downloads/uploads use 32 KiB
+chunks and opaque context-bound jobs. Private staging files have owner-only
+permissions and an exclusive directory lock; at most two jobs coexist. Inactive
+jobs expire lazily after ten minutes on a later begin operation. Restart removes
+only marked, generated staging files while holding the lock. Export publishes a
+new filename after complete verification and never overwrites an existing file.
+
+Preflight checks structure, integrity, scope and owners without changing records.
+Confirmed restore validates again inside one `BEGIN IMMEDIATE` transaction with
+`FULL` synchronous mode. Duplicate policy is reject or explicit skip-identical;
+replacement is unsupported. Any parse/authority/conflict/write/index failure or
+precommit cancellation rolls back records and trigger-maintained FTS together.
+A missing/stale scoped index blocks completion until explicit bounded repair.
+SQLite crash recovery retains the pre-restore state. No unfinished export is
+published and no interrupted job is automatically resumed or committed.
+Cancellation after the commit boundary reports the actual committed outcome.
+Transport/context loss can make the client outcome unknown; inspect the authorized
+scope before retrying. Jobs remain bound to the original context and cannot be
+redirected by changing the selected conversation/workspace.
+
+Correction receipts are retained without pruning, capped at 256; reaching the cap
+blocks further changes needing a receipt. v2 export/preflight also refuses records
+at capacity, reserving room for the required import receipt instead of silently
+producing an unrestorable archive. v1 keeps its stricter 64-receipt guard.
+History is read in pages of 16. Receipts preceding the latest import are labelled
+unverified imported history; the locally recorded import event and subsequent
+local corrections are distinguished. Neither receipts nor hashes authenticate
+historical source evidence. No retention duration or automatic compaction is set.
+
+The memory-only archive is independent of combined application backup. Settings,
+conversation history and memory have different storage owners with no coordinated
+snapshot/rollback contract. Combined managed-memory backup therefore stays blocked.
+No credentials, grants or unrelated databases are included. Personal inclusion,
+Legacy recall exclusion and P8-02 vision-token restrictions are unchanged.

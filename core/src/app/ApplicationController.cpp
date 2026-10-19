@@ -17,6 +17,7 @@
 #include "sentinel/core/chat/OllamaChatProvider.h"
 #include "sentinel/core/memory/InMemoryMemoryCandidateStore.h"
 #include "sentinel/core/memory/JsonSettingsStore.h"
+#include "sentinel/core/memory/MemoryArchiveJobs.h"
 #include "sentinel/core/memory/StaticMemoryCatalog.h"
 #include "sentinel/core/model/ModelLibrary.h"
 #include "sentinel/core/model/ModelOperationService.h"

@@ -10,7 +10,10 @@
 #include "sentinel/core/chat/SQLiteConversationStore.h"
 #include "sentinel/core/interfaces/IChatProvider.h"
 #include "sentinel/core/memory/InMemoryStore.h"
+#include "sentinel/core/memory/SQLiteMemoryStore.h"
 #include "sentinel/core/model/ModelService.h"
+#include <QBuffer>
+#include <QTemporaryDir>
 
 #include <QScopeGuard>
 #include <QSemaphore>
@@ -154,6 +157,7 @@ private slots:
     void responseProfileChangesRequestWithoutChangingUserMessage();
     void scopedMemoryControlsProductionPrompt();
     void rankedMemoryDrivesProductionPrompt();
+    void restoredV2MemoryFeedsProductionPrompt();
     void managedCorrectionsAndDeletionAffectSubsequentRequests();
     void shortPromptCharacterization();
     void largeHistoryPreservesActiveAndReportsReduction();
@@ -285,6 +289,35 @@ void ChatModeServiceTest::managedCorrectionsAndDeletionAffectSubsequentRequests(
     for (const auto& item : ContextEngine{}.build(input).items) {
         QVERIFY(item.kind != AgentContextKind::Memory);
     }
+}
+
+void ChatModeServiceTest::restoredV2MemoryFeedsProductionPrompt() {
+    Harness h(FixtureProvider::ReplyMode::EchoPrompt);
+    QTemporaryDir dir;
+    SQLiteMemoryStore source(dir.filePath("source.db")), target(dir.filePath("target.db"));
+    MemoryAccessContext access{h.conversationId, "p1", {"p1"}, false};
+    MemoryManagementContext authority{access, false};
+    const auto original =
+        source
+            .writeScopedMemory({MemoryScope::Session, "orchid", "RESTORED_P805",
+                                MemoryProvenance::GeneratedSummary, "summary:source"},
+                               access)
+            .records.first();
+    QBuffer archive;
+    archive.open(QIODevice::ReadWrite);
+    QVERIFY(SQLiteMemoryStore::exportArchiveSnapshot(source.databasePath(), archive,
+                                                     MemoryScope::Session, authority, {}, {})
+                .ok());
+    QVERIFY(target.restoreArchive(archive, MemoryScope::Session, authority, {}, {}, false).ok());
+    ChatModeService service(h.models, h.session, h.store);
+    service.setScopedMemory(&target, [&](const QString&) { return access; });
+    QVERIFY(service.send(h.conversationId, "orchid", {}, {"ollama", "fixture"}));
+    QTRY_VERIFY(!service.busy());
+    const auto prompt = h.session.messages().last().content;
+    QVERIFY(prompt.contains(original.id));
+    QVERIFY(prompt.contains("RESTORED_P805"));
+    QVERIFY(prompt.contains("generated-summary"));
+    QVERIFY(prompt.contains("importedUnverified"));
 }
 
 void ChatModeServiceTest::rankedMemoryDrivesProductionPrompt() {

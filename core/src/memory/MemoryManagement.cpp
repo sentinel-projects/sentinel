@@ -101,12 +101,18 @@ bool parseManagedMemory(const QJsonObject& o, ScopedMemoryRecord* r) {
     r->createdAtUtc = QDateTime::fromString(o.value("created").toString(), Qt::ISODateWithMs);
     r->updatedAtUtc = QDateTime::fromString(o.value("updated").toString(), Qt::ISODateWithMs);
     r->corrections = o.value("corrections").toArray();
+    for (const auto& text :
+         {r->id, r->ownerId, r->workspaceId, r->key, r->value, r->sourceReference}) {
+        if (!text.isValidUtf16()) {
+            return false;
+        }
+    }
     if (QUuid(r->id).isNull() ||
         (r->scope == MemoryScope::Legacy
              ? r->key.size() > 256 || r->value.size() > 65536 || r->sourceReference.size() > 512
              : !validMemoryWrite(
                    {r->scope, r->key, r->value, r->provenance, r->sourceReference})) ||
-        r->ownerId.size() > 256 || r->workspaceId.size() > 256 || r->corrections.size() > 64) {
+        r->ownerId.size() > 256 || r->workspaceId.size() > 256 || r->corrections.size() > 256) {
         return false;
     }
     if (r->scope != MemoryScope::Legacy &&
@@ -154,7 +160,9 @@ bool parseManagedMemory(const QJsonObject& o, ScopedMemoryRecord* r) {
         const auto receipt = value.toObject();
         if (receipt.size() != 4 || !receipt.value("at").isString() ||
             !QDateTime::fromString(receipt.value("at").toString(), Qt::ISODateWithMs).isValid() ||
-            !receipt.value("actor").isString() || receipt.value("actor").toString().isEmpty() ||
+            !receipt.value("actor").isString() ||
+            !receipt.value("actor").toString().isValidUtf16() ||
+            receipt.value("actor").toString().isEmpty() ||
             receipt.value("actor").toString().size() > 256 || !receipt.value("action").isString() ||
             !QSet<QString>{"correct", "move", "reclassify", "import-replace", "import"}.contains(
                 receipt.value("action").toString()) ||
@@ -246,7 +254,7 @@ MemoryManagementStatus prepareManagedMutation(const MemoryMutation& m,
         next->corrections = {};
     } else {
         *next = *current;
-        if (next->corrections.size() >= 64) {
+        if (next->corrections.size() >= 256) {
             return MemoryManagementStatus::LimitExceeded;
         }
         const QString action = m.kind == MemoryMutation::Kind::Move
@@ -290,7 +298,7 @@ MemoryManagementStatus prepareManagedMutation(const MemoryMutation& m,
         return MemoryManagementStatus::InvalidInput;
     }
     if (m.kind == MemoryMutation::Kind::Import) {
-        if (next->corrections.size() >= 64) {
+        if (next->corrections.size() >= 256) {
             return MemoryManagementStatus::LimitExceeded;
         }
         next->corrections.append(QJsonObject{
@@ -355,7 +363,7 @@ MemoryManagementResult decodeMemoryArchive(const QByteArray& bytes) {
     for (const auto& row : rows) {
         ScopedMemoryRecord record;
         if (!row.isObject() || !parseManagedMemory(row.toObject(), &record) ||
-            ids.contains(record.id)) {
+            record.corrections.size() > 64 || ids.contains(record.id)) {
             return result;
         }
         ids.insert(record.id);

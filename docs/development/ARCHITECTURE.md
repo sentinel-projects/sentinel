@@ -77,3 +77,13 @@ existing OpenAiCompatibleProtocol module. The adapter retains capability/registr
 request budgets, transport execution, lifecycle/error mapping and native Claude/Gemini orchestration. See the [P2-M06 audit](../audits/P2_M06_SHARED_ENDPOINT_ADAPTER_EXTRACTION_RESULT.md).
 
 Hardware capability facts and model-fit estimates exist, but a continuous CPU/RAM/GPU pressure-driven adaptive resource policy is not implemented. Linux global Quick Panel shortcuts use the session-bus GlobalShortcuts portal when the backend confirms a binding; unavailable portals and refused bindings remain unavailable. Native KDE/Wayland registration and focus acceptance remain unverified (see the [P6-04 report](../audits/P6_04_KDE_WAYLAND_NATIVE_INTEGRATION_RESULT.md)). Daemon clipboard tools require a GUI and are unavailable in the headless process; Linux application launching is explicitly unsupported. Native platform behavior remains subject to acceptance, including Rust Windows named-pipe transport, which is not implemented. Public distribution blockers remain in the [SEC-P1 register](SEC_P1_4_GITHUB_HARDENING_REPORT.md#5-consolidated-blocker-register).
+
+
+P8-05 adds schema 7's ordered scope archive index, worker-owned forward-only
+SQLite snapshot reads, bounded v2 chunk archives and atomic source/FTS restores.
+`MemoryArchiveJobs` owns opaque context-bound private staging jobs; the native
+`DesktopBackupHelper` transfers bounded chunks through existing typed desktop
+management IPC. Selected paths never reach daemon IPC. Correction history is
+non-destructively bounded at 256 with paged inspection. Combined managed-memory
+backup remains blocked without coordinated cross-domain recovery; see
+[Memory](../concepts/MEMORY.md) for limits and cancellation semantics.

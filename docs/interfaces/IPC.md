@@ -186,3 +186,26 @@ most 100 source and 100 orphan projection rows in a transaction. Stale means mor
 work remains or hooks are inconsistent; unavailable means unsupported/unusable index
 or storage. No background refresh or job polling is implied. Existing Cancel-first
 DELETE/MOVE confirmations are preserved; index refresh also defaults to Cancel.
+
+
+### P8-05 native archive transfer
+
+The canonical `desktop.action/manageMemory(object)` signature remains unchanged.
+Its documented suboperations add `archiveExportBegin`, `archiveImportBegin`,
+`archiveWrite`, `archiveValidate`, `archiveCommit`, `archivePoll`, `archiveRead`,
+and `archiveCancel`. Begin accepts bounded integer `maxBytes` / `maxRecords`;
+import begin also accepts `size`. Responses carry opaque `job`, `state`,
+`cancellable`, record/byte/chunk counters and terminal detail. Transfer uses exact
+`offset` plus base64 `data`, at most 32 KiB decoded per message. Commit requires
+`confirmed:true` and `conflict:"reject"|"skipIdentical"`. Jobs bind the actual
+session/workspace/scope and explicit personal/legacy flags on every call. No
+selected path is accepted. All responses retain the caller `requestTag`.
+Existing-job transfer, validation, polling and cancellation can proceed during a
+run; begin and commit retain runtime-busy admission. No source restore starts
+through a transfer operation. Core still enforces frozen context identity.
+
+`history` uses record `id`, scope and integer `offset`, returning at most 16
+receipts with attribution, total, nextOffset, revision and historySha256. These
+are integrity/attribution aids, not authenticated evidence. Native file selection,
+regular-file checks, no-overwrite publication and confirmation remain Desktop
+responsibilities; Core owns authorization and atomic database restore.

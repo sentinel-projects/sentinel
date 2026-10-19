@@ -835,8 +835,13 @@ void DesktopRuntimeClient::onResponse(const QString& id, const QString& name,
                 m_projectionRemaining = -1;
                 send(DaemonClient::Command::desktop_projection, {{"page", 0}});
             }
-            emit memoryManagementCompleted(
-                payload.value("result").toObject().value("value").toObject().toVariantMap());
+            auto memoryResult =
+                payload.value("result").toObject().value("value").toObject().toVariantMap();
+            if (!memoryResult.contains("status")) {
+                memoryResult.insert("status", "Unavailable");
+            }
+            memoryResult.insert("requestTag", request.memoryTag);
+            emit memoryManagementCompleted(memoryResult);
             return; // Memory results never reattach/redirect the accepted conversation.
         }
         if (request.target == "requestPermanentDeleteConversation")

@@ -160,6 +160,16 @@ SQLiteMemoryStore::mutateManagedMemory(const QList<MemoryMutation>& mutations,
         return {};
     }
     auto rollback = qScopeGuard([&] { database_.rollback(); });
+    auto result = applyManagedMutations(mutations, c);
+    if (result.status != MemoryManagementStatus::Ready || !database_.commit()) {
+        return result.status == MemoryManagementStatus::Ready ? MemoryManagementResult{} : result;
+    }
+    rollback.dismiss();
+    return result;
+}
+MemoryManagementResult
+SQLiteMemoryStore::applyManagedMutations(const QList<MemoryMutation>& mutations,
+                                         const MemoryManagementContext& c) {
     MemoryManagementResult result{MemoryManagementStatus::Ready, {}, {}};
     for (const auto& m : mutations) {
         auto found = m.record.id.isEmpty()
@@ -254,12 +264,9 @@ SQLiteMemoryStore::mutateManagedMemory(const QList<MemoryMutation>& mutations,
         }
         result.records.append(next);
     }
-    if (!database_.commit()) {
-        return {};
-    }
-    rollback.dismiss();
     return result;
 }
+
 MemoryManagementResult SQLiteMemoryStore::clearManagedMemory(MemoryScope scope,
                                                              const MemoryManagementContext& c) {
     if (!authorizedMemoryScope(scope, c)) {

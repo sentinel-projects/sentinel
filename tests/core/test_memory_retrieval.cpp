@@ -140,7 +140,7 @@ private slots:
         QString id;
         {
             SQLiteMemoryStore store(path);
-            QCOMPARE(store.schemaVersion(), 6);
+            QCOMPARE(store.schemaVersion(), 7);
             QCOMPARE(store.memoryIndexStatus(own()).state, MemoryIndexState::Ready);
             auto record = seed(store, MemoryScope::Session, "before", "orchid");
             id = record.id;
@@ -207,7 +207,7 @@ private slots:
                    "DROP TRIGGER scoped_search_update", "DROP TABLE scoped_memory_search",
                    "UPDATE memory_schema_metadata SET value=5 WHERE key='schema_version'"}));
         SQLiteMemoryStore migrated(path);
-        QCOMPARE(migrated.schemaVersion(), 6);
+        QCOMPARE(migrated.schemaVersion(), 7);
         const auto after = migrated.readManagedMemory(before.id, {own(), false}).records.first();
         QCOMPARE(after.value, before.value);
         QCOMPARE(after.createdAtUtc, before.createdAtUtc);

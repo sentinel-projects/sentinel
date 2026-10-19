@@ -3,6 +3,9 @@
 #include "sentinel/core/app/BackupService.h"
 #include "sentinel/core/chat/IConversationStore.h"
 #include "sentinel/core/interfaces/IMemoryStore.h"
+#include "sentinel/core/memory/MemoryArchiveJobs.h"
+#include "sentinel/core/memory/SQLiteMemoryStore.h"
+#include <QCryptographicHash>
 #include <QJsonDocument>
 namespace sentinel::core {
 QVariantMap ApplicationController::manageMemory(const QVariantMap& request) {
@@ -16,7 +19,8 @@ QVariantMap ApplicationController::manageMemory(const QVariantMap& request) {
     const QSet<QString> allowed{"operation", "scope",    "search",    "cursor",      "id",
                                 "revision",  "key",      "value",     "destination", "personal",
                                 "legacy",    "session",  "workspace", "confirmed",   "confirmation",
-                                "archive",   "conflict", "selected",  "offset",      "requestTag"};
+                                "archive",   "conflict", "selected",  "offset",      "requestTag",
+                                "job",       "data",     "maxBytes",  "maxRecords",  "size"};
     for (auto it = input.begin(); it != input.end(); ++it) {
         if (!allowed.contains(it.key())) {
             return answer("InvalidInput");
@@ -24,7 +28,7 @@ QVariantMap ApplicationController::manageMemory(const QVariantMap& request) {
     }
     for (const auto& key :
          {"operation", "search", "cursor", "id", "revision", "key", "value", "session", "workspace",
-          "confirmation", "archive", "conflict", "requestTag"}) {
+          "confirmation", "archive", "conflict", "requestTag", "job", "data"}) {
         if (input.contains(key) && !input.value(key).isString()) {
             return answer("InvalidInput");
         }
@@ -34,7 +38,7 @@ QVariantMap ApplicationController::manageMemory(const QVariantMap& request) {
             return answer("InvalidInput");
         }
     }
-    for (const auto& key : {"scope", "destination", "offset"}) {
+    for (const auto& key : {"scope", "destination", "offset", "maxBytes", "maxRecords", "size"}) {
         if (input.contains(key) && (!input.value(key).isDouble() ||
                                     input.value(key).toDouble() != input.value(key).toInt())) {
             return answer("InvalidInput");
@@ -63,8 +67,8 @@ QVariantMap ApplicationController::manageMemory(const QVariantMap& request) {
         return answer("Unauthorized");
     }
     const auto op = input.value("operation").toString();
-    const bool reading =
-        op == "list" || op == "read" || op == "export" || op == "search" || op == "indexStatus";
+    const bool reading = op == "list" || op == "read" || op == "export" || op == "search" ||
+                         op == "indexStatus" || op == "history";
     if (!reading && (input.value("session").toString() != context.access.sessionId ||
                      input.value("workspace").toString() != context.access.workspaceId)) {
         return answer("Conflict");
@@ -75,6 +79,66 @@ QVariantMap ApplicationController::manageMemory(const QVariantMap& request) {
         emit memoryRecallChanged();
         emit contextAssemblyChanged();
     };
+    if (op.startsWith("archive")) {
+        const auto* sqlite = dynamic_cast<SQLiteMemoryStore*>(memoryStore_.get());
+        if (!sqlite) {
+            return answer("Unavailable");
+        }
+        if (!memoryArchiveJobs_) {
+            memoryArchiveJobs_ =
+                std::make_unique<MemoryArchiveJobs>(sqlite->databasePath(), this, [this] {
+                    latestMemoryRecallSummary_ = MemoryRecallSummary{};
+                    emit memoryEntriesChanged();
+                    emit memoryRecallChanged();
+                    emit contextAssemblyChanged();
+                });
+        }
+        auto result = memoryArchiveJobs_->handle(input, scope, context);
+        if (result.take("changed").toBool()) {
+            changed();
+        }
+        const auto status = result.take("status").toString();
+        return answer(status, result);
+    }
+    if (op == "history") {
+        const auto current = memoryStore_->readManagedMemory(input.value("id").toString(), context);
+        if (current.status != MemoryManagementStatus::Ready) {
+            return answer(memoryManagementStatusName(current.status));
+        }
+        const auto& record = current.records.first();
+        if (record.scope != scope) {
+            return answer("Unauthorized");
+        }
+        const int offset = input.value("offset").toInt();
+        if (offset < 0 || offset > record.corrections.size()) {
+            return answer("InvalidInput");
+        }
+        int lastImport = -1;
+        for (int i = 0; i < record.corrections.size(); ++i) {
+            if (record.corrections[i].toObject().value("action") == "import") {
+                lastImport = i;
+            }
+        }
+        QJsonArray entries;
+        for (int i = offset; i < qMin(offset + 16, static_cast<int>(record.corrections.size()));
+             ++i) {
+            entries.append(
+                QJsonObject{{"receipt", record.corrections[i]},
+                            {"attribution", i < lastImport ? "unverified-imported-history"
+                                                           : "local-recorded-event"}});
+        }
+        return answer("Ready",
+                      {{"entries", entries},
+                       {"total", record.corrections.size()},
+                       {"nextOffset", offset + entries.size()},
+                       {"revision", record.revision},
+                       {"historySha256",
+                        QString::fromLatin1(
+                            QCryptographicHash::hash(
+                                QJsonDocument(record.corrections).toJson(QJsonDocument::Compact),
+                                QCryptographicHash::Sha256)
+                                .toHex())}});
+    }
     if (op == "search" || op == "indexStatus" || op == "refreshIndex") {
         if (scope == MemoryScope::Legacy) {
             return answer("Unauthorized");
@@ -191,7 +255,11 @@ QVariantMap ApplicationController::manageMemory(const QVariantMap& request) {
         auto row = managedMemoryJson(r, true);
         row.insert("value", r.value.mid(offset, count));
         row.insert("offset", offset);
-        row.insert("corrections", r.corrections);
+        QJsonArray receipts;
+        for (int i = 0; i < qMin(16, static_cast<int>(r.corrections.size())); ++i) {
+            receipts.append(r.corrections[i]);
+        }
+        row.insert("corrections", receipts);
         return answer("Ready", {{"record", row}});
     }
     QList<MemoryMutation> mutations;

@@ -239,7 +239,7 @@ private slots:
         {
             SQLiteMemoryStore store(path);
             QVERIFY(store.isAvailable());
-            QCOMPARE(store.schemaVersion(), 6);
+            QCOMPARE(store.schemaVersion(), 7);
             QCOMPARE(store.searchRelevantRecords("orchid", 10).first().id, qint64(42));
             QVERIFY(store.retrieveMemory({}, access("s1", "p1", true)).records.isEmpty());
             auto result =

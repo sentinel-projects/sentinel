@@ -1239,9 +1239,18 @@ void DaemonIpcServer::handleRequest(const QJsonObject& message, QLocalSocket* so
             return;
         }
         if (m_state == "running" || m_state == "approval") {
+            // Existing jobs keep their frozen scope. Transfer/control does not start a restore.
+            const auto memoryOperation =
+                (arguments.isEmpty() ? QJsonObject{} : arguments.at(0).toObject())
+                    .value("operation")
+                    .toString();
+            const bool archiveControl = action == "manageMemory" &&
+                                        QSet<QString>{"archivePoll", "archiveRead", "archiveWrite",
+                                                      "archiveValidate", "archiveCancel"}
+                                            .contains(memoryOperation);
             // Selector changes affect future work only; core keeps its frozen ModelBinding.
             if (action != "setSelectedRuntimeProvider" && action != "setSelectedLocalModel" &&
-                !(deleting && deleteTarget != m_sessionId)) {
+                !(deleting && deleteTarget != m_sessionId) && !archiveControl) {
                 error(socket, id, "runtime-busy");
                 return;
             }

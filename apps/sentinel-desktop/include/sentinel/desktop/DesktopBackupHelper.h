@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
-#include <QObject>
 #include <QJsonObject>
+#include <QObject>
 #include <QUrl>
 #include <QVariantMap>
+#include <memory>
+class QFile;
+class QTemporaryFile;
+class QCryptographicHash;
 namespace sentinel::desktop {
 class DesktopRuntimeClient;
 class DesktopBackupHelper final : public QObject {
     Q_OBJECT
+    Q_PROPERTY(bool memoryReady READ memoryReady NOTIFY changed)
+    Q_PROPERTY(bool memoryTransferActive READ memoryTransferActive NOTIFY changed)
     Q_PROPERTY(bool busy READ busy NOTIFY changed)
     Q_PROPERTY(bool cancellable READ cancellable NOTIFY changed)
     Q_PROPERTY(QString status READ status NOTIFY changed)
@@ -16,8 +22,21 @@ class DesktopBackupHelper final : public QObject {
     Q_PROPERTY(double progress READ progress NOTIFY changed)
 public:
     explicit DesktopBackupHelper(DesktopRuntimeClient* runtime, QObject* parent = nullptr);
+    ~DesktopBackupHelper() override;
+    bool memoryReady() const {
+        return memoryReady_;
+    }
+    bool memoryTransferActive() const {
+        return memoryActive_;
+    }
+    Q_INVOKABLE bool exportMemoryFile(const QUrl&, const QVariantMap&);
+    Q_INVOKABLE bool inspectMemoryFile(const QUrl&, const QVariantMap&);
+    Q_INVOKABLE bool restoreMemoryFile(bool skipIdentical);
     bool busy() const { return busy_; }
-    bool cancellable() const { return busy_ && action_ != QStringLiteral("commit"); }
+    bool cancellable() const {
+        return memoryActive_ ? (busy_ || memoryReady_) && memoryCanCancel_
+                             : busy_ && action_ != QStringLiteral("commit");
+    }
     QString status() const { return status_; }
     QStringList importDomains() const { return importDomains_; }
     QString preview() const { return preview_; }
@@ -31,6 +50,17 @@ public:
 signals:
     void changed();
 private:
+    void sendMemory(const QString&, QJsonObject = {});
+    void receiveMemory(const QVariantMap&);
+    void finishMemory(const QString&);
+    void pollMemory();
+    bool memoryActive_ = false, memoryReady_ = false, memoryCanCancel_ = true,
+         memoryCancelPending_ = false;
+    QString memoryJob_, memoryTag_, memoryMode_;
+    QVariantMap memoryRequest_;
+    std::unique_ptr<QFile> memorySource_;
+    std::unique_ptr<QTemporaryFile> memoryTarget_;
+    std::unique_ptr<QCryptographicHash> memoryHash_;
     void send(const QString& action, QJsonObject value = {});
     void receive(const QJsonObject& result);
     void finish(const QString& status);

@@ -2209,6 +2209,7 @@ private:
     QString kokoroSpeechModelPath_;
     QString kokoroSpeechVoice_;
     std::unique_ptr<IMemoryStore> memoryStore_;
+    std::unique_ptr<class MemoryArchiveJobs> memoryArchiveJobs_;
     std::unique_ptr<IMemoryCandidateStore> memoryCandidateStore_;
     MemoryCandidateReviewResult latestMemoryCandidateReviewResult_;
     MemoryCommitPolicy memoryCommitPolicy_;
