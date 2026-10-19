@@ -26,6 +26,21 @@ flowchart TD
 
 Persistence remains split: settings use `ISettingsStore`; memory uses `IMemoryStore`; history and conversations use their own stores; permission grants and agent runs have separate SQLite stores. Qt SQL is the SQLite path. Core should not depend on QML presentation or platform-only behavior.
 
+Scoped memory uses the existing `IMemoryStore` owner and memory database. Schema v4 adds
+`scoped_memory_entries` for session, project and explicitly included personal records; the old
+`memory_entries` table remains unclassified Legacy data with its original keys/values/IDs.
+Legacy data is excluded from automatic scoped retrieval. Session records also bind their workspace
+so selecting another workspace cannot expose the same conversation's previous project memory.
+ApplicationController resolves scope from the active conversation and selected existing workspace;
+ChatModeService snapshots scoped data before inference. AgentLoop/ContextEngine and memory-search
+use runtime-owned session/workspace identity, including the gateway's sealed invocation session.
+Stable UUIDs, UTC metadata, typed provenance and bounded source references survive retrieval;
+generated/inferred/unknown content remains untrusted data. Personal inclusion is off in production
+composition until an explicit sharing policy is supplied. Existing JSON memory backup is refused
+when scoped rows exist, avoiding lossy export or rollback; scoped management/export/deletion UI
+remains later P8 work. See [P8-01](../audits/P8_01_SCOPED_MEMORY_IMPLEMENTATION_RESULT.md).
+
+
 The concurrency model uses Qt signals/events for UI and provider integration; agent execution scheduling and loop events keep active work observable and cancellable. See [Agent Runtime](../concepts/AGENT_RUNTIME.md) for run semantics. These components are implemented; reliable real-model task completion remains unaccepted.
 
 Built-in provider identity and static registration metadata live in the immutable `ProviderRegistry`
