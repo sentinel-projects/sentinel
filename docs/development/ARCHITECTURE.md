@@ -87,3 +87,14 @@ management IPC. Selected paths never reach daemon IPC. Correction history is
 non-destructively bounded at 256 with paged inspection. Combined managed-memory
 backup remains blocked without coordinated cross-domain recovery; see
 [Memory](../concepts/MEMORY.md) for limits and cancellation semantics.
+
+P8-06 storage inspection found no shared write barrier, stable application-profile
+identity or durable multi-owner restore journal. `BackupService` now explicitly
+reports coordinated backup/recovery as Blocked and refuses multi-domain legacy
+export/import before mutation. Settings exposes that capability through the existing
+typed daemon/Desktop action; the Desktop offers one portable domain at a time and
+a Cancel-focused confirmation. The internal BackupRecoveryJournal now persists bounded preimages and verified
+state receipts through Qt SQL, with explicit Unix file-identity/durability checks
+and real process-interruption tests. It is not bound to a live owner quiescence or
+replacement/reinitialization protocol; no combined format or crash-safe application
+restore is enabled. See [P8-06](../audits/P8_06_COORDINATED_BACKUP_RECOVERY_RESULT.md).

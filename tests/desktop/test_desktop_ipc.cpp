@@ -2051,6 +2051,17 @@ private slots:
             }
             return QJsonObject{};
         };
+        QCOMPARE(call(owner, "export", {{"domains", QJsonArray{"settings", "chat"}}})
+                     .value("code")
+                     .toString(),
+                 QString("CoordinatedOperationBlocked"));
+        const auto refused = call(owner, "importBegin",
+                                  {{"domains", QJsonArray{"settings", "chat"}},
+                                   {"size", 1},
+                                   {"sha256", QString(64, '0')},
+                                   {"replace", true}});
+        QCOMPARE(refused.value("code").toString(), QString("CoordinatedOperationBlocked"));
+        QVERIFY(refused.value("transferId").toString().isEmpty());
         const auto exported = call(owner, "export", {{"domains", QJsonArray{"settings"}}});
         QVERIFY(exported.value("succeeded").toBool());
         const auto transfer = exported.value("transferId").toString();
@@ -2087,6 +2098,15 @@ private slots:
         QCOMPARE(call(owner, "commit", {{"transferId", cancelled}}).value("code").toString(), QString("UnknownTransfer"));
         sentinel::desktop::DesktopRuntimeClient runtime(owner);
         QTRY_VERIFY(runtime.ready());
+        QTRY_COMPARE(runtime.settingsService("productBackupAvailability", {}, true)
+                         .toMap()
+                         .value("coordinatedState")
+                         .toString(),
+                     QString("Blocked"));
+        QVERIFY(!runtime.settingsService("productBackupAvailability", {}, true)
+                     .toMap()
+                     .value("coordinatedRestoreAvailable")
+                     .toBool());
         sentinel::desktop::DesktopBackupHelper helper(&runtime);
         const auto file = QUrl::fromLocalFile(directory.filePath("backup.json"));
         QVERIFY(helper.exportFile(file, {"settings"}));

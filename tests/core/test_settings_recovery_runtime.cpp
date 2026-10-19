@@ -351,7 +351,9 @@ private slots:
         BackupService backup(settings, &chat, &memory);
         QVERIFY(
             !backup.exportJson({"settings", "workspaceProfiles", "chat", "memory"}).succeeded());
-        auto exported = backup.exportJson({"settings", "workspaceProfiles", "chat"});
+        auto exported = backup.exportJson({"chat"});
+        const auto settingsExport = backup.exportJson({"settings"});
+        QVERIFY(settingsExport.succeeded());
         QVERIFY(exported.succeeded());
         QFile disk(dir.filePath("backup.json"));
         QVERIFY(disk.open(QIODevice::WriteOnly));
@@ -364,10 +366,9 @@ private slots:
         settings.setAppLanguage("en");
         settings.setThemeName("Liquid Glass Light");
         memory.put("certification", "MODIFIED");
-        QVERIFY(backup
-                    .importJson(bytes, {"settings", "workspaceProfiles"},
-                                ImportMode::ReplaceSelectedDomains)
-                    .succeeded());
+        QVERIFY(
+            backup.importJson(settingsExport.data, {"settings"}, ImportMode::ReplaceSelectedDomains)
+                .succeeded());
         QCOMPARE(settings.appLanguage(), QStringLiteral("tr"));
         QCOMPARE(memory.get("certification"), QStringLiteral("MODIFIED"));
         QVERIFY(backup.importJson(bytes, {"chat"}, ImportMode::Merge).succeeded());
@@ -379,6 +380,56 @@ private slots:
         QCOMPARE(memory.get("certification"), QStringLiteral("MODIFIED"));
         QCOMPARE(chat.listConversations().size(), 2);
         QVERIFY(!backup.exportJson({"credentials"}).succeeded());
+    }
+    void coordinatedOperationsRefuseBeforeMutation() {
+        QTemporaryDir dir;
+        const auto settingsPath = dir.filePath("settings.json");
+        AppSettings settings(std::make_unique<JsonSettingsStore>(settingsPath),
+                             inMemoryTestCredentialStore());
+        SQLiteConversationStore chat(dir.filePath("conversations.sqlite3"));
+        SQLiteMemoryStore memory(dir.filePath("memory.sqlite3"));
+        BackupService backup(settings, &chat, &memory);
+        settings.setThemeName("Dracula");
+        const auto conversation = chat.createConversation("Preserve identity");
+        QVERIFY(!conversation.id.isEmpty());
+        const auto original = backup.exportJson({"settings"});
+        QVERIFY(original.succeeded());
+        auto root = QJsonDocument::fromJson(original.data).object();
+        auto manifest = root.value("manifest").toObject();
+        manifest.insert("includedDomains", QJsonArray{"settings", "chat"});
+        root.insert("manifest", manifest);
+        auto data = root.value("data").toObject();
+        data.insert("chat", QJsonArray{});
+        root.insert("data", data);
+        settings.setThemeName("Liquid Glass Light");
+        QFile file(settingsPath);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto preimage = file.readAll();
+        file.close();
+        for (const auto mode : {ImportMode::Merge, ImportMode::ReplaceSelectedDomains}) {
+            const auto result =
+                backup.importJson(QJsonDocument(root).toJson(), {"settings", "chat"}, mode);
+            QCOMPARE(result.error, BackupError::CoordinatedOperationBlocked);
+            QVERIFY(!result.succeeded());
+        }
+        const auto exported = backup.exportJson({"settings", "chat"});
+        QCOMPARE(exported.error, BackupError::CoordinatedOperationBlocked);
+        QVERIFY(exported.data.isEmpty());
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), preimage);
+        QCOMPARE(settings.themeName(), QString("Liquid Glass Light"));
+        QCOMPARE(chat.listConversations().size(), 1);
+        QCOMPARE(chat.listConversations().first().id, conversation.id);
+        const auto state = SettingsService(settings).backupAvailability();
+        QCOMPARE(state.value("coordinatedState").toString(), QString("Blocked"));
+        QVERIFY(!state.value("coordinatedBackupAvailable").toBool());
+        QVERIFY(!state.value("coordinatedRestoreAvailable").toBool());
+        QVERIFY(state.value("includedDomains").toArray().isEmpty());
+        QVERIFY(state.value("lastVerifiedCoordinatedBackup").isNull());
+        QVERIFY(!state.value("chat").toBool());
+        QVERIFY(!state.value("memory").toBool());
+        QCOMPARE(state.value("maximumSelectedDomains").toInt(), 1);
+        QVERIFY(!QJsonDocument(state).toJson().contains(dir.path().toUtf8()));
     }
     void retentionAndClearAreStoreScoped() {
         QTemporaryDir dir;

@@ -527,12 +527,7 @@ QJsonObject SettingsService::recoveryState() const {
 }
 
 QJsonObject SettingsService::backupAvailability() const {
-    return {{QStringLiteral("settings"), true},
-            {QStringLiteral("workspaceProfiles"), true},
-            {QStringLiteral("extensions"), true},
-            {QStringLiteral("chat"), conversations_ != nullptr},
-            {QStringLiteral("memory"), memory_ != nullptr},
-            {QStringLiteral("formatVersion"), 1}};
+    return BackupService(settings_, conversations_, memory_).availability();
 }
 
 BackupResult SettingsService::exportBackupJson(const QStringList& domains) const {

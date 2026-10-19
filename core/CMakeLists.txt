@@ -52,6 +52,8 @@ add_library(sentinel_core STATIC
     include/sentinel/core/app/OrchestrationSnapshot.h
     include/sentinel/core/app/OnboardingService.h
     include/sentinel/core/app/SettingsService.h
+    include/sentinel/core/app/BackupRecoveryJournal.h
+    include/sentinel/core/platform/RecoveryJournalFileSecurity.h
     include/sentinel/core/app/BackupService.h
     include/sentinel/core/app/RecoveryService.h
     include/sentinel/core/network/NetworkPolicyService.h
@@ -370,6 +372,8 @@ add_library(sentinel_core STATIC
     src/app/OnboardingService.cpp
     src/app/SettingsService.cpp
     src/app/StorageMigration.cpp
+    src/app/BackupRecoveryJournal.cpp
+    src/platform/RecoveryJournalFileSecurity.cpp
     src/app/BackupService.cpp
     src/app/ProductMessages.cpp
     src/app/SkillProfileService.cpp

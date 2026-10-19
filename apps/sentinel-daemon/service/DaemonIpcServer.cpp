@@ -950,6 +950,10 @@ void DaemonIpcServer::handleRequest(const QJsonObject& message, QLocalSocket* so
                 fail("InvalidDomains");
                 return;
             }
+            if (domains.size() > 1) {
+                fail("CoordinatedOperationBlocked");
+                return;
+            }
             BackupTransfer transfer;
             transfer.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
             transfer.domains = domains;

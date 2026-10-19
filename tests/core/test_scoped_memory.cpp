@@ -155,9 +155,11 @@ private slots:
                              inMemoryTestCredentialStore());
         InMemoryStore memory;
         BackupService backup(settings, nullptr, &memory);
+        QVERIFY(backup.availability().value("memory").toBool());
         const auto legacy = backup.exportJson({"memory"});
         QVERIFY(legacy.succeeded());
         memory.put("old", "legacy");
+        QVERIFY(!backup.availability().value("memory").toBool());
         QVERIFY(!backup.exportJson({"memory"}).succeeded());
         QVERIFY(!backup.importJson(legacy.data, {"memory"}, ImportMode::ReplaceSelectedDomains)
                      .succeeded());

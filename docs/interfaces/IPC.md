@@ -209,3 +209,26 @@ receipts with attribution, total, nextOffset, revision and historySha256. These
 are integrity/attribution aids, not authenticated evidence. Native file selection,
 regular-file checks, no-overwrite publication and confirmation remain Desktop
 responsibilities; Core owns authorization and atomic database restore.
+
+## Backup capability limits (P8-06)
+
+The existing generated `productBackupAvailability` settings query delegates to
+`BackupService::availability`. Its object adds `maximumSelectedDomains:1`,
+`coordinatedBackupAvailable:false`, `coordinatedRestoreAvailable:false`,
+`coordinatedState:"Blocked"`, and the bounded reason code
+`OwnerQuiescenceAndDurableRecoveryUnavailable`. `includedDomains` is empty for
+coordinated backup; `excludedDomains` and `domainContracts` describe its inventory.
+`lastVerifiedCoordinatedBackup:null` means no verified coordinated-backup tracking
+exists; `recoveryInspection:"Unavailable"` does not assert there is no interrupted
+operation. Boolean portable-domain flags reflect owner availability, including the
+managed-memory legacy-export refusal. These fields convey capability, not a journal
+or a recovery verification receipt. No filesystem paths or stored content appear.
+
+`backup.transfer` rejects export/importBegin requests selecting more than one
+domain with `CoordinatedOperationBlocked`, without allocating an upload transfer.
+Core repeats the guard so the existing settings actions and direct callers cannot
+bypass it (appended BackupError enum value 8). A legacy multi-domain v1 document
+can still be inspected and imported **one selected domain at a time**; this is an
+independent portable import, with no application-wide consistency or crash-recovery
+guarantee. No new top-level command, generated signature, trust override or
+automatic recovery action is introduced.

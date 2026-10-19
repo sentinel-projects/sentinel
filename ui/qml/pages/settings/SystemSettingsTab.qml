@@ -13,6 +13,7 @@ import Sentinel.Desktop
 
 Item {
     id: root
+    objectName: "backupSettingsTab"
     required property var viewModel
     property bool compact: false
     property bool notificationsOnly: false
@@ -24,7 +25,7 @@ Item {
     readonly property var backup: root.viewModel.backupManager
     property var backupAvailability: ({})
     property var recovery: ({})
-    property var selectedBackupDomains: ["settings", "workspaceProfiles", "extensions"]
+    property var selectedBackupDomains: ["settings"]
     property bool replaceImport: false
     property string recoveryStatus: ""
     readonly property var backupDomains: [
@@ -42,6 +43,40 @@ Item {
     }
     Timer { interval: 1500; repeat: true; triggeredOnStart: true; running: root.visible && !root.generalOnly && !root.notificationsOnly; onTriggered: root.refreshRecovery() }
 
+    Dialog {
+        id: restoreConfirmation
+        objectName: "backupRestoreConfirmation"
+        parent: Overlay.overlay
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(540, root.width - 24)
+        title: qsTr("Confirm selected domain restore")
+        onOpened: restoreCancel.forceActiveFocus(Qt.PopupFocusReason)
+        onClosed: { confirmRestore.checked = false; confirmRestore.forceActiveFocus(Qt.PopupFocusReason) }
+        contentItem: ColumnLayout {
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("Restore %1 only. This portable import has no application-wide crash recovery guarantee. Review the selected domain and mode before continuing.").arg(root.selectedBackupDomains.join(", "))
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                color: SentinelTheme.textPrimary
+            }
+            RowLayout {
+                Button { id: restoreCancel; objectName: "backupRestoreCancel"; text: qsTr("Cancel"); onClicked: restoreConfirmation.close() }
+                Button {
+                    objectName: "backupRestoreApply"
+                    text: qsTr("Restore selected domain")
+                    enabled: root.viewModel.daemonConnected && !root.backup.busy && confirmRestore.checked && root.selectedBackupDomains.length === 1
+                    onClicked: {
+                        const selected = root.selectedBackupDomains.filter(function(key) { return root.backup.importDomains.indexOf(key) >= 0 })
+                        root.backup.importFile(selected, root.replaceImport)
+                        restoreConfirmation.close()
+                    }
+                }
+            }
+        }
+    }
+
     signal openUpdateRequested()
 
     height: implicitHeight
@@ -58,13 +93,26 @@ Item {
         SectionTitle {
             visible: !root.generalOnly && !root.notificationsOnly
             title: qsTr("Backup & Recovery")
-            subtitle: qsTr("Save selected local data or restore a reviewed backup. Credentials, model files and temporary recordings are excluded.")
+            subtitle: qsTr("Export one portable data domain at a time. Coordinated application backup and recovery are unavailable. Credentials, permission grants and agent runs are excluded.")
             Layout.fillWidth: true
         }
         SettingCard {
             visible: !root.generalOnly && !root.notificationsOnly
             title: qsTr("Backup data")
-            subtitle: qsTr("Basic settings include theme, language and network mode from the runtime. Desktop-only presentation preferences are not included in this format.")
+            subtitle: qsTr("Basic settings include runtime theme, language and network mode. Workspace profiles can contain sensitive instructions and paths; select them only for an explicit export. Managed memory uses authorized scope archives on the Memory page.")
+            Label {
+                objectName: "coordinatedBackupStatus"
+                Layout.fillWidth: true
+                Layout.margins: SentinelTheme.spaceMd
+                text: !root.viewModel.daemonConnected ? qsTr("Connect to the daemon to inspect backup availability.")
+                    : !root.backupAvailability.coordinatedState ? qsTr("Loading backup availability…")
+                    : qsTr("Coordinated backup: %1. Consistent recovery across application data stores is not yet available. Use a single domain export or an authorized memory archive.").arg(root.backupAvailability.coordinatedState)
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                color: SentinelTheme.warning
+                Accessible.role: Accessible.StaticText
+                Accessible.name: text
+            }
             Repeater {
                 model: root.backupDomains
                 SettingToggleRow {
@@ -74,9 +122,8 @@ Item {
                     interactive: !root.backup.busy && root.backupAvailability[modelData.key] === true
                     checked: root.selectedBackupDomains.indexOf(modelData.key) >= 0
                     onToggled: (checked) => {
-                        const next = root.selectedBackupDomains.filter(function(key) { return key !== modelData.key })
-                        if (checked) next.push(modelData.key)
-                        root.selectedBackupDomains = next
+                        root.selectedBackupDomains = checked ? [modelData.key] : []
+                        confirmRestore.checked = false
                     }
                 }
             }
@@ -84,7 +131,7 @@ Item {
                 Layout.fillWidth: true
                 Layout.margins: SentinelTheme.spaceMd
                 spacing: 8
-                SentinelButton { objectName: "backupExportButton"; text: qsTr("Export backup"); enabled: root.viewModel.daemonConnected && !root.backup.busy && root.selectedBackupDomains.length > 0; onClicked: backupSaveDialog.open() }
+                SentinelButton { objectName: "backupExportButton"; text: qsTr("Export selected domain"); enabled: root.viewModel.daemonConnected && !root.backup.busy && root.selectedBackupDomains.length > 0; onClicked: backupSaveDialog.open() }
                 SentinelButton { objectName: "backupInspectButton"; text: qsTr("Choose backup to restore"); enabled: !root.backup.busy; onClicked: backupOpenDialog.open() }
                 SentinelButton { visible: root.backup.cancellable; text: qsTr("Cancel transfer"); onClicked: root.backup.cancel() }
             }
@@ -111,6 +158,7 @@ Item {
             }
             CheckBox {
                 id: confirmRestore
+                objectName: "backupReviewed"
                 visible: root.backup.importDomains.length > 0
                 Layout.fillWidth: true
                 Layout.margins: SentinelTheme.spaceMd
@@ -118,15 +166,13 @@ Item {
                 contentItem: Text { text: confirmRestore.text; color: SentinelTheme.textPrimary; wrapMode: Text.WordWrap; leftPadding: confirmRestore.indicator.width + 8; verticalAlignment: Text.AlignVCenter }
             }
             SentinelButton {
+                id: restoreSelected
+                objectName: "backupRestoreSelected"
                 visible: root.backup.importDomains.length > 0
                 Layout.margins: SentinelTheme.spaceMd
                 text: qsTr("Restore selected data")
                 enabled: root.viewModel.daemonConnected && !root.backup.busy && confirmRestore.checked && root.selectedBackupDomains.some(function(key) { return root.backup.importDomains.indexOf(key) >= 0 })
-                onClicked: {
-                    const selected = root.selectedBackupDomains.filter(function(key) { return root.backup.importDomains.indexOf(key) >= 0 })
-                    root.backup.importFile(selected, root.replaceImport)
-                    confirmRestore.checked = false
-                }
+                onClicked: restoreConfirmation.open()
             }
             ProgressBar { visible: root.backup.busy; Layout.fillWidth: true; value: root.backup.progress }
             Label { Layout.fillWidth: true; Layout.margins: SentinelTheme.spaceMd; visible: root.backup.status.length > 0; text: root.backup.status; color: SentinelTheme.textMuted; wrapMode: Text.WordWrap; textFormat: Text.PlainText }

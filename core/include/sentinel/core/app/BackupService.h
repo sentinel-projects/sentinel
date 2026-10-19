@@ -4,6 +4,7 @@
 
 #include "sentinel/core/memory/MemoryManagement.h"
 #include <QByteArray>
+#include <QJsonObject>
 #include <QStringList>
 
 namespace sentinel::core {
@@ -13,8 +14,15 @@ class IConversationStore;
 class IMemoryStore;
 
 enum class BackupError {
-    None, ExportFailure, ImportValidationFailure, ImportConflict,
-    UnsupportedBackupVersion, StoreFailure, ImportCommitFailure, ImportRollbackFailure
+    None,
+    ExportFailure,
+    ImportValidationFailure,
+    ImportConflict,
+    UnsupportedBackupVersion,
+    StoreFailure,
+    ImportCommitFailure,
+    ImportRollbackFailure,
+    CoordinatedOperationBlocked
 };
 enum class ImportMode { Merge, ReplaceSelectedDomains };
 
@@ -35,6 +43,7 @@ public:
     static BackupResult importScopedMemory(IMemoryStore&, MemoryScope,
                                            const MemoryManagementContext&, const QByteArray&,
                                            bool skipIdentical);
+    QJsonObject availability() const;
     BackupResult exportJson(const QStringList& domains) const;
     BackupResult importJson(const QByteArray& data, const QStringList& selectedDomains,
                             ImportMode mode);

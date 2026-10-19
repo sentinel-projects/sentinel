@@ -523,6 +523,52 @@ inline int runDesktopDaemonInteraction(QQuickWindow* window, desktop::DesktopShe
                               {"cancel_safe", true},
                               {"keyboard_confirm", true},
                               {"restored", true}});
+    // P8-06: production Settings flow reports the blocked combined contract.
+    P606_CHECK(activate("settingsNavigationButton"));
+    P606_CHECK(wait([&] { return item("settingsPage"); }));
+    item("settingsPage")->setProperty("activeCategory", "System");
+    P606_CHECK(wait([&] {
+        return item("coordinatedBackupStatus") &&
+               item("coordinatedBackupStatus")->property("text").toString().contains("Blocked");
+    }));
+    const auto portableUrl = QUrl::fromLocalFile(profile.filePath("portable-settings.json"));
+    P606_CHECK(backup->exportFile(portableUrl, {"settings"}));
+    P606_CHECK(wait([&] { return !backup->busy(); }));
+    P606_CHECK(backup->inspectFile(portableUrl));
+    P606_CHECK(wait([&] { return item("backupReviewed"); }));
+    P606_CHECK(activate("backupReviewed"));
+    P606_CHECK(activate("backupRestoreSelected"));
+    P606_CHECK(wait([&] {
+        return item("backupRestoreCancel") && item("backupRestoreCancel")->hasActiveFocus();
+    }));
+    auto* accessibleCancel = QAccessible::queryAccessibleInterface(item("backupRestoreCancel"));
+    P606_CHECK(accessibleCancel && accessibleCancel->role() == QAccessible::Button);
+    P606_CHECK(capture("backup-confirm-cancel"));
+    const auto profileBeforeCancel = desktopBytes(profile.filePath("settings.json"));
+    P606_CHECK(activate("backupRestoreCancel"));
+    P606_CHECK(desktopBytes(profile.filePath("settings.json")) == profileBeforeCancel);
+    P606_CHECK(wait([&] { return item("backupReviewed")->hasActiveFocus(); }));
+    P606_CHECK(!item("backupReviewed")->property("checked").toBool());
+    P606_CHECK(capture("backup-blocked-compact"));
+    window->setWidth(1280);
+    P606_CHECK(capture("backup-blocked-wide"));
+    P606_CHECK(!backup->inspectFile(QUrl::fromLocalFile(profile.filePath("missing-backup.json"))));
+    P606_CHECK(backup->importDomains().isEmpty());
+    P606_CHECK(!backup->status().isEmpty());
+    transport.disconnectFromDaemon();
+    P606_CHECK(wait([&] { return !vm.daemonConnected(); }));
+    P606_CHECK(wait([&] {
+        return item("coordinatedBackupStatus")->property("text").toString().contains("Connect");
+    }));
+    P606_CHECK(!item("backupExportButton")->isEnabled());
+    transport.connectToDaemon();
+    P606_CHECK(wait([&] { return vm.daemonConnected() && runtime.ready(); }));
+    record("coordinated-backup-blocked", {{"real_ipc", true},
+                                          {"cancel_default", true},
+                                          {"focus_restored", true},
+                                          {"responsive", true},
+                                          {"disconnected", true},
+                                          {"invalid_file", true}});
     P606_CHECK(!script->timedOut.load());
 #undef P606_CHECK
     return 0;

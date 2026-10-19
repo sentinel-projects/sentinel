@@ -228,6 +228,8 @@ add_sentinel_core_test(test_standard_path_provider core/test_standard_path_provi
 add_sentinel_core_test(test_storage_migration core/test_storage_migration.cpp)
 add_sentinel_core_test(test_application_controller core/test_application_controller.cpp)
 add_sentinel_core_test(test_app_settings core/test_app_settings.cpp)
+add_sentinel_core_test(test_backup_recovery_journal core/test_backup_recovery_journal.cpp)
+set_tests_properties(test_backup_recovery_journal PROPERTIES TIMEOUT 60)
 add_sentinel_core_test(test_settings_recovery_runtime core/test_settings_recovery_runtime.cpp)
 target_compile_definitions(test_settings_recovery_runtime PRIVATE
     CERTIFICATION_TRANSLATIONS="${CMAKE_BINARY_DIR}/apps/sentinel-desktop")

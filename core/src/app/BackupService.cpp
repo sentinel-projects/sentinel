@@ -55,8 +55,54 @@ BackupService::BackupService(AppSettings& settings, IConversationStore* conversa
                              IMemoryStore* memory)
     : settings_(settings), conversations_(conversations), memory_(memory) {}
 
+QJsonObject BackupService::availability() const {
+    const bool settingsReady = settings_.storageErrorCode().isEmpty();
+    const bool chatReady =
+        conversations_ && conversations_->status() == ConversationStoreStatus::Ready;
+    const bool memoryReady = memory_ && memory_->isAvailable() && !memory_->hasManagedMemory();
+    // This is an inventory of capabilities, never evidence that a backup was verified.
+    return {{QStringLiteral("settings"), settingsReady},
+            {QStringLiteral("workspaceProfiles"), settingsReady},
+            {QStringLiteral("extensions"), settingsReady},
+            {QStringLiteral("chat"), chatReady},
+            {QStringLiteral("memory"), memoryReady},
+            {QStringLiteral("formatVersion"), 1},
+            {QStringLiteral("maximumSelectedDomains"), 1},
+            {QStringLiteral("coordinatedBackupAvailable"), false},
+            {QStringLiteral("coordinatedRestoreAvailable"), false},
+            {QStringLiteral("coordinatedState"), QStringLiteral("Blocked")},
+            {QStringLiteral("coordinatedReason"),
+             QStringLiteral("OwnerQuiescenceAndDurableRecoveryUnavailable")},
+            {QStringLiteral("includedDomains"), QJsonArray{}},
+            {QStringLiteral("excludedDomains"),
+             QJsonArray{"settings", "workspaceProfiles", "extensions", "chat", "memory",
+                        "chatHistory", "agentRuns", "permissionGrants", "credentials",
+                        "ipcSessions", "localRag", "modelFiles", "temporaryData"}},
+            {QStringLiteral("lastVerifiedCoordinatedBackup"), QJsonValue{}},
+            {QStringLiteral("recoveryInspection"), QStringLiteral("Unavailable")},
+            {QStringLiteral("domainContracts"),
+             QJsonArray{
+                 QJsonObject{{"domain", "settings"}, {"state", "SingleDomainPortableExport"}},
+                 QJsonObject{{"domain", "workspaceProfiles"}, {"state", "ExplicitSensitiveExport"}},
+                 QJsonObject{{"domain", "extensions"}, {"state", "FilteredPortableExport"}},
+                 QJsonObject{{"domain", "chat"}, {"state", "PortableExportWithoutSessionIdentity"}},
+                 QJsonObject{{"domain", "memory"}, {"state", "UseAuthorizedScopeArchive"}},
+                 QJsonObject{{"domain", "permissionGrants"}, {"state", "Excluded"}},
+                 QJsonObject{{"domain", "credentials"}, {"state", "Excluded"}},
+                 QJsonObject{{"domain", "agentRuns"}, {"state", "Excluded"}},
+                 QJsonObject{{"domain", "chatHistory"}, {"state", "Excluded"}},
+                 QJsonObject{{"domain", "ipcSessions"}, {"state", "Excluded"}},
+                 QJsonObject{{"domain", "localRag"}, {"state", "ReconstructableCache"}}}}};
+}
+
 BackupResult BackupService::exportJson(const QStringList& domains) const {
     if (!validDomains(domains)) return failed(BackupError::ExportFailure, QStringLiteral("Invalid domains"));
+    if (domains.size() > 1) {
+        return failed(
+            BackupError::CoordinatedOperationBlocked,
+            QStringLiteral(
+                "Coordinated backup blocked: storage owners have no shared quiescence barrier"));
+    }
     if (!settings_.storageErrorCode().isEmpty())
         return failed(BackupError::ExportFailure, settings_.storageErrorCode());
     QJsonObject payload;
@@ -188,6 +234,13 @@ BackupResult BackupService::importJson(const QByteArray& bytes,
     if (schema.value(QStringLiteral("settings")).toInt(-1) != 1 ||
         schema.value(QStringLiteral("workspaceProfiles")).toInt(-1) != 1)
         return failed(BackupError::UnsupportedBackupVersion, QStringLiteral("Unsupported application schema"));
+
+    if (selectedDomains.size() > 1) {
+        return failed(
+            BackupError::CoordinatedOperationBlocked,
+            QStringLiteral(
+                "Coordinated restore blocked: durable multi-domain recovery is unavailable"));
+    }
 
     // Validate every selected domain, including conflicts, before the first mutation.
     const auto settings = data.value(QStringLiteral("settings")).toObject();

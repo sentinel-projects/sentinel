@@ -43,8 +43,8 @@ Both paths reject duplicate UUID conflicts by default; explicit skip-identical n
 replaces a differing record. Imports regenerate concurrency revisions.
 
 Generic legacy JSON memory backup/replace stays blocked whenever managed records
-(including Legacy records with identities) exist. Other backup domains remain
-supported. The scope archive is a memory-only export, not a full application backup.
+(including Legacy records with identities) exist. Other portable domains remain supported individually; multi-domain legacy
+export/import is refused until owner quiescence and durable recovery are implemented. The scope archive is a memory-only export, not a full application backup.
 Old key/value backups can be imported into an empty store as unclassified Legacy
 data; they cannot overwrite managed records. There is no automatic durable
 promotion, embedding/indexing, or Personal sharing change. P8-02's fail-closed image
