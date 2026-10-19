@@ -4,6 +4,7 @@
 #include "sentinel/core/agent/ContextEngine.h"
 #include "sentinel/core/agent/ObservationPolicy.h"
 #include "sentinel/core/chat/IChatHistoryStore.h"
+#include "sentinel/core/context/ContextBudgetManager.h"
 #include "sentinel/core/runtime/ToolArgumentValidator.h"
 #include "sentinel/core/security/AuthorizationResolver.h"
 
@@ -21,28 +22,36 @@ QString bounded(QString text, int limit) {
     return text.left(limit) + QStringLiteral(" [excerpt; more available via tool]");
 }
 
-QString boundedProcessOutput(QString text, int limit) {
-    text = text.simplified();
-    if (text.size() <= limit)
-        return text;
-    return text.left(limit / 2) +
-           QStringLiteral(" [excerpt; beginning and end; more available via tool] ") +
-           text.right(limit - limit / 2);
-}
 
 int cost(const AgentContextItem& item) {
-    return (item.content.size() + item.source.size() + 3) / 4 + 16;
+    return static_cast<int>(ContextBudgetManager::estimateText(item.content + item.source)) + 16;
 }
 
 } // namespace
 
 AgentPlanningContext ContextEngine::build(const AgentContextInput& input) const {
     AgentPlanningContext result;
-    const int window = input.contextWindowTokens > 0 ? input.contextWindowTokens : 8192;
-    const int reserve = qMax(qMax(1024, window / 5), input.maxOutputTokens);
-    const int budget = qMax(256, qMin(window - reserve, 24000));
+    result.sessionId = input.memoryAccess.sessionId;
+    result.workspaceId = input.workspaceContext.id;
+    const int window = input.contextWindowTokens > 0 ? input.contextWindowTokens
+                                                     : ContextBudgetManager::UnknownCapacity;
+    const int reserve = input.maxOutputTokens > 0 ? qMin(ContextBudgetManager::DefaultOutputReserve,
+                                                         input.maxOutputTokens)
+                                                  : ContextBudgetManager::DefaultOutputReserve;
+    // Candidate-source bounds only. The complete serialized planner request is admitted by
+    // ContextBudgetManager after instructions, schemas and continuation are available.
+    const int budget = qMax(0, qMin(window - reserve, 24000));
     int remaining = budget - 550; // Planner contract and JSON response framing.
     auto add = [&](AgentContextItem item, int sectionCap) {
+        if (item.priority == AgentContextPriority::Critical ||
+            item.kind == AgentContextKind::Observation || item.kind == AgentContextKind::Fact ||
+            item.kind == AgentContextKind::Workspace ||
+            item.kind == AgentContextKind::ResponseProfile) {
+            remaining -= cost(item);
+            result.estimatedTokens += cost(item);
+            result.items.append(std::move(item));
+            return true;
+        }
         const int allowed = qMin(sectionCap, remaining);
         if (allowed <= 24) {
             ++result.omittedItems;
@@ -50,13 +59,6 @@ AgentPlanningContext ContextEngine::build(const AgentContextInput& input) const 
             return false;
         }
         if (cost(item) > allowed) {
-            if (item.priority == AgentContextPriority::Critical) {
-                // The active goal is never removed or shortened.
-                remaining -= cost(item);
-                result.estimatedTokens += cost(item);
-                result.items.append(std::move(item));
-                return true;
-            }
             ++result.omittedItems;
             result.compacted = true;
             return false;
@@ -174,13 +176,11 @@ AgentPlanningContext ContextEngine::build(const AgentContextInput& input) const 
     for (const auto& fact : input.facts)
         add({AgentContextKind::Fact, AgentContextPriority::High,
              fact.evidenceCallIds.join(QLatin1Char(',')),
-             bounded(fact.id + QLatin1Char(' ') + fact.resource + QStringLiteral(" = ") +
-                         (fact.value ? QStringLiteral("true") : QStringLiteral("false")),
-                     360),
+             fact.id + QLatin1Char(' ') + fact.resource + QStringLiteral(" = ") +
+                 (fact.value ? QStringLiteral("true") : QStringLiteral("false")),
              false},
             1100);
 
-    QSet<QString> seen;
     int observationBudget = qMin(remaining / 2, 1700);
     for (int i = input.steps.size() - 1; i >= 0; --i) {
         const auto& step = input.steps.at(i);
@@ -194,16 +194,6 @@ AgentPlanningContext ContextEngine::build(const AgentContextInput& input) const 
                 ? evidence->resource
                 : (step.structuredObservation ? step.structuredObservation->failureResource
                                               : QString{});
-        const QString key = step.toolId + QLatin1Char('|') + resource;
-        const bool important = !step.succeeded || step.toolId.contains(QStringLiteral("write")) ||
-                               step.toolId.contains(QStringLiteral("patch")) ||
-                               step.toolId.contains(QStringLiteral("delete"));
-        if (seen.contains(key) && !important) {
-            ++result.omittedItems;
-            result.compacted = true;
-            continue;
-        }
-        seen.insert(key);
         QString excerpt = step.observation;
         if (step.structuredObservation &&
             step.structuredObservation->data.value(QStringLiteral("truncated")).toBool())
@@ -229,10 +219,7 @@ AgentPlanningContext ContextEngine::build(const AgentContextInput& input) const 
                               evidence != input.evidence.crend() ? evidence->toolCallId
                                                                  : QString::number(step.index),
                               QStringLiteral("tool=%1 resource=%2 status=%3 result=%4")
-                                  .arg(step.toolId, resource, step.statusText,
-                                       step.toolId == QLatin1String("run-command")
-                                           ? boundedProcessOutput(excerpt, important ? 320 : 500)
-                                           : bounded(excerpt, important ? 320 : 500)),
+                                  .arg(step.toolId, resource, step.statusText, excerpt),
                               true};
         if (add(std::move(item), observationBudget))
             observationBudget -= cost(result.items.last());
@@ -247,7 +234,7 @@ AgentPlanningContext ContextEngine::build(const AgentContextInput& input) const 
                      workspace.excludeHints.join(QLatin1Char(',')), workspace.retrievalPreference,
                      workspace.memoryScope);
         add({AgentContextKind::Workspace, AgentContextPriority::Normal,
-             QStringLiteral("workspace-profile"), bounded(summary, 400), true},
+             QStringLiteral("workspace-profile"), summary, true},
             180);
     } else if (!input.workspace.isEmpty())
         add({AgentContextKind::Workspace, AgentContextPriority::Normal,
@@ -290,12 +277,19 @@ AgentPlanningContext ContextEngine::build(const AgentContextInput& input) const 
             ? input.memoryStore->retrieveMemory(input.goal.left(4096), input.memoryAccess,
                                                 qBound(1, memoryBudget / 100, 3))
             : ScopedMemoryResult{};
-    const auto memories = memoryResult.status == ScopedMemoryStatus::Ready
-                              ? memoryResult.records
-                              : QList<ScopedMemoryRecord>{};
+    auto memories = memoryResult.status == ScopedMemoryStatus::Ready ? memoryResult.records
+                                                                     : QList<ScopedMemoryRecord>{};
+    std::stable_sort(memories.begin(), memories.end(), [](const auto& a, const auto& b) {
+        return static_cast<int>(a.scope) < static_cast<int>(b.scope);
+    });
     for (const auto& entry : memories) {
         AgentContextItem item{AgentContextKind::Memory, AgentContextPriority::Normal, entry.id,
-                              scopedMemoryContextText({ScopedMemoryStatus::Ready, {entry}}), true};
+                              ContextBudgetManager::memoryItem(entry, input.memoryAccess).text,
+                              true};
+        if (item.content.isEmpty()) {
+            ++result.omittedItems;
+            continue;
+        }
         if (add(std::move(item), memoryBudget))
             memoryBudget -= cost(result.items.last());
     }

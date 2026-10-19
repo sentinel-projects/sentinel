@@ -42,6 +42,16 @@ public:
         return mode_ == ReplyMode::StreamWithEmptyFinal;
     }
 
+    bool supportsBoundedStreaming() const override {
+        return supportsStreaming();
+    }
+    ChatProviderReply sendMessageStreaming(const QString& prompt,
+                                           const std::function<void(const QString&)>& onDelta,
+                                           const std::shared_ptr<std::atomic_bool>& cancellation,
+                                           const ChatRequestOptions& options) override {
+        Q_ASSERT(options.maxOutputTokens > 0 && options.deadlineMs > 0);
+        return sendMessageStreaming(prompt, onDelta, cancellation);
+    }
     ChatProviderReply sendMessage(const QString&) override {
         return {};
     }
@@ -142,7 +152,84 @@ private slots:
     void geminiPreservesAuthoritativeJsonSchema();
     void responseProfileChangesRequestWithoutChangingUserMessage();
     void scopedMemoryControlsProductionPrompt();
+    void shortPromptCharacterization();
+    void largeHistoryPreservesActiveAndReportsReduction();
+    void insufficientBudgetNeverDispatches();
+    void workspaceAndModelChangesCannotRedirectAcceptedRequest();
 };
+
+void ChatModeServiceTest::workspaceAndModelChangesCannotRedirectAcceptedRequest() {
+    Harness h(FixtureProvider::ReplyMode::EchoPrompt);
+    InMemoryStore memory;
+    MemoryAccessContext access{h.conversationId, "p1", {"p1"}, false};
+    memory.writeScopedMemory({MemoryScope::Project, "orchid", "ORIGINAL_PROJECT"}, access);
+    QSemaphore entered, release;
+    auto provider = std::make_shared<FixtureProvider>(FixtureProvider::ReplyMode::EchoPrompt);
+    provider->beforeReply = [&] {
+        entered.release();
+        release.tryAcquire(1, 5000);
+    };
+    h.models.registerProvider("ollama", [provider](const ModelBinding&) { return provider; });
+    ChatModeService service(h.models, h.session, h.store);
+    service.setScopedMemory(&memory, [&](const QString&) { return access; });
+    auto cleanup = qScopeGuard([&] { release.release(); });
+    QVERIFY(service.send(h.conversationId, "Recall orchid", {}, {"ollama", "original"}));
+    QVERIFY(entered.tryAcquire(1, 1000));
+    access.workspaceId = "p2";
+    access.authorizedWorkspaceIds = {"p2"};
+    memory.writeScopedMemory({MemoryScope::Project, "orchid", "OTHER_PROJECT"}, access);
+    h.models.setSelectedModel({"ollama", "replacement"});
+    release.release();
+    QTRY_VERIFY(!service.busy());
+    const auto result = h.session.messages().last();
+    QCOMPARE(result.modelUsed, QString("original"));
+    QVERIFY(result.content.contains("ORIGINAL_PROJECT"));
+    QVERIFY(!result.content.contains("OTHER_PROJECT"));
+}
+
+void ChatModeServiceTest::largeHistoryPreservesActiveAndReportsReduction() {
+    Harness h(FixtureProvider::ReplyMode::EchoPrompt);
+    for (int i = 0; i < 40; ++i) {
+        h.session.appendUserMessage(QString("old-%1 ").arg(i) + QString(1500, 'x'));
+        h.session.appendAssistantMessage(QString("answer-%1 ").arg(i),
+                                         ChatMessageStatus::Completed);
+    }
+    ChatModeService service(h.models, h.session, h.store);
+    QVERIFY(service.send(h.conversationId, "ACTIVE_UNICODE_🌸", {}, {"ollama", "fixture"}));
+    QTRY_VERIFY(!service.busy());
+    const auto sent = h.session.messages().last();
+    QCOMPARE(sent.status, ChatMessageStatus::Completed);
+    QVERIFY(sent.content.endsWith("User: ACTIVE_UNICODE_🌸"));
+    QVERIFY(!sent.content.contains("old-0 "));
+    QVERIFY(sent.content.contains("old-39 "));
+    QVERIFY(service.budgetDiagnostics().value("omitted").toInt() > 0);
+}
+void ChatModeServiceTest::insufficientBudgetNeverDispatches() {
+    Harness h(FixtureProvider::ReplyMode::FinalOnly);
+    int calls = 0;
+    auto provider = std::make_shared<FixtureProvider>(FixtureProvider::ReplyMode::FinalOnly);
+    provider->beforeReply = [&] { ++calls; };
+    h.models.registerProvider("ollama", [provider](const ModelBinding&) { return provider; });
+    ModelCapabilities capabilities;
+    capabilities.contextWindow = 1024;
+    capabilities.provenance.contextWindow = ModelMetadataSource::RuntimeReported;
+    h.models.setModelCapabilities("ollama", "fixture", capabilities);
+    ChatModeService service(h.models, h.session, h.store);
+    QVERIFY(service.send(h.conversationId, "Keep this complete", {}, {"ollama", "fixture"}));
+    QVERIFY(!service.busy());
+    QCOMPARE(calls, 0);
+    QCOMPARE(h.session.messages().last().status, ChatMessageStatus::Failed);
+    QCOMPARE(service.lastError(), ChatProviderErrorCategory::RequestRejected);
+    QCOMPARE(h.session.messages().first().content, QString("Keep this complete"));
+}
+
+void ChatModeServiceTest::shortPromptCharacterization() {
+    Harness h(FixtureProvider::ReplyMode::EchoPrompt);
+    ChatModeService service(h.models, h.session, h.store);
+    QVERIFY(service.send(h.conversationId, "Explain recursion", {}, {"ollama", "fixture"}));
+    QTRY_VERIFY(!service.busy());
+    QCOMPARE(h.session.messages().last().content, QString("User: Explain recursion"));
+}
 
 void ChatModeServiceTest::scopedMemoryControlsProductionPrompt() {
     Harness h(FixtureProvider::ReplyMode::EchoPrompt);

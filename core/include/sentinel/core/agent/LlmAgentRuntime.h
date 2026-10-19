@@ -7,6 +7,7 @@
 #include "sentinel/core/agent/ContextEngine.h"
 #include "sentinel/core/agent/IAgentRuntime.h"
 #include "sentinel/core/agent/IAgentStepPlanner.h"
+#include "sentinel/core/context/ContextBudgetManager.h"
 #include "sentinel/core/interfaces/IChatProvider.h"
 #include "sentinel/core/model/ModelRouting.h"
 
@@ -37,6 +38,9 @@ public:
                                const QList<AgentStepRecord>& history) const override;
 
     bool lastDecisionUsedLlm() const;
+    QJsonObject budgetDiagnostics() const {
+        return budgetDiagnostics_;
+    }
     int lastProviderRecoveryAttempts() const override {
         return lastProviderRecoveryAttempts_;
     }
@@ -83,7 +87,8 @@ public:
     std::unique_ptr<LlmAgentRuntime> forkForSubagent(const QStringList& allowedTools) const;
 
 private:
-    QString buildPlannerPrompt(const QString& goal, const QList<AgentStepRecord>& history) const;
+    QString buildPlannerPrompt(const QString& goal, const QList<AgentStepRecord>& history,
+                               const AgentPlanningContext* selected = nullptr) const;
     AgentStepDecision decisionFromLlmOutput(const QString& output) const;
     AgentStepDecision decisionFromObject(const QJsonObject& object) const;
     AgentStepDecision decisionFromNativeCall(const ChatProviderReply::ToolCall& call) const;
@@ -104,6 +109,7 @@ private:
     mutable QList<EvidenceRecord> activeEvidence_;
     mutable QList<StructuredFact> structuredFacts_;
     mutable AgentPlanningContext planningContext_;
+    mutable QJsonObject budgetDiagnostics_;
     mutable QString plannerFeedback_;
     mutable QList<ChatProviderReply::ToolCall> nativeCalls_;
     mutable QList<ChatRequestOptions::ToolResult> nativeResults_;

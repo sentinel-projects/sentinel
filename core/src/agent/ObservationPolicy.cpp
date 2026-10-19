@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sentinel/core/agent/ObservationPolicy.h"
 #include "sentinel/core/agent/ClaimGroundingResolver.h"
+#include "sentinel/core/context/ContextBudgetManager.h"
 
 #include "sentinel/core/interfaces/IChatProvider.h"
 #include "sentinel/core/security/ExternalDirectoryGate.h"
@@ -295,7 +296,15 @@ ObservationIntent ObservationIntentPolicy::classify(const QString& goal,
     // Keep a hard bound, while leaving room for the required classification JSON.
     options.deadlineMs = 60000;
     options.maxOutputTokens = 2048;
-    const auto reply = provider_->sendRequest(prompt, options);
+    const auto budget = ContextBudgetManager{}.assemble(
+        binding_, options, {{prompt, ContextBudgetKind::Instruction, 0, true}});
+    if (!budget.accepted()) {
+        intent.indeterminate = true;
+        intent.error = QStringLiteral("Context budget refused observation classification.");
+        return intent;
+    }
+    options.maxOutputTokens = budget.reservedOutput;
+    const auto reply = provider_->sendRequest(budget.prompt, options);
     const auto recordOutcome = qScopeGuard([&] {
         QJsonObject diagnostic{{"stage", "classification"},
                                {"event", "exit"},

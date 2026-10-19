@@ -3,6 +3,7 @@
 #pragma once
 
 #include "sentinel/core/agent/ObservationEvidence.h"
+#include "sentinel/core/model/ModelRouting.h"
 #include "sentinel/core/runtime/ToolDescriptor.h"
 #include "sentinel/core/runtime/ToolExecution.h"
 #include <atomic>
@@ -25,12 +26,15 @@ public:
 class ObservationIntentPolicy final : public IObservationIntentPolicy {
 public:
     explicit ObservationIntentPolicy(IChatProvider* provider,
-                                     std::shared_ptr<std::atomic_bool> cancellationToken = {})
-        : provider_(provider), cancellationToken_(std::move(cancellationToken)) {}
+                                     std::shared_ptr<std::atomic_bool> cancellationToken = {},
+                                     ModelBinding binding = {})
+        : binding_(std::move(binding)), provider_(provider),
+          cancellationToken_(std::move(cancellationToken)) {}
     ObservationIntent classify(const QString& goal, const QString& conversationContext,
                                const QList<ToolDescriptor>& tools) const override;
 
 private:
+    ModelBinding binding_;
     IChatProvider* provider_ = nullptr;
     std::shared_ptr<std::atomic_bool> cancellationToken_;
 };

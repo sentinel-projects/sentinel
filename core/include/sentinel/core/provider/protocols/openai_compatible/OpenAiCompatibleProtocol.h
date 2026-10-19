@@ -75,7 +75,8 @@ struct OpenAiCompatibleNativeRequest {
 
 // Builds the native-capability body without token budgets, capability checks,
 // endpoint policy or transport. `content` is the caller's encoded text/images.
-// Continuation IDs are compared verbatim; observation text is clipped to 6800.
+// Continuation IDs are compared verbatim; legacy observation previews clip to6800.
+// Options::completeToolResults preserves whole budget-admitted production units.
 OpenAiCompatibleNativeRequest buildOpenAiCompatibleNativeRequest(const QString& model,
                                                                  const QJsonValue& content,
                                                                  const ChatRequestOptions& options);

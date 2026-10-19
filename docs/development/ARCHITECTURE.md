@@ -41,6 +41,20 @@ when scoped rows exist, avoiding lossy export or rollback; scoped management/exp
 remains later P8 work. See [P8-01](../audits/P8_01_SCOPED_MEMORY_IMPLEMENTATION_RESULT.md).
 
 
+Provider-bound Chat and Agent requests pass through `ContextBudgetManager` before dispatch.
+It consumes the already resolved `ModelBinding`, reserves output, measures escaped text plus
+actual tool/structured-schema and continuation contracts with explicit estimate uncertainty,
+and selects complete optional context units deterministically. Chat keeps complete recent turns
+and scoped memory records; persisted generated summaries do not replace verified transcript.
+Agent admission includes its rendered planner/security instructions, task, workspace/requirements,
+execution evidence and native call/result continuation. Necessary evidence that cannot fit causes
+an explicit refusal rather than an accepted final answer. ContextEngine's bounded source discovery
+is candidate preparation, not final request admission. The 8192 unknown-capacity fallback is a
+policy ceiling, not a claim of model capacity; actual token counts remain unknown. Image-bearing
+requests explicitly refuse while no trustworthy provider image-token bound exists. Diagnostics
+contain counts/status/estimates only. See [P8-02](../audits/P8_02_CONTEXT_BUDGET_MANAGER_RESULT.md)
+for behavior changes and compatibility limits.
+
 The concurrency model uses Qt signals/events for UI and provider integration; agent execution scheduling and loop events keep active work observable and cancellable. See [Agent Runtime](../concepts/AGENT_RUNTIME.md) for run semantics. These components are implemented; reliable real-model task completion remains unaccepted.
 
 Built-in provider identity and static registration metadata live in the immutable `ProviderRegistry`
