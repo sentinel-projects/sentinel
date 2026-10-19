@@ -45,26 +45,36 @@ private slots:
         auto provider = std::make_shared<RecordingProvider>();
         models.registerProvider("ollama", [provider](const ModelBinding&) { return provider; });
         ChatModeService service(models, session, store);
+        QVERIFY(service.send(id, "Read text", {loaded.attachments.first()}, {"ollama", "fixture"}));
+        QTRY_VERIFY_WITH_TIMEOUT(!service.busy(), 3000);
+        QVERIFY(provider->prompt.contains("unique attachment content"));
+        QVERIFY(provider->images.isEmpty());
+        QCOMPARE(session.messages().last().status, ChatMessageStatus::Completed);
+        provider->prompt.clear();
         QVERIFY(service.send(id, "Read these", loaded.attachments, {"ollama", "fixture"}));
         QTRY_VERIFY_WITH_TIMEOUT(!service.busy(), 3000);
-        QVERIFY(provider->prompt.contains("unique attachment content"));
-        QCOMPARE(provider->images.size(), 1);
-        QCOMPARE(provider->images.first().bytes, loaded.attachments.last().imageBytes);
-        QCOMPARE(session.messages().first().content, "Read these");
-        const auto restored = QJsonDocument::fromJson(store.loadMessages(id).first().attachmentsJson.toUtf8()).array();
+        QVERIFY(provider->prompt.isEmpty()); // Unknown visual-token bound refuses before dispatch.
+        QVERIFY(provider->images.isEmpty());
+        QCOMPARE(service.budgetDiagnostics().value("status").toInt(),
+                 static_cast<int>(ContextBudgetStatus::MultimodalUncertain));
+        QCOMPARE(session.messages().last().status, ChatMessageStatus::Failed);
+        const auto restored =
+            QJsonDocument::fromJson(store.loadMessages(id).at(2).attachmentsJson.toUtf8()).array();
         QCOMPARE(restored.size(), 2);
         QCOMPARE(QByteArray::fromBase64(restored.last().toObject().value("image").toString().toLatin1()), loaded.attachments.last().imageBytes);
-        ChatMessage user = session.messages().first();
+        ChatMessage user = session.messages().at(2);
+        QCOMPARE(user.content, QString("Read these"));
         user.attachmentData = restored;
         session.loadMessages({user});
-        provider->images.clear();
         QVERIFY(service.regenerate(id, user.id, {"ollama", "fixture"}));
         QTRY_VERIFY_WITH_TIMEOUT(!service.busy(), 3000);
-        QCOMPARE(provider->images.size(), 1);
+        QVERIFY(provider->prompt.isEmpty());
+        QCOMPARE(session.messages().last().status, ChatMessageStatus::Failed);
         QVERIFY(service.send(id, "Describe that picture again", {}, {"ollama", "fixture"}));
         QTRY_VERIFY_WITH_TIMEOUT(!service.busy(), 3000);
-        QCOMPARE(provider->images.size(), 1);
-        QVERIFY(provider->prompt.contains("unique attachment content"));
+        QVERIFY(provider->images.isEmpty());
+        QVERIFY(!provider->prompt.contains("unique attachment content"));
+        QVERIFY(service.budgetDiagnostics().value("omitted_invalid_metadata").toInt() > 0);
     }
     void rejectsMissingBinaryAndOversizedInputs() {
         QTemporaryDir directory;

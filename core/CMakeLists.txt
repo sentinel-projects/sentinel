@@ -334,6 +334,7 @@ add_library(sentinel_core STATIC
     src/agent/AgentActivityLog.cpp
     src/agent/AgentLoop.cpp
     src/agent/SQLiteAgentRunStore.cpp
+    src/context/ContextBudgetManager.cpp
     src/agent/ContextEngine.cpp
     src/agent/AgentRuntimeContext.cpp
     src/agent/AgentRuntime.cpp

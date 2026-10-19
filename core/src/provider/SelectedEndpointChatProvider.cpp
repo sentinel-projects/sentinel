@@ -14,6 +14,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLoggingCategory>
+#include <limits>
 
 #include <algorithm>
 #include <utility>
@@ -117,7 +118,10 @@ ChatProviderReply nativeEndpointReply(LMStudioLocalInferenceClient::NativeProtoc
             }
             messages.append(QJsonObject{
                 {QStringLiteral("role"), QStringLiteral("user")},
-                {QStringLiteral("content"), provider::anthropicToolResultBlocks(results)}});
+                {QStringLiteral("content"),
+                 provider::anthropicToolResultBlocks(results, options.completeToolResults
+                                                                  ? std::numeric_limits<int>::max()
+                                                                  : 6800)}});
         }
         QJsonArray tools;
         if (options.nativeToolCalling) {
@@ -161,7 +165,10 @@ ChatProviderReply nativeEndpointReply(LMStudioLocalInferenceClient::NativeProtoc
             }
             contents.append(QJsonObject{
                 {QStringLiteral("role"), QStringLiteral("user")},
-                {QStringLiteral("parts"), provider::geminiFunctionResponseParts(results)}});
+                {QStringLiteral("parts"),
+                 provider::geminiFunctionResponseParts(
+                     results,
+                     options.completeToolResults ? std::numeric_limits<int>::max() : 6800)}});
         }
         QJsonArray declarations;
         if (options.nativeToolCalling) {

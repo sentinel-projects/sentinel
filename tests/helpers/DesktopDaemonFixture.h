@@ -54,6 +54,16 @@ public:
     bool supportsStreaming() const override {
         return true;
     }
+    bool supportsBoundedStreaming() const override {
+        return true;
+    }
+    core::ChatProviderReply sendMessageStreaming(const QString& text,
+                                                 const std::function<void(const QString&)>& delta,
+                                                 const std::shared_ptr<std::atomic_bool>& cancel,
+                                                 const core::ChatRequestOptions& options) override {
+        Q_ASSERT(options.maxOutputTokens > 0 && options.deadlineMs > 0);
+        return sendMessageStreaming(text, delta, cancel);
+    }
     core::ChatProviderReply sendMessage(const QString& text) override {
         return sendRequest(text, {});
     }

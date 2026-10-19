@@ -6,6 +6,7 @@
 
 #include "sentinel/core/chat/ChatSession.h"
 #include "sentinel/core/chat/IConversationStore.h"
+#include "sentinel/core/context/ContextBudgetManager.h"
 #include "sentinel/core/model/ModelService.h"
 
 #include "sentinel/core/interfaces/IMemoryStore.h"
@@ -53,6 +54,9 @@ public:
         memory_ = store;
         memoryContext_ = std::move(context);
     }
+    QJsonObject budgetDiagnostics() const {
+        return budgetDiagnostics_;
+    }
     bool stop();
     bool tryShutdown(int timeoutMs);
     bool busy() const;
@@ -69,9 +73,12 @@ private:
     void acceptDelta(const QString& conversationId, int messageId, const QString& delta);
     void acceptResult(const QString& conversationId, int messageId, const ChatProviderReply& reply);
     bool persist(const QString& conversationId, const ChatMessage& message);
-    QString contextFor(const QString& conversationId, int userMessageId) const;
+    ContextBudgetResult contextFor(const QString& conversationId, int userMessageId,
+                                   const ModelBinding& binding,
+                                   const ChatRequestOptions& options) const;
     static ChatProviderErrorCategory bindingError(ModelBindingError error);
 
+    QJsonObject budgetDiagnostics_;
     const IMemoryStore* memory_ = nullptr;
     std::function<MemoryAccessContext(const QString&)> memoryContext_;
     ModelService& models_;

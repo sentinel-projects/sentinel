@@ -57,6 +57,18 @@ class ObservationPolicyTest final : public QObject {
     Q_OBJECT
 
 private slots:
+    void insufficientBoundCapacityNeverDispatchesClassification() {
+        FixedReplyProvider provider;
+        provider.reply = R"({"requirements":[]})";
+        ModelBinding binding;
+        binding.capabilities.contextWindow = 1024;
+        binding.capabilities.provenance.contextWindow = ModelMetadataSource::RuntimeReported;
+        ObservationIntentPolicy policy(&provider, {}, binding);
+        const auto intent = policy.classify("Read example", {}, BuiltInToolProvider::descriptors());
+        QVERIFY(intent.indeterminate);
+        QVERIFY(intent.error.startsWith("Context budget refused"));
+        QVERIFY(provider.prompt.isEmpty());
+    }
     void relativeRequirementsUseFrozenWorkspace() {
         QTemporaryDir workspace;
         QVERIFY(workspace.isValid());

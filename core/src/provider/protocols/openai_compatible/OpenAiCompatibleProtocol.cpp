@@ -130,9 +130,11 @@ buildOpenAiCompatibleNativeRequest(const QString& model, const QJsonValue& conte
             const auto& result = options.toolResults.at(i);
             if (result.callId != options.priorToolCalls.at(i).callId)
                 return {{}, QStringLiteral("Native tool result IDs do not match.")};
-            messages.append(QJsonObject{{QStringLiteral("role"), QStringLiteral("tool")},
-                                        {QStringLiteral("tool_call_id"), result.callId},
-                                        {QStringLiteral("content"), result.content.left(6800)}});
+            messages.append(QJsonObject{
+                {QStringLiteral("role"), QStringLiteral("tool")},
+                {QStringLiteral("tool_call_id"), result.callId},
+                {QStringLiteral("content"),
+                 options.completeToolResults ? result.content : result.content.left(6800)}});
         }
     }
     QJsonObject body{{QStringLiteral("model"), model},

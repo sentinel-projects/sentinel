@@ -1367,6 +1367,12 @@ private slots:
         public:
             std::shared_ptr<QSemaphore> gate;
             std::shared_ptr<std::atomic_bool> started;
+            sentinel::core::ChatProviderReply
+            sendRequest(const QString& prompt,
+                        const sentinel::core::ChatRequestOptions& options) override {
+                Q_ASSERT(options.maxOutputTokens > 0);
+                return sendMessage(prompt);
+            }
             QString name() const override { return "title-fixture"; }
             sentinel::core::ChatProviderStatus status() const override {
                 return sentinel::core::ChatProviderStatus::Ready;

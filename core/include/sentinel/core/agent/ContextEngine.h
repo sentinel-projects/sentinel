@@ -38,6 +38,8 @@ struct AgentContextItem {
 };
 
 struct AgentPlanningContext {
+    QString sessionId;
+    QString workspaceId;
     QList<AgentContextItem> items;
     int estimatedTokens = 0;
     int omittedItems = 0;

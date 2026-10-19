@@ -141,6 +141,9 @@ struct ChatRequestOptions {
         QString content;
     };
     QList<ToolResult> toolResults;
+    // Budgeted production continuations preserve complete result units. Legacy/direct
+    // callers retain the existing protocol preview limit unless they explicitly opt in.
+    bool completeToolResults = false;
     // Explicit bounded-streaming requirement. A caller sets this when it needs the
     // provider to enforce a finite request deadline over the streaming transport.
     // A provider that cannot guarantee a finite deadline must reject instead of

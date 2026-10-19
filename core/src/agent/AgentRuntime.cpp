@@ -924,7 +924,7 @@ void AgentRuntime::prepareExecution(const QStringList& availableToolIds) {
                 : 0);
         if (auto* llm = dynamic_cast<LlmAgentRuntime*>(planner_))
             loop.setObservationIntentPolicy(std::make_shared<ObservationIntentPolicy>(
-                llm->modelProvider(), modelCancellationToken_));
+                llm->modelProvider(), modelCancellationToken_, llm->modelBinding()));
         loop.setExternalDirectoryGate(&externalDirectoryGate_);
         loop.setPermissionService(&permissionService_);
         loop.setToolHookService(&toolHooks_);
@@ -1046,7 +1046,7 @@ void AgentRuntime::configureLoop(AgentLoop& loop, const QString& sessionId,
                 ? options.availableToolIds
                                                                : toolIds());
         loop.setObservationIntentPolicy(std::make_shared<ObservationIntentPolicy>(
-            llm->modelProvider(), modelCancellationToken_));
+            llm->modelProvider(), modelCancellationToken_, llm->modelBinding()));
     }
     const auto* boundPlanner = dynamic_cast<LlmAgentRuntime*>(planner_);
     loop.setContextSources(

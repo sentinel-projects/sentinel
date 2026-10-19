@@ -81,6 +81,49 @@ class LlmAgentRuntimeTest final : public QObject {
     Q_OBJECT
 
 private slots:
+    void budgetRefusesBeforeProviderAndNeverReturnsSuccess() {
+        auto provider = std::make_shared<FakeChatProvider>();
+        provider->scriptedReply =
+            "{\"action\":\"final\",\"grounding\":\"context\",\"answer\":\"Successful answer\"}";
+        LlmAgentRuntime runtime({}, provider.get());
+        ModelBinding binding;
+        binding.providerId = "fixture";
+        binding.modelId = "small";
+        binding.capabilities.contextWindow = 1024;
+        binding.capabilities.provenance.contextWindow = ModelMetadataSource::RuntimeReported;
+        runtime.bindModel(binding, provider);
+        const auto result = runtime.nextStep("Do the task", {});
+        QCOMPARE(result.kind, AgentStepDecision::Kind::GiveUp);
+        QVERIFY(result.reason.startsWith("Context budget refused"));
+        QVERIFY(provider->prompts.isEmpty());
+        QCOMPARE(runtime.modelBinding().modelId, QString("small"));
+    }
+    void oversizedNativeObservationStopsBeforeFinalDispatch() {
+        auto provider = std::make_shared<FakeChatProvider>();
+        ChatProviderReply call;
+        call.success = true;
+        call.toolCalls = {{"call-1", "read-file", {{"path", "example"}}, {}}};
+        provider->scriptedRequests = {call};
+        ToolDescriptor tool;
+        tool.id = "read-file";
+        LlmAgentRuntime runtime({tool}, provider.get());
+        ModelBinding binding;
+        binding.providerId = "fixture";
+        binding.modelId = "fixed";
+        binding.capabilities.contextWindow = 8192;
+        binding.capabilities.provenance.contextWindow = ModelMetadataSource::RuntimeReported;
+        binding.capabilities.nativeToolCalling = CapabilitySupport::Supported;
+        runtime.bindModel(binding, provider);
+        QCOMPARE(runtime.nextStep("Read example", {}).kind, AgentStepDecision::Kind::ToolCall);
+        auto observation = sampleRecord();
+        observation.toolId = "read-file";
+        observation.observation = QString(50000, 'x') + "NECESSARY_FAILURE_EVIDENCE";
+        const auto result = runtime.nextStep("Read example", {observation});
+        QCOMPARE(result.kind, AgentStepDecision::Kind::GiveUp);
+        QCOMPARE(provider->prompts.size(), 1);
+        QCOMPARE(runtime.budgetDiagnostics().value("status").toInt(),
+                 static_cast<int>(ContextBudgetStatus::InsufficientCapacity));
+    }
     void skippedNativeCallNeverReusesOldHistory_data() {
         QTest::addColumn<bool>("feedback");
         QTest::newRow("loop-skip-repair") << true;
@@ -98,6 +141,8 @@ private slots:
         provider->scriptedRequests = {call, final};
         LlmAgentRuntime runtime(BuiltInToolProvider::descriptors(), provider.get());
         ModelBinding binding;
+        binding.capabilities.contextWindow = 131072;
+        binding.capabilities.provenance.contextWindow = ModelMetadataSource::ProgrammaticMetadata;
         binding.capabilities.nativeToolCalling = CapabilitySupport::Supported;
         runtime.bindModel(binding, provider);
         auto old = sampleRecord();
@@ -127,6 +172,8 @@ private slots:
         provider->scriptedRequests = {call};
         LlmAgentRuntime runtime(BuiltInToolProvider::descriptors(), provider.get());
         ModelBinding binding;
+        binding.capabilities.contextWindow = 131072;
+        binding.capabilities.provenance.contextWindow = ModelMetadataSource::ProgrammaticMetadata;
         binding.capabilities.nativeToolCalling = CapabilitySupport::Supported;
         runtime.bindModel(binding, provider);
         QCOMPARE(runtime.nextStep("Read calc.py", {}).kind, AgentStepDecision::Kind::ToolCall);
@@ -229,6 +276,8 @@ private slots:
         ModelBinding binding;
         binding.providerId = "lm-studio";
         binding.modelId = "fixture";
+        binding.capabilities.contextWindow = 131072;
+        binding.capabilities.provenance.contextWindow = ModelMetadataSource::ProgrammaticMetadata;
         binding.capabilities.nativeToolCalling = CapabilitySupport::Supported;
         binding.capabilities.contextWindow = 8192;
         if (modelLimit > 0)
@@ -269,6 +318,8 @@ private slots:
         ModelBinding binding;
         binding.providerId = QStringLiteral("lm-studio");
         binding.modelId = QStringLiteral("fixture");
+        binding.capabilities.contextWindow = 131072;
+        binding.capabilities.provenance.contextWindow = ModelMetadataSource::ProgrammaticMetadata;
         binding.capabilities.nativeToolCalling = CapabilitySupport::Supported;
         binding.capabilities.contextWindow = 8192;
         auto provider = service.constructProvider(binding);
@@ -337,6 +388,8 @@ private slots:
         ModelBinding binding;
         binding.providerId = QStringLiteral("lm-studio");
         binding.modelId = QStringLiteral("fixture");
+        binding.capabilities.contextWindow = 131072;
+        binding.capabilities.provenance.contextWindow = ModelMetadataSource::ProgrammaticMetadata;
         binding.capabilities.nativeToolCalling = CapabilitySupport::Supported;
         binding.capabilities.contextWindow = 8192;
         auto provider = service.constructProvider(binding);
@@ -412,7 +465,7 @@ private slots:
             found = true;
             QVERIFY(item.content.contains(QStringLiteral("exit=1")));
             QVERIFY(item.content.contains(QStringLiteral("TEST_FAILURE: expected 5 got -1")));
-            QVERIFY(item.content.size() < 600);
+            QVERIFY(item.content.contains(step.observation));
             QVERIFY(item.untrusted);
         }
         QVERIFY(found);
@@ -424,6 +477,8 @@ private slots:
         ModelBinding binding;
         binding.providerId = QStringLiteral("lm-studio");
         binding.modelId = QStringLiteral("synthetic-budget-test");
+        binding.capabilities.contextWindow = 131072;
+        binding.capabilities.provenance.contextWindow = ModelMetadataSource::ProgrammaticMetadata;
         binding.capabilities.nativeToolCalling = CapabilitySupport::Supported;
         binding.capabilities.contextWindow = 512;
         auto provider = service.constructProvider(binding);
@@ -458,6 +513,8 @@ private slots:
         shared->scriptedRequests.append(rejected);
         LlmAgentRuntime runtime(BuiltInToolProvider::descriptors(), shared.get());
         ModelBinding binding;
+        binding.capabilities.contextWindow = 131072;
+        binding.capabilities.provenance.contextWindow = ModelMetadataSource::ProgrammaticMetadata;
         binding.capabilities.nativeToolCalling = CapabilitySupport::Supported;
         runtime.bindModel(binding, shared);
         const auto decision = runtime.nextStep(QStringLiteral("Read math.h"), {});
@@ -667,6 +724,8 @@ private slots:
         provider->scriptedRequests = {reply};
         LlmAgentRuntime runtime(BuiltInToolProvider::descriptors(), provider.get());
         ModelBinding binding;
+        binding.capabilities.contextWindow = 131072;
+        binding.capabilities.provenance.contextWindow = ModelMetadataSource::ProgrammaticMetadata;
         binding.capabilities.nativeToolCalling = CapabilitySupport::Supported;
         runtime.bindModel(binding, provider);
         runtime.setObservationIntent({});
@@ -1003,6 +1062,8 @@ private slots:
         provider->scriptedRequests = {invalid, corrected, final};
         LlmAgentRuntime runtime(BuiltInToolProvider::descriptors(), provider.get());
         ModelBinding binding;
+        binding.capabilities.contextWindow = 131072;
+        binding.capabilities.provenance.contextWindow = ModelMetadataSource::ProgrammaticMetadata;
         binding.capabilities.nativeToolCalling = CapabilitySupport::Supported;
         runtime.bindModel(binding, provider);
         const auto tool = runtime.nextStep(QStringLiteral("Read audit.txt"), {});
@@ -1020,8 +1081,8 @@ private slots:
         QCOMPARE(provider->requestOptions.last().toolResults.first().callId,
                  QStringLiteral("good-call"));
         const auto excerpt = provider->requestOptions.last().toolResults.first().content;
-        QVERIFY(excerpt.size() < 2300);
-        QVERIFY(excerpt.contains(QStringLiteral("excerpt truncated")));
+        QVERIFY(excerpt.contains(record.observation));
+        QVERIFY(!excerpt.contains(QStringLiteral("excerpt truncated")));
         QVERIFY(excerpt.contains(QStringLiteral("TEST_FAILURE: expected 5 got -1")));
         QVERIFY(record.observation.size() >= 12000); // Authoritative evidence stays intact.
     }
@@ -1042,6 +1103,8 @@ private slots:
         provider->scriptedRequests = {invalid, corrected};
         LlmAgentRuntime runtime(BuiltInToolProvider::descriptors(), provider.get());
         ModelBinding binding;
+        binding.capabilities.contextWindow = 131072;
+        binding.capabilities.provenance.contextWindow = ModelMetadataSource::ProgrammaticMetadata;
         binding.capabilities.nativeToolCalling = CapabilitySupport::Supported;
         runtime.bindModel(binding, provider);
         const auto tool = runtime.nextStep(QStringLiteral("Read audit.txt"), {});
@@ -1060,6 +1123,8 @@ private slots:
         provider->scriptedRequests = {invalid, invalid};
         LlmAgentRuntime runtime(BuiltInToolProvider::descriptors(), provider.get());
         ModelBinding binding;
+        binding.capabilities.contextWindow = 131072;
+        binding.capabilities.provenance.contextWindow = ModelMetadataSource::ProgrammaticMetadata;
         binding.capabilities.nativeToolCalling = CapabilitySupport::Supported;
         runtime.bindModel(binding, provider);
         QCOMPARE(runtime.nextStep(QStringLiteral("Read audit.txt"), {}).kind,
@@ -1120,6 +1185,8 @@ private slots:
         ModelBinding binding;
         binding.providerId = QStringLiteral("local");
         binding.modelId = QStringLiteral("model");
+        binding.capabilities.contextWindow = 131072;
+        binding.capabilities.provenance.contextWindow = ModelMetadataSource::ProgrammaticMetadata;
         binding.capabilities.nativeToolCalling = CapabilitySupport::Supported;
         runtime.bindModel(binding, provider);
         ObservationIntent intent;
