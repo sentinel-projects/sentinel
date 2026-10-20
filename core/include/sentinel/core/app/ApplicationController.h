@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #pragma once
+#include "sentinel/core/app/StorageAdmission.h"
+
 #include "sentinel/core/chat/ChatModeService.h"
 
 #include "sentinel/core/agent/AgentActivityLog.h"
@@ -1958,6 +1960,13 @@ public:
     Q_INVOKABLE bool cancelAgentRun();
     Q_INVOKABLE bool agentLoopActive() const;
     bool agentAwaitingApproval() const;
+    // C++ composition only; never exposed as model or IPC maintenance authority.
+    void attachStorageAdmission(std::shared_ptr<StorageAdmission> admission) {
+        storageAdmission_ = std::move(admission);
+    }
+    std::shared_ptr<StorageAdmission> storageAdmission() const {
+        return storageAdmission_;
+    }
     void attachAlarmStore(std::shared_ptr<AlarmStore> alarmStore);
     Q_INVOKABLE bool agentAutonomousMode() const;
     Q_INVOKABLE void setAgentAutonomousMode(bool enabled);
@@ -2208,6 +2217,7 @@ private:
     QString selectedSpeechTtsEngine_{QStringLiteral("Piper")};
     QString kokoroSpeechModelPath_;
     QString kokoroSpeechVoice_;
+    std::shared_ptr<StorageAdmission> storageAdmission_;
     std::unique_ptr<IMemoryStore> memoryStore_;
     std::unique_ptr<class MemoryArchiveJobs> memoryArchiveJobs_;
     std::unique_ptr<IMemoryCandidateStore> memoryCandidateStore_;

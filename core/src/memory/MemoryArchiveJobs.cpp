@@ -30,8 +30,13 @@ struct MemoryArchiveJobs::Job {
     bool committing = false;
     QElapsedTimer touched;
 };
-MemoryArchiveJobs::MemoryArchiveJobs(QString path, QObject* owner, std::function<void()> restored)
-    : databasePath_(std::move(path)), owner_(owner), restored_(std::move(restored)) {
+MemoryArchiveJobs::MemoryArchiveJobs(QString path, QObject* owner, std::function<void()> restored,
+                                     std::shared_ptr<StorageAdmission> admission,
+                                     std::uint64_t generation)
+    : admission_(std::move(admission)), generation_(generation   ? generation
+                                                    : admission_ ? admission_->snapshot().generation
+                                                                 : 0),
+      databasePath_(std::move(path)), owner_(owner), restored_(std::move(restored)) {
     if (!QFileInfo(databasePath_).isFile()) {
         return;
     }
@@ -111,7 +116,10 @@ void MemoryArchiveJobs::run(const std::shared_ptr<Job>& job, const QString& oper
     const auto path = databasePath_, fileName = job->file->fileName();
     const auto owner = owner_;
     const auto restored = restored_;
-    job->future = QtConcurrent::run([job, path, fileName, operation, skip, owner, restored] {
+    const auto admission = admission_;
+    const auto generation = generation_;
+    job->future = QtConcurrent::run([job, path, fileName, operation, skip, owner, restored,
+                                     admission, generation] {
         QElapsedTimer timer;
         timer.start();
         MemoryArchiveControl control;
@@ -143,7 +151,7 @@ void MemoryArchiveJobs::run(const std::shared_ptr<Job>& job, const QString& oper
             } else if (operation == "validate") {
                 result = readMemoryArchive(file, job->scope, job->context, job->limits, control);
             } else {
-                SQLiteMemoryStore store(path);
+                SQLiteMemoryStore store(path, admission, generation);
                 result = store.restoreArchive(file, job->scope, job->context, job->limits, control,
                                               skip);
             }

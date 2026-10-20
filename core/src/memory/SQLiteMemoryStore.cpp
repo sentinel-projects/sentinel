@@ -20,10 +20,19 @@
 
 namespace sentinel::core {
 
-SQLiteMemoryStore::SQLiteMemoryStore(QString databasePath)
-    : databasePath_(std::move(databasePath)),
+SQLiteMemoryStore::SQLiteMemoryStore(QString databasePath,
+                                     std::shared_ptr<StorageAdmission> admission,
+                                     std::uint64_t generation)
+    : admission_(std::move(admission)), generation_(generation   ? generation
+                                                    : admission_ ? admission_->snapshot().generation
+                                                                 : 0),
+      databasePath_(std::move(databasePath)),
       connectionName_(
           QStringLiteral("sentinel_memory_%1").arg(QUuid::createUuid().toString(QUuid::Id128))) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return;
+    }
     open();
     initializeSchema();
 }
@@ -34,7 +43,22 @@ SQLiteMemoryStore::~SQLiteMemoryStore() {
     QSqlDatabase::removeDatabase(connectionName);
 }
 
+StorageAdmission::Writer SQLiteMemoryStore::admitWrite() {
+    if (!admission_) {
+        return {};
+    }
+    auto writer = admission_->admit(generation_);
+    if (!writer) {
+        setLastError(QStringLiteral("Storage admission refused (busy, stale or shutdown)."));
+    }
+    return writer;
+}
+
 void SQLiteMemoryStore::put(QString key, QString value) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return;
+    }
     if (!isAvailable()) {
         setLastError(QStringLiteral("SQLite memory database is not open."));
         return;
@@ -182,6 +206,10 @@ QList<MemoryRecord> SQLiteMemoryStore::searchRelevantRecords(const QString& text
 
 ScopedMemoryResult SQLiteMemoryStore::writeScopedMemory(const ScopedMemoryWrite& write,
                                                         const MemoryAccessContext& context) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return {};
+    }
     if (!permittedMemoryWrite(write, context)) {
         return {ScopedMemoryStatus::Unauthorized, {}};
     }
@@ -284,6 +312,10 @@ bool SQLiteMemoryStore::hasManagedMemory() const {
 }
 
 void SQLiteMemoryStore::clear() {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return;
+    }
     if (!isAvailable()) {
         setLastError(QStringLiteral("SQLite memory database is not open."));
         return;

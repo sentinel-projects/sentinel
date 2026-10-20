@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "sentinel/core/app/StorageAdmission.h"
 #include "sentinel/core/chat/IConversationStore.h"
 
 #include <QSqlDatabase>
@@ -12,7 +13,9 @@ namespace sentinel::core {
 
 class SQLiteConversationStore final : public IConversationStore {
 public:
-    explicit SQLiteConversationStore(QString databasePath);
+    explicit SQLiteConversationStore(QString databasePath,
+                                     std::shared_ptr<StorageAdmission> admission = {},
+                                     std::uint64_t generation = 0);
     ~SQLiteConversationStore() override;
 
     SQLiteConversationStore(const SQLiteConversationStore&) = delete;
@@ -59,6 +62,9 @@ private:
 
     static constexpr int currentSchemaVersion = 6;
 
+    StorageAdmission::Writer admitWrite();
+    std::shared_ptr<StorageAdmission> admission_;
+    std::uint64_t generation_ = 0;
     QString databasePath_;
     QString connectionName_;
     QSqlDatabase database_;

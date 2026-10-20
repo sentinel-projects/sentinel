@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "sentinel/core/app/StorageAdmission.h"
 #include "sentinel/core/interfaces/IMemoryStore.h"
 #include "sentinel/core/memory/MemoryArchive.h"
 
@@ -15,7 +16,15 @@ namespace sentinel::core {
 
 class SQLiteMemoryStore final : public IMemoryStore {
 public:
-    explicit SQLiteMemoryStore(QString databasePath);
+    explicit SQLiteMemoryStore(QString databasePath,
+                               std::shared_ptr<StorageAdmission> admission = {},
+                               std::uint64_t generation = 0);
+    std::shared_ptr<StorageAdmission> storageAdmission() const {
+        return admission_;
+    }
+    std::uint64_t storageGeneration() const {
+        return generation_;
+    }
     ~SQLiteMemoryStore() override;
 
     SQLiteMemoryStore(const SQLiteMemoryStore&) = delete;
@@ -68,6 +77,9 @@ private:
 
     static constexpr int currentSchemaVersion = 7;
 
+    StorageAdmission::Writer admitWrite();
+    std::shared_ptr<StorageAdmission> admission_;
+    std::uint64_t generation_ = 0;
     QString databasePath_;
     QString connectionName_;
     QThread* const connectionThread_ = QThread::currentThread();

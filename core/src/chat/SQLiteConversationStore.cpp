@@ -89,10 +89,19 @@ bool tableHasColumn(const QSqlDatabase& database, const QString& table, const QS
 
 } // namespace
 
-SQLiteConversationStore::SQLiteConversationStore(QString databasePath)
-    : databasePath_(std::move(databasePath)),
+SQLiteConversationStore::SQLiteConversationStore(QString databasePath,
+                                                 std::shared_ptr<StorageAdmission> admission,
+                                                 std::uint64_t generation)
+    : admission_(std::move(admission)), generation_(generation   ? generation
+                                                    : admission_ ? admission_->snapshot().generation
+                                                                 : 0),
+      databasePath_(std::move(databasePath)),
       connectionName_(QStringLiteral("sentinel_conversations_%1")
                           .arg(QUuid::createUuid().toString(QUuid::Id128))) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return;
+    }
     open();
     initializeSchema();
 }
@@ -103,12 +112,28 @@ SQLiteConversationStore::~SQLiteConversationStore() {
     QSqlDatabase::removeDatabase(connectionName);
 }
 
+StorageAdmission::Writer SQLiteConversationStore::admitWrite() {
+    if (!admission_) {
+        return {};
+    }
+    auto writer = admission_->admit(generation_);
+    if (!writer) {
+        setLastError(ConversationStoreErrorCode::Unavailable,
+                     QStringLiteral("Storage admission refused (busy, stale or shutdown)."));
+    }
+    return writer;
+}
+
 QString SQLiteConversationStore::normalizedTitle(const QString& title) {
     const auto trimmed = title.trimmed();
     return trimmed.isEmpty() ? QStringLiteral("Untitled Conversation") : trimmed;
 }
 
 ConversationRecord SQLiteConversationStore::createConversation(const QString& title) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return {};
+    }
     ConversationRecord record;
     if (!database_.isOpen()) {
         setLastError(ConversationStoreErrorCode::Unavailable,
@@ -219,6 +244,10 @@ QList<ConversationRecord> SQLiteConversationStore::searchConversations(
 }
 
 bool SQLiteConversationStore::appendMessage(const ConversationMessageRecord& message) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return false;
+    }
     if (!database_.isOpen()) {
         setLastError(ConversationStoreErrorCode::Unavailable,
                      QStringLiteral("SQLite conversation database is not open."));
@@ -339,6 +368,10 @@ SQLiteConversationStore::loadMessages(const QString& conversationId) const {
 
 bool SQLiteConversationStore::renameConversation(const QString& conversationId,
                                                  const QString& title) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return false;
+    }
     if (!database_.isOpen()) {
         setLastError(ConversationStoreErrorCode::Unavailable,
                      QStringLiteral("SQLite conversation database is not open."));
@@ -368,6 +401,10 @@ bool SQLiteConversationStore::renameConversation(const QString& conversationId,
 
 bool SQLiteConversationStore::autoTitleConversation(const QString& conversationId,
                                                      const QString& title) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return false;
+    }
     if (!database_.isOpen() || title.trimmed().isEmpty()) return false;
     QSqlQuery query(database_);
     query.prepare(QStringLiteral("UPDATE conversations SET title = ?, updated_at = ? "
@@ -382,6 +419,10 @@ bool SQLiteConversationStore::autoTitleConversation(const QString& conversationI
 bool SQLiteConversationStore::updateAutoTitleConversation(const QString& conversationId,
                                                            const QString& title,
                                                            const QString& expectedTitle) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return false;
+    }
     if (!database_.isOpen() || title.trimmed().isEmpty()) return false;
     QSqlQuery query(database_);
     query.prepare(QStringLiteral("UPDATE conversations SET title = ?, updated_at = ? "
@@ -410,6 +451,10 @@ bool SQLiteConversationStore::unpinConversation(const QString& conversationId) {
 }
 
 bool SQLiteConversationStore::clearHistory() {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return false;
+    }
     if (!database_.isOpen() || !database_.transaction()) {
         setLastError(ConversationStoreErrorCode::StorageFailure,
                      QStringLiteral("Conversation store unavailable"));
@@ -441,6 +486,10 @@ bool SQLiteConversationStore::deleteConversation(const QString& conversationId) 
 }
 
 bool SQLiteConversationStore::discardImportedConversation(const QString& conversationId) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return false;
+    }
     if (!database_.isOpen() || !conversationExists(conversationId) || !database_.transaction())
         return false;
     QSqlQuery query(database_);
@@ -467,6 +516,10 @@ bool SQLiteConversationStore::discardImportedConversation(const QString& convers
 }
 
 int SQLiteConversationStore::pruneCompletedBefore(const QDateTime& cutoffUtc, int limit) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return 0;
+    }
     if (!database_.isOpen() || !cutoffUtc.isValid() || limit < 1 || limit > 100 ||
         !database_.transaction()) {
         setLastError(ConversationStoreErrorCode::StorageFailure,
@@ -515,6 +568,10 @@ int SQLiteConversationStore::pruneCompletedBefore(const QDateTime& cutoffUtc, in
 
 bool SQLiteConversationStore::saveSummaryMetadata(
     const ConversationSummaryMetadataRecord& metadata) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return false;
+    }
     if (!database_.isOpen()) {
         setLastError(ConversationStoreErrorCode::Unavailable,
                      QStringLiteral("SQLite conversation database is not open."));
@@ -647,6 +704,10 @@ bool SQLiteConversationStore::conversationArchived(const QString& conversationId
 
 bool SQLiteConversationStore::updateConversationMetadata(const QString& conversationId,
                                                          bool archived, bool deleted) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return false;
+    }
     if (!database_.isOpen()) {
         setLastError(ConversationStoreErrorCode::Unavailable,
                      QStringLiteral("SQLite conversation database is not open."));
@@ -675,6 +736,10 @@ bool SQLiteConversationStore::updateConversationMetadata(const QString& conversa
 }
 
 bool SQLiteConversationStore::updatePinnedMetadata(const QString& conversationId, bool pinned) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return false;
+    }
     if (!database_.isOpen()) {
         setLastError(ConversationStoreErrorCode::Unavailable,
                      QStringLiteral("SQLite conversation database is not open."));

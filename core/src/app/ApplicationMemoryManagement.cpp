@@ -85,13 +85,15 @@ QVariantMap ApplicationController::manageMemory(const QVariantMap& request) {
             return answer("Unavailable");
         }
         if (!memoryArchiveJobs_) {
-            memoryArchiveJobs_ =
-                std::make_unique<MemoryArchiveJobs>(sqlite->databasePath(), this, [this] {
+            memoryArchiveJobs_ = std::make_unique<MemoryArchiveJobs>(
+                sqlite->databasePath(), this,
+                [this] {
                     latestMemoryRecallSummary_ = MemoryRecallSummary{};
                     emit memoryEntriesChanged();
                     emit memoryRecallChanged();
                     emit contextAssemblyChanged();
-                });
+                },
+                sqlite->storageAdmission(), sqlite->storageGeneration());
         }
         auto result = memoryArchiveJobs_->handle(input, scope, context);
         if (result.take("changed").toBool()) {

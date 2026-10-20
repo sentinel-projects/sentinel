@@ -128,6 +128,7 @@ private:
     std::unique_ptr<ILocalInferenceWorker> m_localInferenceWorker;
     std::unique_ptr<IConversationStore> m_conversationStore;
     std::unique_ptr<IAgentTaskRuntime> m_agentTaskRuntime;
+    std::shared_ptr<StorageAdmission> m_storageAdmission;
     std::shared_ptr<AlarmStore> m_alarmStore;
 };
 

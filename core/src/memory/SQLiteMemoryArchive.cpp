@@ -89,6 +89,10 @@ MemoryArchiveResult SQLiteMemoryStore::restoreArchive(QIODevice& in, MemoryScope
                                                       const MemoryArchiveLimits& limits,
                                                       const MemoryArchiveControl& control,
                                                       bool skipIdentical) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return {};
+    }
     MemoryArchiveResult result;
     result.status = "Unavailable";
     if (QThread::currentThread() != connectionThread_ || !isAvailable() ||

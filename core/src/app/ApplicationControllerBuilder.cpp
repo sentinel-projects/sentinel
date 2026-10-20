@@ -35,7 +35,10 @@ ApplicationControllerBuilder::withStandardDefaults(const StandardPathProvider& p
     m_localRuntimeSessions = std::make_unique<OllamaRuntimeSessionManager>(ollamaConfig, m_modelService.get());
     m_localRuntimeAdapter = std::make_unique<OllamaLocalRuntimeAdapter>(ollamaConfig, m_modelService.get());
     m_providerRuntimeBridge = std::make_unique<OllamaProviderRuntimeBridge>(ollamaConfig);
-    m_memoryStore = std::make_unique<SQLiteMemoryStore>(pathProvider.memoryDatabasePath());
+    m_storageAdmission =
+        std::make_shared<StorageAdmission>(StorageAdmission::Scope::LiveApplication);
+    m_memoryStore =
+        std::make_unique<SQLiteMemoryStore>(pathProvider.memoryDatabasePath(), m_storageAdmission);
     m_chatHistoryStore =
         std::make_unique<SQLiteChatHistoryStore>(pathProvider.chatHistoryDatabasePath());
     m_alarmStore =
@@ -49,8 +52,8 @@ ApplicationControllerBuilder::withStandardDefaults(const StandardPathProvider& p
     m_ollamaRuntimeClient = std::make_unique<OllamaHttpRuntimeClient>(ollamaConfig);
     m_localInferenceClient = std::make_unique<OllamaLocalInferenceClient>(ollamaConfig);
     m_localInferenceStreamClient = std::make_unique<OllamaLocalInferenceStreamClient>(ollamaConfig);
-    m_conversationStore =
-        std::make_unique<SQLiteConversationStore>(pathProvider.conversationDatabasePath());
+    m_conversationStore = std::make_unique<SQLiteConversationStore>(
+        pathProvider.conversationDatabasePath(), m_storageAdmission);
 
     return *this;
 }
@@ -320,6 +323,7 @@ std::unique_ptr<ApplicationController> ApplicationControllerBuilder::build() {
         std::move(m_voiceRuntimeEnvironment), std::move(m_piperTextToSpeechProvider),
         std::move(m_localInferenceWorker), std::move(m_conversationStore),
         std::move(m_agentTaskRuntime), std::move(m_agentStepPlanner), std::move(m_modelService));
+    controller->attachStorageAdmission(m_storageAdmission);
     controller->attachAlarmStore(m_alarmStore);
     return controller;
 }

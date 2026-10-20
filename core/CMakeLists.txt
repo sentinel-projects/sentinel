@@ -372,6 +372,7 @@ add_library(sentinel_core STATIC
     src/app/OnboardingService.cpp
     src/app/SettingsService.cpp
     src/app/StorageMigration.cpp
+    src/app/StorageAdmission.cpp
     src/app/BackupRecoveryJournal.cpp
     src/platform/RecoveryJournalFileSecurity.cpp
     src/app/BackupService.cpp

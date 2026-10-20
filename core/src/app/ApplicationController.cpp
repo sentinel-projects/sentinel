@@ -1058,6 +1058,9 @@ ApplicationController::~ApplicationController() {
         agentRuntime_->shutdown();
         agentRuntime_.reset();
     }
+    if (storageAdmission_) {
+        storageAdmission_->shutdown();
+    }
     if (ollamaCheckThread_) {
         if (discoveryCancellation_) discoveryCancellation_->store(true);
         ollamaCheckThread_->wait();

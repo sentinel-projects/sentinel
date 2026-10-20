@@ -98,3 +98,20 @@ state receipts through Qt SQL, with explicit Unix file-identity/durability check
 and real process-interruption tests. It is not bound to a live owner quiescence or
 replacement/reinitialization protocol; no combined format or crash-safe application
 restore is enabled. See [P8-06](../audits/P8_06_COORDINATED_BACKUP_RECOVERY_RESULT.md).
+
+### Storage admission foundation (P8-06A)
+
+`ApplicationControllerBuilder::withStandardDefaults` creates one process-local
+`StorageAdmission` shared by its memory/conversation SQLite owners and memory archive
+workers. Writers hold a move-only lease before schema or transaction mutation.
+Store generations are immutable; archive workers inherit the originating store's
+generation rather than refreshing authority when a job runs.
+
+This is partial coverage. The live application coordinator refuses maintenance
+preparation with `Unsupported` before changing state: asynchronous request lifetimes,
+settings/workspaces, transcript history, runs, grants and independent processes are
+not collectively enrolled. `prepareApplication()` is always `Unsupported`.
+The explicit leaf-store scope supports bounded drain/maintenance tests and future
+trusted orchestration; it must not be substituted for the live application scope.
+No IPC/model maintenance command or live journal replacement is enabled. See
+`docs/audits/P8_06A_STORAGE_ADMISSION_QUIESCENCE_RESULT.md` for coverage and restrictions.

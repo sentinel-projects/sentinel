@@ -149,6 +149,10 @@ SQLiteMemoryStore::readManagedMemory(const QString& id, const MemoryManagementCo
 MemoryManagementResult
 SQLiteMemoryStore::mutateManagedMemory(const QList<MemoryMutation>& mutations,
                                        const MemoryManagementContext& c) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return {};
+    }
     if (!authorizedMemoryContext(c.access)) {
         return {MemoryManagementStatus::Unauthorized, {}, {}};
     }
@@ -269,6 +273,10 @@ SQLiteMemoryStore::applyManagedMutations(const QList<MemoryMutation>& mutations,
 
 MemoryManagementResult SQLiteMemoryStore::clearManagedMemory(MemoryScope scope,
                                                              const MemoryManagementContext& c) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return {};
+    }
     if (!authorizedMemoryScope(scope, c)) {
         return {MemoryManagementStatus::Unauthorized, {}, {}};
     }

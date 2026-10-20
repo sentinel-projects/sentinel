@@ -122,6 +122,10 @@ MemoryIndexStatus SQLiteMemoryStore::memoryIndexStatus(const MemoryAccessContext
     return indexStatus(db, c);
 }
 MemoryIndexStatus SQLiteMemoryStore::refreshMemoryIndex(const MemoryAccessContext& c, int limit) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return {};
+    }
     if (!authorizedMemoryContext(c) || limit < 1 || limit > 100 ||
         QThread::currentThread() != connectionThread_ || !isAvailable() ||
         !database_.transaction()) {
