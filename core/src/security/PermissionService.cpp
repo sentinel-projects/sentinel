@@ -74,6 +74,9 @@ PermissionService::PermissionService(std::shared_ptr<IPermissionGrantStore> stor
 PermissionEffect PermissionService::evaluateAuthorization(const AuthorizationRequest& request,
                                                            const QString& sessionId) const {
     std::lock_guard lock(mutex_);
+    if (persistenceRestricted_) {
+        return PermissionEffect::Deny;
+    }
     bool allowed = false;
     bool denied = false;
     for (const auto& grant : grants_) {
@@ -162,16 +165,20 @@ bool PermissionService::grantAuthorizations(const QList<AuthorizationRequest>& r
 
 bool PermissionService::removePersistentGrant(const QString& id) {
     std::lock_guard lock(mutex_);
-    if (!store_ || !store_->remove(id))
+    if (!store_ || !store_->remove(id)) {
+        persistenceRestricted_ = true;
         return false;
+    }
     persistentGrants_.removeIf([&](const auto& grant) { return grant.id == id; });
     return true;
 }
 
 bool PermissionService::clearPersistentGrants() {
     std::lock_guard lock(mutex_);
-    if (!store_ || !store_->clear())
+    if (!store_ || !store_->clear()) {
+        persistenceRestricted_ = true;
         return false;
+    }
     persistentGrants_.clear();
     return true;
 }

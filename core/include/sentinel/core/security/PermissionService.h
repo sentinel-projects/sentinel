@@ -47,6 +47,7 @@ private:
     mutable std::mutex mutex_;
     QList<PersistentPermissionGrant> persistentGrants_;
     QList<Grant> grants_;
+    bool persistenceRestricted_ = false;
 };
 
 } // namespace sentinel::core

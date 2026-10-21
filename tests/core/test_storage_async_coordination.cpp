@@ -2,6 +2,7 @@
 #include "sentinel/core/agent/SQLiteAgentRunStore.h"
 #include "sentinel/core/app/StorageAdmission.h"
 #include "sentinel/core/chat/SQLiteChatHistoryStore.h"
+#include "sentinel/core/security/PermissionService.h"
 #include "sentinel/core/security/SQLitePermissionGrantStore.h"
 #include <QTemporaryDir>
 #include <QtTest>
@@ -100,6 +101,34 @@ private slots:
         QCOMPARE(runs.runById("run").state, QString("Running"));
         QCOMPARE(authority->resume(), StorageAdmission::Result::Ready);
         QVERIFY(runs.record(event));
+    }
+    void permissionCreationAndRevocationFailClosed() {
+        QTemporaryDir profile;
+        auto authority = std::make_shared<StorageAdmission>();
+        auto store = std::make_shared<SQLitePermissionGrantStore>(profile.filePath("grants.sqlite"),
+                                                                  authority);
+        PermissionService permissions(store);
+        AuthorizationRequest request{SecurityDomain::Network, AccessMode::Read, "fixture.invalid"};
+        request.resourceKind = AuthorizationResourceKind::Host;
+        QVERIFY(permissions.grantAuthorization(request, "session", true));
+        QCOMPARE(permissions.evaluateAuthorization(request, "session"), PermissionEffect::Allow);
+        const auto id = permissions.persistentGrants().first().id;
+        QCOMPARE(authority->prepareLocal(0ms), StorageAdmission::Result::Ready);
+        AuthorizationRequest another = request;
+        another.resource = "another.invalid";
+        QVERIFY(!permissions.grantAuthorization(another, "session", true));
+        QCOMPARE(permissions.persistentGrants().size(), 1);
+        QVERIFY(!permissions.removePersistentGrant(id));
+        QCOMPARE(permissions.evaluateAuthorization(request, "session"), PermissionEffect::Deny);
+        QList<PersistentPermissionGrant> durable;
+        QVERIFY(store->load(durable));
+        QCOMPARE(durable.size(), 1);
+        QCOMPARE(authority->resume(), StorageAdmission::Result::Ready);
+        // A failed revoke never silently restores the cached authority.
+        QCOMPARE(permissions.evaluateAuthorization(request, "session"), PermissionEffect::Deny);
+        QVERIFY(permissions.removePersistentGrant(id));
+        QVERIFY(store->load(durable));
+        QVERIFY(durable.isEmpty());
     }
 };
 QTEST_GUILESS_MAIN(StorageAsyncCoordinationTest)
