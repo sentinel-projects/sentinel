@@ -52,17 +52,24 @@ QList<DoomLoopIndicator> DoomLoopDetector::analyzeHistory(const QString& session
 }
 
 bool DoomLoopDetector::hasRepeatedPattern(const QStringList& actions) const {
-    if (actions.size() < m_config.maxRepetitions * 2)
+    const int repetitions = qMax(2, m_config.maxRepetitions);
+    if (actions.size() < repetitions)
         return false;
 
-    for (int len = 1; len <= actions.size() / 2; ++len) {
-        int count = 0;
-        for (int i = 0; i + len <= actions.size(); ++i) {
-            if (i + len < actions.size() && actions[i] == actions[i + len]) {
-                count++;
+    // Only a trailing repetition is a current loop. Counting equal actions
+    // anywhere in the window turns normal recurring steps into false positives.
+    for (int len = 1; len * repetitions <= actions.size(); ++len) {
+        const int start = actions.size() - len * repetitions;
+        bool repeated = true;
+        for (int copy = 1; copy < repetitions && repeated; ++copy) {
+            for (int offset = 0; offset < len; ++offset) {
+                if (actions.at(start + offset) != actions.at(start + copy * len + offset)) {
+                    repeated = false;
+                    break;
+                }
             }
         }
-        if (count >= m_config.maxRepetitions)
+        if (repeated)
             return true;
     }
     return false;

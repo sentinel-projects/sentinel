@@ -4,8 +4,8 @@
 
 #pragma once
 
-#include "sentinel/core/agent/AgentLoopState.h"
 #include "sentinel/core/agent/AgentExecutionScheduler.h"
+#include "sentinel/core/agent/AgentLoopState.h"
 #include "sentinel/core/agent/ContextEngine.h"
 #include "sentinel/core/agent/IAgentStepPlanner.h"
 #include "sentinel/core/agent/ObservationPolicy.h"
@@ -41,10 +41,14 @@ class AgentExecutionScheduler;
 class AgentLoop {
 public:
     struct Config {
-        int maxIterations = 12;
+        // Productive tool steps. Blocked/validation-only steps are counted separately so a
+        // malformed proposal cannot consume the work budget of a real task.
+        int maxIterations = 24;
+        int maxBlockedSteps = 6;
+        int maxConsecutiveBlockedSteps = 4;
         bool autonomousMode = false;
-        int observationPreviewLines = 60;
-        qint64 observationMaxBytes = 8192;
+        int observationPreviewLines = 120;
+        qint64 observationMaxBytes = 16384;
         int maxParallelTools = 3;
         std::shared_ptr<AgentExecutionScheduler::Budget> executionBudget;
     };
@@ -90,7 +94,9 @@ public:
     void setCancellationToken(std::shared_ptr<std::atomic_bool> token);
     void setToolCallback(ToolCallback callback);
     void setPlanningCallback(PlanningCallback callback);
-    void setContextCallback(ContextCallback callback) { contextCallback_ = std::move(callback); }
+    void setContextCallback(ContextCallback callback) {
+        contextCallback_ = std::move(callback);
+    }
     void setOutputCallback(OutputCallback callback);
     void setToolCallIdProvider(ToolCallIdProvider provider);
     void setToolRegistry(const IToolRegistry* registry) {
@@ -100,12 +106,18 @@ public:
     void setObservationIntentPolicy(std::shared_ptr<IObservationIntentPolicy> policy) {
         observationIntentPolicy_ = std::move(policy);
     }
-    void setObservationContext(QString context) { observationContext_ = std::move(context); }
-    void setResponseProfileInstructions(QString instructions) { responseProfileInstructions_ = instructions.left(2000); }
+    void setObservationContext(QString context) {
+        observationContext_ = std::move(context);
+    }
+    void setResponseProfileInstructions(QString instructions) {
+        responseProfileInstructions_ = instructions.left(2000);
+    }
     void setWorkspaceContext(AgentContextInput::WorkspaceContext context) {
         workspaceContext_ = std::move(context);
     }
-    void setResourceScope(QString root) { resourceScope_ = std::move(root); }
+    void setResourceScope(QString root) {
+        resourceScope_ = std::move(root);
+    }
     void setSkills(QList<Skill> skills) {
         skills_ = std::move(skills);
     }
@@ -135,6 +147,7 @@ public:
 
 private:
     QString workingDirectory() const;
+    QString truncatedObservation(const QByteArray& output, const QString& toolName) const;
     QStringList externalPathsRequiringApproval(const ToolInvocationPlan& plan,
                                                const QString& sessionId) const;
     void grantExternalPaths(const ToolInvocationPlan& plan, const QString& sessionId);
@@ -142,8 +155,7 @@ private:
     bool hasAuthorizationDeny(const ToolInvocationPlan& plan, const QString& sessionId) const;
     void applyPermissionPolicy(const ToolInvocationPlan& plan, const QString& sessionId,
                                ApprovalDecision& approval) const;
-    QList<AuthorizationRequest> resolveAuthorizationRequests(
-        const ToolInvocationPlan& plan) const;
+    QList<AuthorizationRequest> resolveAuthorizationRequests(const ToolInvocationPlan& plan) const;
     ResourceAuthorizationResult prepareResources(ToolInvocationPlan& plan) const;
     ResourceAuthorizationResult authorizeResources(ToolInvocationPlan& plan,
                                                    const QString& sessionId) const;
@@ -159,7 +171,8 @@ private:
     bool acceptFinalAnswer(AgentLoopState& state, const AgentStepDecision& decision);
     void recordEvidence(AgentLoopState& state, const ToolDescriptor& descriptor,
                         const ToolInvocationPlan& plan, ToolExecutionStatus status,
-                        const QString& summary, int stepIndex, StructuredObservationPtr structuredObservation = {},
+                        const QString& summary, int stepIndex,
+                        StructuredObservationPtr structuredObservation = {},
                         const QList<FileMutation>& mutations = {});
     ToolInvocationPlan planFromDecision(const AgentStepDecision& decision) const;
     bool cancellationRequested() const;

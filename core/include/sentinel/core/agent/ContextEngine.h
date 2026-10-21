@@ -25,7 +25,8 @@ enum class AgentContextKind {
     Tool,
     Requirement,
     Skill,
-    ResponseProfile
+    ResponseProfile,
+    Checkpoint
 };
 enum class AgentContextPriority { Critical, High, Normal, Low };
 

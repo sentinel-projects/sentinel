@@ -22,6 +22,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QUuid>
+#include <algorithm>
 #include <atomic>
 
 using namespace sentinel;
@@ -400,15 +401,22 @@ private slots:
             QFile bytes(fixture.artifact);
             QVERIFY(bytes.open(QIODevice::ReadOnly));
             QCOMPARE(bytes.readAll(), replacement);
-            const auto final = QJsonDocument::fromJson(state.finalAnswer.toUtf8()).object();
-            QCOMPARE(final.value("observations")
-                         .toArray()
-                         .first()
-                         .toObject()
-                         .value("observed_text")
-                         .toString()
-                         .toUtf8(),
-                     replacement);
+            // Coding finals stay natural-language prose. The canonical observed
+            // text remains in evidence and is not injected into the user-facing
+            // answer just because a file was read.
+            QVERIFY(!state.finalAnswer.trimmed().startsWith(QLatin1Char('{')));
+            QCOMPARE(state.finalAnswer,
+                     QStringLiteral("Fixture file updated and independently read back."));
+            const bool observedBytes =
+                std::any_of(state.evidence.cbegin(), state.evidence.cend(), [&](const auto& e) {
+                    return e.toolId == QLatin1String("read-file") && e.structuredObservation &&
+                           e.structuredObservation->kind ==
+                               core::StructuredObservationKind::FileContent &&
+                           e.structuredObservation->data.value(QStringLiteral("content"))
+                                   .toString()
+                                   .toUtf8() == replacement;
+                });
+            QVERIFY(observedBytes);
             QCOMPARE(state.finalGrounding.mode, core::GroundingMode::Verified);
             auto expected = fixture.before;
             expected["allowed.txt"] =
