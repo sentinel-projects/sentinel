@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "sentinel/core/app/StorageAdmission.h"
 #include "sentinel/core/chat/ChatSession.h"
 #include "sentinel/core/chat/IConversationStore.h"
 #include "sentinel/core/context/ContextBudgetManager.h"
@@ -39,6 +40,9 @@ public:
     ChatModeService(ModelService& models, ChatSession& session, IConversationStore& store,
                     QObject* parent = nullptr);
     ~ChatModeService() override;
+    void setStorageAdmission(std::shared_ptr<StorageAdmission> admission) {
+        admission_ = std::move(admission);
+    }
     bool send(const QString& conversationId, const QString& text,
               const QList<ChatAttachment>& attachments = {}, const ModelSelection& selection = {},
               bool requireLocal = false);
@@ -78,6 +82,8 @@ private:
                                    const ChatRequestOptions& options) const;
     static ChatProviderErrorCategory bindingError(ModelBindingError error);
 
+    std::shared_ptr<StorageAdmission> admission_;
+    std::uint64_t requestGeneration_ = 0;
     QJsonObject budgetDiagnostics_;
     const IMemoryStore* memory_ = nullptr;
     std::function<MemoryAccessContext(const QString&)> memoryContext_;
