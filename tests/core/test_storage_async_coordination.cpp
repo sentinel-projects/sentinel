@@ -2,8 +2,12 @@
 #include "sentinel/core/agent/SQLiteAgentRunStore.h"
 #include "sentinel/core/app/StorageAdmission.h"
 #include "sentinel/core/chat/SQLiteChatHistoryStore.h"
+#include "sentinel/core/job/BackgroundJobService.h"
 #include "sentinel/core/security/PermissionService.h"
 #include "sentinel/core/security/SQLitePermissionGrantStore.h"
+#include <QSemaphore>
+#include <QSignalSpy>
+#include <QSqlQuery>
 #include <QTemporaryDir>
 #include <QtTest>
 using namespace sentinel::core;
@@ -129,6 +133,55 @@ private slots:
         QVERIFY(permissions.removePersistentGrant(id));
         QVERIFY(store->load(durable));
         QVERIFY(durable.isEmpty());
+    }
+    void backgroundCompletionPersistsOnOwnerThreadAndRefusesShutdownWrite() {
+        QTemporaryDir profile;
+        const auto name = QStringLiteral("async-jobs");
+        {
+            auto db = QSqlDatabase::addDatabase("QSQLITE", name);
+            db.setDatabaseName(profile.filePath("jobs.sqlite"));
+            QVERIFY(db.open());
+            auto authority = std::make_shared<StorageAdmission>();
+            BackgroundJobService jobs;
+            QVERIFY(jobs.setPersistenceDatabase(db, authority));
+            QSemaphore entered, release;
+            auto cleanup = qScopeGuard([&] { release.release(); });
+            QSignalSpy completed(&jobs, &BackgroundJobService::jobCompleted);
+            QSignalSpy failed(&jobs, &BackgroundJobService::jobFailed);
+            QString following;
+            const auto connection =
+                connect(&jobs, &BackgroundJobService::jobCompleted, &jobs, [&](const QString&) {
+                    if (following.isEmpty()) {
+                        following = jobs.submitJob("follow-up", [](Job&, auto) { return true; });
+                    }
+                });
+            QVERIFY(!jobs.submitJob("first", [](Job&, auto) { return true; }).isEmpty());
+            QTRY_COMPARE(completed.size(), 2);
+            QVERIFY(!following.isEmpty());
+            disconnect(connection);
+            completed.clear();
+            const auto id = jobs.submitJob("blocked-result", [&](Job&, auto) {
+                entered.release();
+                release.tryAcquire(1, 5000);
+                return true;
+            });
+            QVERIFY(!id.isEmpty());
+            QVERIFY(entered.tryAcquire(1, 1000));
+            QCOMPARE(authority->prepareLocal(0ms), StorageAdmission::Result::TimedOut);
+            authority->shutdown();
+            release.release();
+            QTRY_COMPARE(failed.size(), 1);
+            QCOMPARE(completed.size(), 0);
+            QCOMPARE(jobs.findJob(id)->state, JobState::Failed);
+            QSqlQuery query(db);
+            query.prepare("SELECT state FROM sentinel_jobs WHERE id=?");
+            query.addBindValue(id);
+            QVERIFY(query.exec());
+            QVERIFY(query.next());
+            QCOMPARE(query.value(0).toInt(), static_cast<int>(JobState::Running));
+            QVERIFY(jobs.submitJob("refused", [](Job&, auto) { return true; }).isEmpty());
+        }
+        QSqlDatabase::removeDatabase(name);
     }
 };
 QTEST_GUILESS_MAIN(StorageAsyncCoordinationTest)
