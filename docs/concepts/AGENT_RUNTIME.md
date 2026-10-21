@@ -23,3 +23,21 @@ flowchart TD
 An active run holds one `ModelBinding` resolved through `IModelRouter`. The loop can stream steps and final messages, accepts cancellation, enforces iteration limits, and uses doom-loop detection. Tool arguments are validated against the authoritative `ToolDescriptor` schema before a handler runs. Results are truncated where necessary before returning to the model context.
 
 Natural-language input is never converted into a shell command by heuristic planning. Provider failures, rejected approvals, validation failures, cancellation, and tool failures remain run events or errors; only an accepted final answer completes the run.
+
+## Run budget and observations
+
+`AgentLoop` separates productive tool steps from blocked proposals. The default productive budget is 24 steps; validation failures, unknown tools, and denied calls are counted separately and terminate the run after 6 total or 4 consecutive blocked steps. A productive tool execution resets the consecutive counter, so an early malformed proposal does not decide the rest of the run. A malformed proposal therefore cannot consume the budget reserved for real work, while repeated invalid actions still stop the loop.
+
+Tool output is truncated to a bounded preview (default 16 KiB / 120 lines). The preview reports the full-output path and tells the model to request a narrower range instead of repeating the same call. The context assembler keeps the newest observations intact and compacts older ones head-and-tail, preserving the beginning and the failure tail without unbounded request growth. A deterministic run checkpoint (step counts, recent blockers, and changed resources) is retained separately so compacted observations do not erase the run's progress.
+
+A repeated identical action is never executed again. Read-only repeats and already successful verification commands get one planning repair. A repeated mutation or other non-observation action also gets one bounded repair, but a final answer is not accepted while that repair is unresolved; if the planner still cannot choose a different action, the run stops as stuck rather than reporting success.
+
+## Final answers and verification recovery
+
+A verified final answer is published as the model's natural-language response. The evidence-derived projection is a fallback when the answer is empty and a mandatory representation only when the observation scope cannot support an absence conclusion (for example, a directory listing with hidden entries excluded or truncated). Claim, permission, approval, and sandbox checks remain authoritative.
+
+When a final is rejected solely because a read-only verification requirement is missing, `AgentLoop` may recover by running one permitted `read-file`, `git-diff`, or `git-status` step, up to three times. The final is accepted only after the resulting evidence is observed; a receipt-only claim never completes a run on its own.
+
+## Approval lifetime
+
+A run paused for approval is not an unbounded wait. `AgentRuntime` applies a five-minute approval timeout by default (`setApprovalTimeoutMs`, zero disables it). On expiry the pending plan is explicitly denied, its session grants are cleared, no tool is dispatched, and the run terminates as `Failed` / `ApprovalDenied` with a retryable message. Approving or cancelling invalidates the timer, and a late timer cannot overwrite a newer run generation. The desktop approval dialog still offers immediate Deny, Allow once, and Cancel run; the timeout only prevents a forgotten prompt from leaving the session permanently paused.
