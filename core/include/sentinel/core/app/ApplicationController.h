@@ -1144,7 +1144,8 @@ public:
         std::unique_ptr<IConversationStore> conversationStore = nullptr,
         std::unique_ptr<IAgentTaskRuntime> agentTaskRuntime = nullptr,
         std::unique_ptr<IAgentStepPlanner> agentStepPlanner = nullptr,
-        std::unique_ptr<ModelService> modelService = nullptr, QObject* parent = nullptr);
+        std::unique_ptr<ModelService> modelService = nullptr, QObject* parent = nullptr,
+        std::shared_ptr<StorageAdmission> admission = {});
     ~ApplicationController() override;
 
     ModelLibraryService* modelLibrary() const { return modelLibrary_.get(); }
@@ -2282,6 +2283,7 @@ private:
     bool activeLocalInferenceIsChatRequest_ = false;
     bool activeLocalInferenceIsSummaryRequest_ = false;
     quint64 localInferenceRequestSequence_ = 0;
+    std::uint64_t activeLocalInferenceStorageGeneration_ = 0;
     QString activeLocalInferenceRequestId_;
     QString activeLocalInferenceConversationId_;
     QString chatSendLifecycleState_ = QStringLiteral("idle");

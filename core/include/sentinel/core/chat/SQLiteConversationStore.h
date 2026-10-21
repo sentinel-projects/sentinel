@@ -16,6 +16,9 @@ public:
     explicit SQLiteConversationStore(QString databasePath,
                                      std::shared_ptr<StorageAdmission> admission = {},
                                      std::uint64_t generation = 0);
+    bool coordinatedBy(const std::shared_ptr<StorageAdmission>& authority) const override {
+        return authority && authority == admission_;
+    }
     ~SQLiteConversationStore() override;
 
     SQLiteConversationStore(const SQLiteConversationStore&) = delete;

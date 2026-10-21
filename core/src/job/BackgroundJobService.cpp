@@ -4,6 +4,7 @@
 
 #include "sentinel/core/job/BackgroundJobService.h"
 #include <QDebug>
+#include <QPointer>
 #include <QSqlQuery>
 #include <QThreadPool>
 
@@ -34,8 +35,14 @@ QString BackgroundJobService::submitJob(const QString& name, JobFunction func,
         job.state = JobState::Queued;
         job.createdAt = QDateTime::currentDateTime();
         job.cancellationToken = std::make_shared<std::atomic_bool>(false);
+        auto lifetime = std::make_shared<StorageAdmission::Writer>(
+            admission_ ? admission_->admit(generation_) : StorageAdmission::Writer{});
+        if (admission_ && !*lifetime)
+            return {};
+        if (!persistJob(job))
+            return {};
+        operationLeases_[job.id] = std::move(lifetime);
         m_jobs[job.id] = job;
-        persistJob(job);
         m_jobFunctions[job.id] = func;
         m_jobQueue.enqueue(job.id);
         emit jobSubmitted(job.id, name);
@@ -57,14 +64,15 @@ bool BackgroundJobService::cancelJob(const QString& jobId) {
             it->cancellationToken->store(true);
         }
         it->state = JobState::Cancelled;
-        persistJob(*it);
+        const bool persisted = persistJob(*it);
         emit jobCancelled(jobId);
-        return true;
+        return persisted;
     }
 
     if (it->state == JobState::Queued) {
         it->state = JobState::Cancelled;
-        persistJob(*it);
+        const bool persisted = persistJob(*it);
+        operationLeases_.remove(jobId);
         // Remove from queue
         for (int i = 0; i < m_jobQueue.size(); ++i) {
             if (m_jobQueue[i] == jobId) {
@@ -73,7 +81,7 @@ bool BackgroundJobService::cancelJob(const QString& jobId) {
             }
         }
         emit jobCancelled(jobId);
-        return true;
+        return persisted;
     }
 
     return false;
@@ -87,12 +95,20 @@ bool BackgroundJobService::retryJob(const QString& jobId) {
             it->retryCount >= it->maxRetries) {
             return false;
         }
+        const Job before = *it; // NOLINT(performance-unnecessary-copy-initialization): rollback
+                                // snapshot must not alias the mutable job.
         it->retryCount++;
         it->state = JobState::Queued;
         it->cancellationToken = std::make_shared<std::atomic_bool>(false);
         it->progress = JobProgress();
         it->errorString.clear();
-        persistJob(*it);
+        auto lifetime = std::make_shared<StorageAdmission::Writer>(
+            admission_ ? admission_->admit(generation_) : StorageAdmission::Writer{});
+        if ((admission_ && !*lifetime) || !persistJob(*it)) {
+            *it = before;
+            return false;
+        }
+        operationLeases_[jobId] = std::move(lifetime);
         m_jobQueue.enqueue(jobId);
     }
     processQueue();
@@ -111,6 +127,7 @@ bool BackgroundJobService::removeJob(const QString& jobId) {
         return false; // Can't remove running job
     }
 
+    operationLeases_.remove(jobId);
     m_jobs.erase(it);
     m_jobFunctions.remove(jobId);
     return true;
@@ -167,16 +184,27 @@ int BackgroundJobService::maxConcurrentJobs() const {
     return m_maxConcurrentJobs;
 }
 
-bool BackgroundJobService::setPersistenceDatabase(QSqlDatabase database) {
+bool BackgroundJobService::setPersistenceDatabase(QSqlDatabase database,
+                                                  std::shared_ptr<StorageAdmission> admission) {
     if (!database.isValid() || !database.isOpen())
         return false;
-    m_database = database;
+    if (!m_jobs.isEmpty()) {
+        return false;
+    }
+    admission_ = std::move(admission);
+    generation_ = admission_ ? admission_->snapshot().generation : 0;
+    m_database = std::move(database);
     return initializePersistence();
 }
 
 bool BackgroundJobService::initializePersistence() {
-    if (!m_database.isOpen())
+    auto writer = admission_ ? admission_->admit(generation_) : StorageAdmission::Writer{};
+    if (admission_ && !writer) {
         return false;
+    }
+    if (!m_database.isOpen()) {
+        return false;
+    }
     QSqlQuery query(m_database);
     return query.exec(QStringLiteral(
         "CREATE TABLE IF NOT EXISTS sentinel_jobs ("
@@ -185,9 +213,17 @@ bool BackgroundJobService::initializePersistence() {
         "max_retries INTEGER)"));
 }
 
-void BackgroundJobService::persistJob(const Job& job) {
-    if (!m_database.isOpen())
-        return;
+bool BackgroundJobService::persistJob(const Job& job) {
+    auto writer = admission_ ? admission_->admit(generation_) : StorageAdmission::Writer{};
+    if (admission_ && !writer) {
+        return false;
+    }
+    if (!m_database.isValid()) {
+        return true;
+    }
+    if (!m_database.isOpen()) {
+        return false;
+    }
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral("INSERT OR REPLACE INTO sentinel_jobs "
                                  "(id,name,description,state,created_at,started_at,completed_at,"
@@ -203,7 +239,7 @@ void BackgroundJobService::persistJob(const Job& job) {
     query.addBindValue(job.errorString);
     query.addBindValue(job.retryCount);
     query.addBindValue(job.maxRetries);
-    query.exec();
+    return query.exec();
 }
 
 int BackgroundJobService::recoverPersistedJobs() {
@@ -265,50 +301,90 @@ void BackgroundJobService::executeJob(const QString& jobId) {
 
     jobIt->state = JobState::Running;
     jobIt->startedAt = QDateTime::currentDateTime();
+
+    if (!persistJob(*jobIt)) {
+        --m_runningJobs;
+        jobIt->state = JobState::Failed;
+        jobIt->errorString =
+            QStringLiteral("Job start persistence refused; execution was not started.");
+        operationLeases_.remove(jobId);
+        emit jobFailed(jobId, jobIt->errorString);
+        return;
+    }
+    const JobFunction func = funcIt.value();
+    Job accepted = *jobIt;
+    auto lifetime = operationLeases_.value(jobId);
     emit jobStarted(jobId);
-
-    JobFunction func = funcIt.value();
-    Job& jobRef = *jobIt;
-
-    // Run job in thread pool
-    m_threadPool.start([this, jobId, func, &jobRef]() {
-        auto progressCallback = [this, jobId](JobProgress progress) {
-            QMutexLocker locker(&m_mutex);
-            auto it = m_jobs.find(jobId);
-            if (it != m_jobs.end()) {
-                it->progress = progress;
-                emit jobProgressUpdated(jobId, progress);
+    QPointer<BackgroundJobService> self(this);
+    m_threadPool.start([self, jobId, func, accepted, lifetime]() mutable {
+        auto progressCallback = [self, jobId](JobProgress progress) {
+            if (!self) {
+                return;
             }
+            QMetaObject::invokeMethod(
+                self.data(),
+                [self, jobId, progress] {
+                    if (!self) {
+                        return;
+                    }
+                    QMutexLocker locker(&self->m_mutex);
+                    auto it = self->m_jobs.find(jobId);
+                    if (it != self->m_jobs.end()) {
+                        it->progress = progress;
+                        emit self->jobProgressUpdated(jobId, progress);
+                    }
+                },
+                Qt::QueuedConnection);
         };
-
         bool success = false;
         try {
-            success = func(jobRef, progressCallback);
+            success = func(accepted, progressCallback);
         } catch (const std::exception& e) {
-            jobRef.errorString = e.what();
+            accepted.errorString = e.what();
         }
-
-        {
-            QMutexLocker locker(&m_mutex);
-            m_runningJobs--;
-
-            if (jobRef.state == JobState::Cancelled) {
-                // Already cancelled, don't update state
-            } else if (success) {
-                jobRef.state = JobState::Completed;
-                jobRef.completedAt = QDateTime::currentDateTime();
-                emit jobCompleted(jobId);
-            } else {
-                jobRef.state = JobState::Failed;
-                jobRef.completedAt = QDateTime::currentDateTime();
-                if (jobRef.errorString.isEmpty()) {
-                    jobRef.errorString = "Job execution failed";
+        if (!self) {
+            return;
+        }
+        QMetaObject::invokeMethod(
+            self.data(),
+            [self, jobId, accepted, success, lifetime] {
+                JobState finalState = JobState::Failed;
+                QString finalError;
+                {
+                    if (!self) {
+                        return;
+                    }
+                    QMutexLocker locker(&self->m_mutex);
+                    --self->m_runningJobs;
+                    auto it = self->m_jobs.find(jobId);
+                    if (it == self->m_jobs.end())
+                        return;
+                    if (it->state != JobState::Cancelled) {
+                        it->state = success ? JobState::Completed : JobState::Failed;
+                        it->errorString = accepted.errorString;
+                        it->completedAt = QDateTime::currentDateTime();
+                    }
+                    if (!self->persistJob(*it)) {
+                        it->state = JobState::Failed;
+                        it->errorString = QStringLiteral(
+                            "Job result persistence refused; side effects may exist.");
+                    }
+                    self->operationLeases_.remove(jobId);
+                    finalState = it->state;
+                    finalError = it->errorString;
                 }
-                emit jobFailed(jobId, jobRef.errorString);
-            }
-            persistJob(jobRef);
-        }
-        processQueue();
+                // Direct completion subscribers may submit another job; never call them
+                // while holding the job mutex.
+                if (finalState == JobState::Completed) {
+                    emit self->jobCompleted(jobId);
+                } else if (finalState == JobState::Failed) {
+                    emit self->jobFailed(jobId, finalError);
+                }
+                if (self) {
+                    self->processQueue();
+                }
+            },
+            Qt::QueuedConnection);
     });
 }
 

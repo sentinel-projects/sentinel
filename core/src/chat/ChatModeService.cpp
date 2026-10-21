@@ -60,6 +60,9 @@ ChatMessage ChatModeService::activeMessage() const {
 }
 
 bool ChatModeService::persist(const QString& conversationId, const ChatMessage& message) {
+    auto writer = admission_ ? admission_->admit(requestGeneration_) : StorageAdmission::Writer{};
+    if (admission_ && (!writer || !store_.coordinatedBy(admission_)))
+        return false;
     // A newly created assistant placeholder intentionally has no text yet.  QString's default
     // null value must be stored as an empty string, not bound as SQL NULL against the durable
     // conversation schema's NOT NULL content column.
@@ -97,6 +100,7 @@ bool ChatModeService::send(const QString& conversationId, const QString& text,
         emit requestStateChanged();
         return false;
     }
+    requestGeneration_ = admission_ ? admission_->snapshot().generation : 0;
     const auto previous = session_.messages();
     auto user = session_.appendUserMessage(text.trimmed());
     user.status = ChatMessageStatus::Completed;
@@ -120,6 +124,7 @@ bool ChatModeService::sendExisting(const QString& conversationId, int userMessag
     if (stopping_ || busy() || conversationId.isEmpty()) {
         return false;
     }
+    requestGeneration_ = admission_ ? admission_->snapshot().generation : 0;
     return runTurn(conversationId, userMessageId, replacesMessageId, selection, requireLocal);
 }
 
@@ -233,6 +238,10 @@ ContextBudgetResult ChatModeService::contextFor(const QString& conversationId, i
 bool ChatModeService::runTurn(const QString& conversationId, int userMessageId,
                               int replacesMessageId, const ModelSelection& preferredSelection,
                               bool requireLocal) {
+    auto lifetime = std::make_shared<StorageAdmission::Writer>(
+        admission_ ? admission_->admit(requestGeneration_) : StorageAdmission::Writer{});
+    if (admission_ && !*lifetime)
+        return false;
     ChatMessage user;
     for (const auto& message : session_.messages())
         if (message.id == userMessageId && message.role == ChatRole::User)
@@ -343,8 +352,8 @@ bool ChatModeService::runTurn(const QString& conversationId, int userMessageId,
     const auto cancellation = cancellation_;
     requestOptions.cancellationToken = cancellation;
     const auto messageId = assistant.id;
-    worker_ = QThread::create([this, provider, prompt, requestOptions, cancellation, conversationId,
-                               messageId]() {
+    worker_ = QThread::create([this, lifetime, provider, prompt, requestOptions, cancellation,
+                               conversationId, messageId]() {
         auto delta = [this, conversationId, messageId](const QString& text) {
             QMetaObject::invokeMethod(
                 this,
@@ -363,7 +372,7 @@ bool ChatModeService::runTurn(const QString& conversationId, int userMessageId,
         }
         QMetaObject::invokeMethod(
             this,
-            [this, conversationId, messageId, reply]() {
+            [this, lifetime, conversationId, messageId, reply]() {
                 acceptResult(conversationId, messageId, reply);
             },
             Qt::QueuedConnection);
@@ -393,7 +402,14 @@ void ChatModeService::acceptDelta(const QString& conversationId, int messageId,
     session_.updateMessage(message);
     const auto now = QDateTime::currentMSecsSinceEpoch();
     if (now - lastPersistMs_ >= 250) {
-        persist(conversationId, message);
+        if (!persist(conversationId, message)) {
+            message.status = ChatMessageStatus::Failed;
+            message.errorCategory = ChatProviderErrorCategory::ProviderFailure;
+            lastError_ = message.errorCategory;
+            session_.updateMessage(message);
+            cancellation_->store(true);
+            activeMessageId_ = 0;
+        }
         lastPersistMs_ = now;
     }
     emit messagesChanged();

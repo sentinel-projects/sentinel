@@ -46,7 +46,8 @@ public:
                  const ISandboxPolicy& sandbox, const IMemoryStore* memoryStore = nullptr,
                  const IChatHistoryStore* chatHistoryStore = nullptr,
                  IAgentRunStore* runStore = nullptr,
-                 std::shared_ptr<IPermissionGrantStore> permissionGrantStore = {});
+                 std::shared_ptr<IPermissionGrantStore> permissionGrantStore = {},
+                 std::shared_ptr<StorageAdmission> admission = {});
     AgentRuntime(std::unique_ptr<IAgentRuntime> metadata, IAgentStepPlanner& planner,
                  IToolExecutor& executor, const IApprovalPolicy& approval,
                  const ISandboxPolicy& sandbox)
@@ -155,6 +156,11 @@ private:
     const IChatHistoryStore* chatHistoryStore_;
     IAgentRunStore* runStore_ = nullptr;
     std::atomic_bool persistenceWarningEmitted_{false};
+    std::atomic_bool persistenceFailed_{false};
+    std::shared_ptr<StorageAdmission> admission_;
+    std::uint64_t generation_ = 0;
+    bool coordinatedStores_ = true;
+    QHash<QString, std::shared_ptr<StorageAdmission::Writer>> operationLeases_;
     std::atomic_int subagentsThisRun_{0};
     QHash<QString, int> delegatedEvidenceRevision_;
     QString activeGoal_;

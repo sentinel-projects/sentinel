@@ -45,8 +45,8 @@ ApplicationControllerBuilder::withStandardDefaults(const StandardPathProvider& p
     m_providerRuntimeBridge = std::make_unique<OllamaProviderRuntimeBridge>(ollamaConfig);
     m_memoryStore =
         std::make_unique<SQLiteMemoryStore>(pathProvider.memoryDatabasePath(), m_storageAdmission);
-    m_chatHistoryStore =
-        std::make_unique<SQLiteChatHistoryStore>(pathProvider.chatHistoryDatabasePath());
+    m_chatHistoryStore = std::make_unique<SQLiteChatHistoryStore>(
+        pathProvider.chatHistoryDatabasePath(), m_storageAdmission);
     m_alarmStore =
         std::make_shared<AlarmStore>(QFileInfo(pathProvider.memoryDatabasePath()).absolutePath() +
                                      QStringLiteral("/alarms.json"));
@@ -328,7 +328,8 @@ std::unique_ptr<ApplicationController> ApplicationControllerBuilder::build() {
         std::move(m_speechToTextProvider), std::move(m_voiceRuntimeCoordinator),
         std::move(m_voiceRuntimeEnvironment), std::move(m_piperTextToSpeechProvider),
         std::move(m_localInferenceWorker), std::move(m_conversationStore),
-        std::move(m_agentTaskRuntime), std::move(m_agentStepPlanner), std::move(m_modelService));
+        std::move(m_agentTaskRuntime), std::move(m_agentStepPlanner), std::move(m_modelService),
+        nullptr, m_storageAdmission);
     controller->attachStorageAdmission(m_storageAdmission);
     controller->attachAlarmStore(m_alarmStore);
     return controller;

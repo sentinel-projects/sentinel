@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "sentinel/core/app/StorageAdmission.h"
 #include "sentinel/core/job/IJobService.h"
 #include <QMap>
 #include <QMutex>
@@ -37,7 +38,8 @@ public:
     void setMaxConcurrentJobs(int maxJobs) override;
     int maxConcurrentJobs() const override;
 
-    bool setPersistenceDatabase(QSqlDatabase database);
+    bool setPersistenceDatabase(QSqlDatabase database,
+                                std::shared_ptr<StorageAdmission> admission = {});
     int recoverPersistedJobs();
 
 signals:
@@ -65,7 +67,10 @@ private:
     QSqlDatabase m_database;
 
     bool initializePersistence();
-    void persistJob(const Job& job);
+    bool persistJob(const Job& job);
+    std::shared_ptr<StorageAdmission> admission_;
+    std::uint64_t generation_ = 0;
+    QMap<QString, std::shared_ptr<StorageAdmission::Writer>> operationLeases_;
 };
 
 } // namespace sentinel::core

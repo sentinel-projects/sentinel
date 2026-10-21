@@ -749,7 +749,7 @@ ApplicationController::ApplicationController(
     std::unique_ptr<IConversationStore> conversationStore,
     std::unique_ptr<IAgentTaskRuntime> agentTaskRuntime,
     std::unique_ptr<IAgentStepPlanner> agentStepPlanner, std::unique_ptr<ModelService> modelService,
-    QObject* parent)
+    QObject* parent, std::shared_ptr<StorageAdmission> admission)
     : QObject(parent),
       modelService_(modelService ? std::move(modelService) : std::make_unique<ModelService>()),
       agentRuntime_(std::move(agentRuntime)), agentStepPlanner_(std::move(agentStepPlanner)),
@@ -837,6 +837,7 @@ ApplicationController::ApplicationController(
     modelService_->setModelRouter(modelRouter_.get());
     connect(modelService_.get(), &ModelService::modelCapabilitiesChanged, this,
             &ApplicationController::modelCapabilitiesChanged);
+    storageAdmission_ = admission;
     modelService_->setOllamaEndpoint(ollamaEndpoint());
     modelService_->setLmStudioEndpoint(lmStudioEndpoint());
     modelService_->setLlamaCppEndpoint(llamaCppEndpoint());
@@ -859,13 +860,16 @@ ApplicationController::ApplicationController(
     if (agentRuntime_) {
         agentRunStore_ = std::make_unique<SQLiteAgentRunStore>(
             QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
-                .filePath(QStringLiteral("agent_runs.sqlite3")));
+                .filePath(QStringLiteral("agent_runs.sqlite3")),
+            admission);
         agentRuntime_ = std::make_unique<AgentRuntime>(
             std::move(agentRuntime_), agentStepPlanner_.get(), *toolExecutor_, *approvalPolicy_,
             *sandboxPolicy_, memoryStore_.get(), chatHistoryStore_.get(), agentRunStore_.get(),
             std::make_shared<SQLitePermissionGrantStore>(
                 QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
-                    .filePath(QStringLiteral("permission_grants.sqlite3"))));
+                    .filePath(QStringLiteral("permission_grants.sqlite3")),
+                admission),
+            admission);
         if (auto* runtime = dynamic_cast<AgentRuntime*>(agentRuntime_.get()))
             runtime->extensionService().setModelService(modelService_.get());
         QPointer<ApplicationController> self(this);
@@ -912,9 +916,12 @@ ApplicationController::ApplicationController(
         std::make_unique<LMStudioLocalInferenceClient>(),
         std::make_unique<LMStudioLocalInferenceStreamClient>(), this, true, true);
 
-    const auto persistedMessages = chatHistoryStore_ && chatHistoryStore_->isAvailable()
-                                       ? chatHistoryStore_->loadMessages()
-                                       : QList<ChatMessage>{};
+    const auto persistedMessages =
+        chatHistoryStore_ &&
+                (!storageAdmission_ || chatHistoryStore_->coordinatedBy(storageAdmission_)) &&
+                chatHistoryStore_->isAvailable()
+            ? chatHistoryStore_->loadMessages()
+            : QList<ChatMessage>{};
     if (!persistedMessages.isEmpty()) {
         chatSession_->loadMessages(persistedMessages);
         conversationHistorySummary_.lastRestoredStatus =
@@ -923,12 +930,16 @@ ApplicationController::ApplicationController(
             QStringLiteral("Persisted transcript loaded.");
     } else {
         conversationHistorySummary_.lastRestoredStatus =
-            chatHistoryStore_ && chatHistoryStore_->isAvailable()
+            chatHistoryStore_ &&
+                    (!storageAdmission_ || chatHistoryStore_->coordinatedBy(storageAdmission_)) &&
+                    chatHistoryStore_->isAvailable()
                 ? QStringLiteral("No persisted transcript restored.")
                 : QStringLiteral("Chat history store unavailable; runtime-only transcript.");
         const auto message = chatSession_->appendSystemMessage(
             QStringLiteral("Sentinel Core online."), ChatMessageStatus::Received);
-        if (chatHistoryStore_ && chatHistoryStore_->isAvailable()) {
+        if (chatHistoryStore_ &&
+            (!storageAdmission_ || chatHistoryStore_->coordinatedBy(storageAdmission_)) &&
+            chatHistoryStore_->isAvailable()) {
             chatHistoryStore_->appendMessage(message);
             conversationHistorySummary_.lastSavedStatus =
                 chatHistoryStore_->lastError().isEmpty()
@@ -952,6 +963,7 @@ ApplicationController::ApplicationController(
     if (conversationStore_ && conversationStore_->status() == ConversationStoreStatus::Ready) {
         chatMode_ = std::make_unique<ChatModeService>(*modelService_, *chatSession_,
                                                        *conversationStore_, this);
+        chatMode_->setStorageAdmission(admission);
         chatMode_->setScopedMemory(memoryStore_.get(), [this](const QString& conversationId) {
             auto context = currentMemoryAccessContext();
             if (context.sessionId != conversationId)
@@ -5400,8 +5412,11 @@ QString ApplicationController::memoryStatus() const {
 }
 
 QString ApplicationController::chatHistoryStatus() const {
-    return chatHistoryStore_ && chatHistoryStore_->isAvailable() ? QStringLiteral("Available")
-                                                                 : QStringLiteral("Runtime Only");
+    return chatHistoryStore_ &&
+                   (!storageAdmission_ || chatHistoryStore_->coordinatedBy(storageAdmission_)) &&
+                   chatHistoryStore_->isAvailable()
+               ? QStringLiteral("Available")
+               : QStringLiteral("Runtime Only");
 }
 
 QList<ConversationRecord> ApplicationController::conversationRecords() const {
@@ -7268,6 +7283,13 @@ bool ApplicationController::startConversationSummaryInference(
     latestConversationSummaryGenerationResult_.readiness.summary =
         QStringLiteral("Manual local summary generation is running.");
     latestConversationSummaryGenerationResult_.request.requestId = request.id;
+    activeLocalInferenceStorageGeneration_ =
+        storageAdmission_ ? storageAdmission_->snapshot().generation : 0;
+    auto storageLease = std::make_shared<StorageAdmission::Writer>(
+        storageAdmission_ ? storageAdmission_->admit(activeLocalInferenceStorageGeneration_)
+                          : StorageAdmission::Writer{});
+    if (storageAdmission_ && !*storageLease)
+        return false;
     activeLocalInferenceRequestId_ = request.id;
     activeLocalInferenceConversationId_ = activeConversationId_;
     activeLocalInferenceIsSummaryRequest_ = true;
@@ -7284,7 +7306,8 @@ bool ApplicationController::startConversationSummaryInference(
     emit localChatInferenceRoutingChanged();
 
     const auto started = localInferenceWorker_->startInference(
-        request, [this](const QString& requestId, const LocalInferenceResponse& response) {
+        request,
+        [this, storageLease](const QString& requestId, const LocalInferenceResponse& response) {
             finishLocalInferenceRequest(requestId, response);
         });
     if (!started) {
@@ -7357,7 +7380,11 @@ void ApplicationController::finishConversationSummaryInference(
     latestConversationSummaryGenerationResult_.preview.available = true;
     latestConversationSummaryGenerationResult_.preview.summary =
         QStringLiteral("Manual local summary is available for optional context injection.");
-    persistConversationSummaryMetadata(latestConversationSummaryGenerationResult_);
+    if (!persistConversationSummaryMetadata(latestConversationSummaryGenerationResult_)) {
+        latestConversationSummaryGenerationResult_ = blockedConversationSummaryResult(
+            QStringLiteral("Generated summary could not be persisted."),
+            QStringLiteral("Persisted summary metadata was unchanged."));
+    }
     emit contextAssemblyChanged();
 }
 
@@ -8565,6 +8592,13 @@ bool ApplicationController::runLocalInference(const QString& prompt, const QStri
     emit promptContextInjectionChanged();
 
     request.id = QStringLiteral("local-inference-request-%1").arg(++localInferenceRequestSequence_);
+    activeLocalInferenceStorageGeneration_ =
+        storageAdmission_ ? storageAdmission_->snapshot().generation : 0;
+    auto storageLease = std::make_shared<StorageAdmission::Writer>(
+        storageAdmission_ ? storageAdmission_->admit(activeLocalInferenceStorageGeneration_)
+                          : StorageAdmission::Writer{});
+    if (storageAdmission_ && !*storageLease)
+        return false;
     activeLocalInferenceRequestId_ = request.id;
     activeLocalInferenceConversationId_ = activeConversationId_;
     localInferenceBusy_ = true;
@@ -8581,8 +8615,8 @@ bool ApplicationController::runLocalInference(const QString& prompt, const QStri
     emit localChatInferenceRoutingChanged();
 
     const auto started = worker->startInference(
-        request, [this, permissionDecision, safetyReport](const QString& requestId,
-                                                          const LocalInferenceResponse& response) {
+        request, [this, storageLease, permissionDecision,
+                  safetyReport](const QString& requestId, const LocalInferenceResponse& response) {
             auto completedResponse = response;
             completedResponse.traces = {
                 LocalInferenceTrace{
@@ -8813,6 +8847,13 @@ bool ApplicationController::runLocalInferenceStream(const QString& prompt, const
     request.id = QStringLiteral("local-inference-request-%1").arg(++localInferenceRequestSequence_);
     activeLocalInferenceHealthSequence_ = modelService_->beginProviderHealthObservation();
     activeLocalInferenceProviderId_ = selectedRuntimeProvider();
+    activeLocalInferenceStorageGeneration_ =
+        storageAdmission_ ? storageAdmission_->snapshot().generation : 0;
+    auto storageLease = std::make_shared<StorageAdmission::Writer>(
+        storageAdmission_ ? storageAdmission_->admit(activeLocalInferenceStorageGeneration_)
+                          : StorageAdmission::Writer{});
+    if (storageAdmission_ && !*storageLease)
+        return false;
     activeLocalInferenceRequestId_ = request.id;
     activeLocalInferenceConversationId_ = activeConversationId_;
     localInferenceBusy_ = true;
@@ -8840,8 +8881,8 @@ bool ApplicationController::runLocalInferenceStream(const QString& prompt, const
         [this](const QString& requestId, const LocalInferenceStreamChunk& chunk) {
             updateLocalInferenceStreamRequest(requestId, chunk);
         },
-        [this, permissionDecision, safetyReport](const QString& requestId,
-                                                 const LocalInferenceStreamResult& result) {
+        [this, storageLease, permissionDecision,
+         safetyReport](const QString& requestId, const LocalInferenceStreamResult& result) {
             auto completedResult = result;
             completedResult.traces = {
                 LocalInferenceTrace{
@@ -8884,6 +8925,30 @@ void ApplicationController::finishLocalInferenceRequest(const QString& requestId
     if (requestId != activeLocalInferenceRequestId_) {
         return;
     }
+    auto storageWriter = storageAdmission_
+                             ? storageAdmission_->admit(activeLocalInferenceStorageGeneration_)
+                             : StorageAdmission::Writer{};
+    if (storageAdmission_ && !storageWriter) {
+        localInferenceBusy_ = false;
+        activeLocalInferenceRequestId_.clear();
+        activeLocalInferenceConversationId_.clear();
+        activeLocalInferenceIsChatRequest_ = false;
+        activeLocalInferenceIsSummaryRequest_ = false;
+        latestLocalInferenceResponse_.status = LocalInferenceStatus::Error;
+        latestLocalInferenceResponse_.text.clear();
+        latestLocalInferenceResponse_.summary = QStringLiteral(
+            "Storage refused the original inference request; no completion was persisted.");
+        latestConversationSummaryGenerationResult_ =
+            blockedConversationSummaryResult(latestLocalInferenceResponse_.summary,
+                                             QStringLiteral("Persisted metadata was unchanged."));
+        setConversationRuntimeResult(false, latestLocalInferenceResponse_.summary);
+        setChatSendLifecycle(QStringLiteral("failed"), latestLocalInferenceResponse_.summary);
+        emit contextAssemblyChanged();
+        emit localInferenceChanged();
+        emit localChatInferenceRoutingChanged();
+        return;
+    }
+
     if (!activeLocalInferenceConversationId_.isEmpty() &&
         activeLocalInferenceConversationId_ != activeConversationId_) {
         localInferenceBusy_ = false;
@@ -8958,6 +9023,30 @@ void ApplicationController::finishLocalInferenceStreamRequest(
     if (requestId != activeLocalInferenceRequestId_) {
         return;
     }
+    auto storageWriter = storageAdmission_
+                             ? storageAdmission_->admit(activeLocalInferenceStorageGeneration_)
+                             : StorageAdmission::Writer{};
+    if (storageAdmission_ && !storageWriter) {
+        localInferenceBusy_ = false;
+        activeLocalInferenceRequestId_.clear();
+        activeLocalInferenceConversationId_.clear();
+        activeLocalInferenceIsChatRequest_ = false;
+        activeLocalInferenceIsSummaryRequest_ = false;
+        latestLocalInferenceResponse_.status = LocalInferenceStatus::Error;
+        latestLocalInferenceResponse_.text.clear();
+        latestLocalInferenceResponse_.summary = QStringLiteral(
+            "Storage refused the original inference request; no completion was persisted.");
+        latestConversationSummaryGenerationResult_ =
+            blockedConversationSummaryResult(latestLocalInferenceResponse_.summary,
+                                             QStringLiteral("Persisted metadata was unchanged."));
+        setConversationRuntimeResult(false, latestLocalInferenceResponse_.summary);
+        setChatSendLifecycle(QStringLiteral("failed"), latestLocalInferenceResponse_.summary);
+        emit contextAssemblyChanged();
+        emit localInferenceChanged();
+        emit localChatInferenceRoutingChanged();
+        return;
+    }
+
     if (!activeLocalInferenceConversationId_.isEmpty() &&
         activeLocalInferenceConversationId_ != activeConversationId_) {
         localInferenceBusy_ = false;
@@ -9050,7 +9139,9 @@ void ApplicationController::finalizeLocalChatInference(bool succeeded) {
     assistantMessage.approximateTokensPerSecond =
         latestLocalInferenceResponse_.approximateTokensPerSecond;
     persistActiveConversationMessage(assistantMessage);
-    if (chatHistoryStore_ && chatHistoryStore_->isAvailable()) {
+    if (chatHistoryStore_ &&
+        (!storageAdmission_ || chatHistoryStore_->coordinatedBy(storageAdmission_)) &&
+        chatHistoryStore_->isAvailable()) {
         chatHistoryStore_->appendMessage(assistantMessage);
         conversationHistorySummary_.lastSavedStatus =
             chatHistoryStore_->lastError().isEmpty()
@@ -9059,6 +9150,15 @@ void ApplicationController::finalizeLocalChatInference(bool succeeded) {
     } else {
         conversationHistorySummary_.lastSavedStatus =
             QStringLiteral("Runtime-only transcript; persistence unavailable.");
+    }
+    if (chatHistoryStore_ && !chatHistoryStore_->lastError().isEmpty()) {
+        succeeded = false;
+        assistantMessage.status = ChatMessageStatus::Failed;
+        chatSession_->updateMessage(assistantMessage);
+        setConversationRuntimeResult(false,
+                                     QStringLiteral("Assistant history persistence refused."));
+        setChatSendLifecycle(QStringLiteral("failed"),
+                             QStringLiteral("Assistant history persistence refused."));
     }
     transitionConversationState(succeeded ? ConversationState::Completed : ConversationState::Error,
                                 succeeded
@@ -9109,7 +9209,9 @@ bool ApplicationController::runAgentRequestWithAttachments(const QString& reques
         if (wantsApproval || wantsCancel) {
             const auto userMessage = chatSession_->appendUserMessage(trimmed);
             persistActiveConversationMessage(userMessage);
-            if (chatHistoryStore_ && chatHistoryStore_->isAvailable()) {
+            if (chatHistoryStore_ &&
+                (!storageAdmission_ || chatHistoryStore_->coordinatedBy(storageAdmission_)) &&
+                chatHistoryStore_->isAvailable()) {
                 chatHistoryStore_->appendMessage(userMessage);
             }
             refreshConversationHistorySummary();
@@ -9142,8 +9244,17 @@ bool ApplicationController::runAgentRequestWithAttachments(const QString& reques
 
     const auto userMessage = chatSession_->appendUserMessage(trimmed);
     persistActiveConversationMessage(userMessage);
-    if (chatHistoryStore_ && chatHistoryStore_->isAvailable()) {
+    if (chatHistoryStore_ &&
+        (!storageAdmission_ || chatHistoryStore_->coordinatedBy(storageAdmission_)) &&
+        chatHistoryStore_->isAvailable()) {
         chatHistoryStore_->appendMessage(userMessage);
+        if (!chatHistoryStore_->lastError().isEmpty()) {
+            setConversationRuntimeResult(
+                false, QStringLiteral("Agent request transcript persistence refused."));
+            setChatSendLifecycle(QStringLiteral("failed"),
+                                 QStringLiteral("Agent request transcript persistence refused."));
+            return false;
+        }
     }
     refreshConversationHistorySummary();
     emit chatMessagesChanged();
@@ -9549,7 +9660,9 @@ void ApplicationController::appendAgentLoopChatMessage(const QString& text, bool
     assistantMsg.roleUsed = QStringLiteral("agent");
     if (persist) {
         persistActiveConversationMessage(assistantMsg);
-        if (chatHistoryStore_ && chatHistoryStore_->isAvailable())
+        if (chatHistoryStore_ &&
+            (!storageAdmission_ || chatHistoryStore_->coordinatedBy(storageAdmission_)) &&
+            chatHistoryStore_->isAvailable())
             chatHistoryStore_->appendMessage(assistantMsg);
         refreshConversationHistorySummary();
     }
@@ -9782,9 +9895,12 @@ void ApplicationController::resetConversationRuntimeState() {
 
 void ApplicationController::refreshConversationHistorySummary() {
     ConversationHistorySummary summary;
-    summary.persistenceStatus = chatHistoryStore_ && chatHistoryStore_->isAvailable()
-                                    ? ConversationPersistenceStatus::Persisted
-                                    : ConversationPersistenceStatus::RuntimeOnly;
+    summary.persistenceStatus =
+        chatHistoryStore_ &&
+                (!storageAdmission_ || chatHistoryStore_->coordinatedBy(storageAdmission_)) &&
+                chatHistoryStore_->isAvailable()
+            ? ConversationPersistenceStatus::Persisted
+            : ConversationPersistenceStatus::RuntimeOnly;
     summary.lastSavedStatus = conversationHistorySummary_.lastSavedStatus;
     summary.lastRestoredStatus = conversationHistorySummary_.lastRestoredStatus;
 
@@ -10535,13 +10651,23 @@ bool ApplicationController::clearMemory() {
 
 bool ApplicationController::clearChat() {
     if (chatMode_ && chatMode_->busy()) return false;
-    const auto persistentAvailable = chatHistoryStore_ && chatHistoryStore_->isAvailable();
+    const auto persistentAvailable =
+        chatHistoryStore_ &&
+        (!storageAdmission_ || chatHistoryStore_->coordinatedBy(storageAdmission_)) &&
+        chatHistoryStore_->isAvailable();
     auto persistentHealthy = persistentAvailable;
     latestConversationClearResult_.persistentStoreAvailable = persistentAvailable;
     if (persistentAvailable) {
         chatHistoryStore_->clear();
         if (!chatHistoryStore_->lastError().isEmpty()) {
-            persistentHealthy = false;
+            latestConversationClearResult_.status = ConversationClearStatus::Failed;
+            latestConversationClearResult_.persistentStoreCleared = false;
+            latestConversationClearResult_.remainingMessageCount =
+                static_cast<int>(chatSession_->messages().size());
+            latestConversationClearResult_.summary =
+                QStringLiteral("Chat history clear refused; transcript was retained.");
+            setChatMaintenanceStatus(QStringLiteral("Failed"));
+            return false;
         }
     }
 

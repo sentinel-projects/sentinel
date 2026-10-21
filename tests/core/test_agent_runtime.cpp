@@ -7,6 +7,7 @@
 #include "sentinel/core/agent/AgentRuntime.h"
 #include "sentinel/core/agent/LlmAgentRuntime.h"
 #include "sentinel/core/agent/NullAgentRuntime.h"
+#include "sentinel/core/agent/SQLiteAgentRunStore.h"
 #include "sentinel/core/runtime/NullToolExecutor.h"
 #include "sentinel/core/runtime/RealToolExecutor.h"
 #include "sentinel/core/security/StaticApprovalPolicy.h"
@@ -27,7 +28,10 @@ namespace {
 
 class SuccessfulFixtureExecutor final : public IToolExecutor {
 public:
+    std::function<void()> onExecute;
     ToolExecutionResult execute(const ToolExecutionRequest&) const override {
+        if (onExecute)
+            onExecute();
         return {ToolExecutionStatus::Succeeded, QStringLiteral("Fixture tool result")};
     }
 };
@@ -182,6 +186,67 @@ class AgentRuntimeTest final : public QObject {
     Q_OBJECT
 
 private slots:
+    void runCreationRefusalDoesNotStartPlanner() {
+        QTemporaryDir profile;
+        auto authority = std::make_shared<StorageAdmission>();
+        SQLiteAgentRunStore store(profile.filePath("runs.sqlite"), authority);
+        Planner planner;
+        NullToolExecutor executor;
+        StaticApprovalPolicy approval;
+        StaticSandboxPolicy sandbox;
+        AgentRuntime runtime(std::make_unique<NullAgentRuntime>(NullAgentRuntime::standardTools()),
+                             &planner, executor, approval, sandbox, nullptr, nullptr, &store);
+        const auto session = runtime.createSession();
+        authority->shutdown();
+        QVERIFY(!runtime.start(session, "refused"));
+        QCOMPARE(planner.calls, 0);
+        QCOMPARE(runtime.sessionState(session).phase, AgentLoopPhase::Failed);
+        QVERIFY(store.recentRuns(10).isEmpty());
+    }
+
+    void persistenceFailureBeforeAndAfterSideEffect_data() {
+        QTest::addColumn<bool>("afterSideEffect");
+        QTest::newRow("before-dispatch") << false;
+        QTest::newRow("after-side-effect") << true;
+    }
+    void persistenceFailureBeforeAndAfterSideEffect() {
+        QFETCH(bool, afterSideEffect);
+        QTemporaryDir profile;
+        auto authority = std::make_shared<StorageAdmission>();
+        SQLiteAgentRunStore store(profile.filePath("runs.sqlite"), authority);
+        Planner planner;
+        planner.decision.kind = AgentStepDecision::Kind::ToolCall;
+        planner.decision.toolId = "process-list";
+        planner.decision.toolName = "process-list";
+        std::atomic_int executed{0};
+        if (!afterSideEffect)
+            planner.onStep = [&] { authority->shutdown(); };
+        SuccessfulFixtureExecutor executor;
+        executor.onExecute = [&] {
+            ++executed;
+            if (afterSideEffect)
+                authority->shutdown();
+        };
+        StaticApprovalPolicy approval;
+        StaticSandboxPolicy sandbox;
+        AgentRuntime runtime(std::make_unique<NullAgentRuntime>(NullAgentRuntime::standardTools()),
+                             &planner, executor, approval, sandbox, nullptr, nullptr, &store);
+        const auto session = runtime.createSession();
+        AgentSessionOptions options;
+        options.autonomousMode = true;
+        options.availableToolIds = {"process-list"};
+        runtime.configureSession(session, options);
+        QVERIFY(runtime.start(session, "fixture"));
+        QTRY_COMPARE(runtime.sessionState(session).phase, AgentLoopPhase::Failed);
+        QCOMPARE(executed.load(), afterSideEffect ? 1 : 0);
+        QVERIFY(runtime.sessionState(session).finalAnswer.isEmpty());
+        QVERIFY(runtime.sessionState(session).abortReason.contains("persistence"));
+        for (const auto& event : runtime.eventHistory(session))
+            QVERIFY(event.type != AgentEventType::AgentCompleted);
+        QCOMPARE(store.recentRuns(10).size(), 1);
+        QVERIFY(store.recentRuns(10).first().state != QString("Completed"));
+    }
+
     void boundedShutdownRetainsUnresponsivePlannerUntilReleased() {
         Planner planner;
         planner.decision.kind = AgentStepDecision::Kind::FinalAnswer;

@@ -102,14 +102,14 @@ restore is enabled. See [P8-06](../audits/P8_06_COORDINATED_BACKUP_RECOVERY_RESU
 ### Storage admission foundation (P8-06A)
 
 `ApplicationControllerBuilder::withStandardDefaults` creates one process-local
-`StorageAdmission` shared by AppSettings, its memory/conversation SQLite owners and memory archive
-workers. Writers hold a move-only lease before schema or transaction mutation.
+`StorageAdmission` shared by AppSettings, its memory/conversation/history SQLite owners,
+Agent run and permission-grant stores, and memory archive workers. Writers hold a move-only lease before schema or transaction mutation.
 Store generations are immutable; archive workers inherit the originating store's
 generation rather than refreshing authority when a job runs.
 
 This is partial coverage. The live application coordinator refuses maintenance
-preparation with `Unsupported` before changing state: asynchronous request lifetimes,
-independent settings writers, transcript history, runs, grants and independent processes are
+preparation with `Unsupported` before changing state: independent settings/projection writers, additional side-effect owners,
+asynchronous work outside the enrolled lifetimes, and independent processes are
 not collectively enrolled. `prepareApplication()` is always `Unsupported`.
 The explicit leaf-store scope supports bounded drain/maintenance tests and future
 trusted orchestration; it must not be substituted for the live application scope.
@@ -126,3 +126,16 @@ Pending and keeps authoritative projected values until the daemon reply. Transie
 configuration/discovery readers disable persistence. Legacy config CLI and independent
 presentation/platform preference owners still prevent profile-wide coordination. See
 [settings/workspace coordination](../audits/P8_06A1_SETTINGS_WORKSPACE_COORDINATION_RESULT.md).
+
+
+P8-06A.2 adds immutable-generation admission to SQLiteChatHistoryStore,
+SQLiteAgentRunStore and SQLitePermissionGrantStore, including initialization and
+retention. Agent evidence must persist before tool dispatch and accepted completion;
+a failed audit write stops further dispatch and reports inspectable failure without
+replaying side effects. Failed persistent revocation restricts the permission service.
+Chat, local inference/summary, daemon title workers and optional background-job metadata
+retain their originating authority through queued completion. Read-only Agent/grant
+connections cannot recreate missing database files. Application-wide preparation remains
+Unsupported and combined backup/restore remains Blocked; see
+[storage asynchronous coordination](../audits/P8_06A2_STORAGE_ASYNC_COORDINATION_RESULT.md)
+for the uncovered writer/process inventory and validation limits.

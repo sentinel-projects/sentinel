@@ -49,6 +49,10 @@ public:
         std::shared_ptr<AgentExecutionScheduler::Budget> executionBudget;
     };
 
+    void setPersistenceCheck(std::function<bool()> check) {
+        persistenceCheck_ = std::move(check);
+    }
+
     using StepCallback = std::function<void(const AgentStepRecord&)>;
     using StatusCallback = std::function<void(const QString&)>;
     using CancelQuery = std::function<bool()>;
@@ -198,6 +202,7 @@ private:
     CancelQuery cancelQuery_;
     std::shared_ptr<std::atomic_bool> cancellationToken_;
     ToolCallback toolCallback_;
+    std::function<bool()> persistenceCheck_;
     PlanningCallback planningCallback_;
     ContextCallback contextCallback_;
     OutputCallback outputCallback_;

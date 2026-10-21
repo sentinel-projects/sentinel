@@ -1,3 +1,4 @@
+#include "sentinel/core/chat/SQLiteConversationStore.h"
 #include "sentinel/desktop/ExtensionsHubPresentation.h"
 #include "sentinel/desktop/RemoteAgentInspectorService.h"
 #include "sentinel/desktop/viewmodels/AgentInspectorViewModel.h"
@@ -1585,11 +1586,15 @@ private slots:
     }
     void backgroundConversationTitleIsDurableAndProjected_data() {
         QTest::addColumn<bool>("manualRename");
-        QTest::newRow("generated-title") << false;
-        QTest::newRow("manual-title-wins") << true;
+        QTest::addColumn<bool>("shutdownStorage");
+        QTest::newRow("generated-title") << false << false;
+        QTest::newRow("manual-title-wins") << true << false;
+        QTest::newRow("late-title-storage-refused") << false << true;
     }
     void backgroundConversationTitleIsDurableAndProjected() {
         QFETCH(bool, manualRename);
+        QFETCH(bool, shutdownStorage);
+        auto storageAuthority = std::make_shared<sentinel::core::StorageAdmission>();
         QTemporaryDir directory{QDir::tempPath() + "/st-XXXXXX"};
         QVERIFY(directory.isValid());
         QVERIFY(QFile::setPermissions(directory.path(), QFileDevice::ReadOwner |
@@ -1629,10 +1634,14 @@ private slots:
             return provider;
         });
         sentinel::core::ApplicationControllerBuilder builder;
-        auto controller = builder.withModelService(std::move(models))
-                                 .withOllamaRuntimeClient(std::make_unique<MetadataClient>())
-                                 .withMemoryStore(std::make_unique<sentinel::core::InMemoryStore>())
-                                 .build();
+        auto controller =
+            builder.withModelService(std::move(models))
+                .withOllamaRuntimeClient(std::make_unique<MetadataClient>())
+                .withMemoryStore(std::make_unique<sentinel::core::InMemoryStore>())
+                .withConversationStore(std::make_unique<sentinel::core::SQLiteConversationStore>(
+                    directory.filePath("conversations.sqlite"), storageAuthority))
+                .build();
+        controller->attachStorageAdmission(storageAuthority);
         sentinel::daemon::DaemonIpcServer server(controller.get());
         QVERIFY(server.startServer(directory.filePath("title.sock")));
         DaemonClient transport(directory.filePath("title.sock"), 3000, 10);
@@ -1649,7 +1658,20 @@ private slots:
         // The answer finished and IPC remains usable while title generation waits.
         if (manualRename)
             QVERIFY(controller->renameConversation(sid, QStringLiteral("My chosen title")));
+        QString titleBefore;
+        for (const auto& record : controller->conversationStore()->listConversations())
+            if (record.id == sid)
+                titleBefore = record.title;
+        if (shutdownStorage)
+            storageAuthority->shutdown();
         gate->release();
+        if (shutdownStorage) {
+            QTRY_COMPARE(storageAuthority->snapshot().writers, 0u);
+            for (const auto& record : controller->conversationStore()->listConversations())
+                if (record.id == sid)
+                    QCOMPARE(record.title, titleBefore);
+            return;
+        }
         const auto expected = manualRename ? QStringLiteral("My chosen title")
                                            : QStringLiteral("Qt Interface Design");
         QTRY_COMPARE(adapter.value("activeConversationTitle").toString(), expected);

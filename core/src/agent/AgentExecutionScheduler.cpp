@@ -124,6 +124,12 @@ void AgentExecutionScheduler::pump() {
         started_[next] = true;
         ++active_;
         if (onStarted_) onStarted_(next);
+        if (persistenceCheck_ && !persistenceCheck_()) {
+            finish(next,
+                   {ToolExecutionStatus::Blocked,
+                    QStringLiteral("Agent audit persistence failed; tool dispatch refused.")});
+            continue;
+        }
         std::weak_ptr<AgentExecutionScheduler> weak = weak_from_this();
         auto cancel = gateway_.executeAsync(
             calls_.at(next), executor_, sessionId_, callIds_.value(next),

@@ -117,6 +117,37 @@ class ChatModeServiceTest final : public QObject {
     Q_OBJECT
 
 private slots:
+    void admittedWorkerBlocksMaintenanceAndLateShutdownSuccess() {
+        QTemporaryDir profile;
+        auto authority = std::make_shared<StorageAdmission>();
+        SQLiteConversationStore store(profile.filePath("chat.sqlite"), authority);
+        const auto conversation = store.createConversation("fixture");
+        ModelService models;
+        ChatSession session(std::make_unique<SystemClock>());
+        QSemaphore entered, release;
+        auto provider = std::make_shared<FixtureProvider>(FixtureProvider::ReplyMode::FinalOnly);
+        provider->beforeReply = [&] {
+            entered.release();
+            release.tryAcquire(1, 5000);
+        };
+        models.registerProvider("ollama", [provider](const ModelBinding&) { return provider; });
+        ChatModeService service(models, session, store);
+        service.setStorageAdmission(authority);
+        auto cleanup = qScopeGuard([&] { release.release(); });
+        QVERIFY(service.send(conversation.id, "task", {}, {"ollama", "fixture"}));
+        QVERIFY(entered.tryAcquire(1, 1000));
+        QCOMPARE(authority->prepareLocal(std::chrono::milliseconds(0)),
+                 StorageAdmission::Result::TimedOut);
+        QCOMPARE(authority->snapshot().generation, 1u);
+        const auto durable = store.loadMessages(conversation.id);
+        authority->shutdown();
+        release.release();
+        QTRY_VERIFY(!service.busy());
+        QCOMPARE(session.messages().last().status, ChatMessageStatus::Failed);
+        QCOMPARE(store.loadMessages(conversation.id).last().content, durable.last().content);
+        QTRY_COMPARE(authority->snapshot().writers, 0u);
+    }
+
     void boundedShutdownRetainsProviderAndRejectsLateSuccess() {
         Harness h(FixtureProvider::ReplyMode::FinalOnly);
         QSemaphore entered, release;

@@ -1838,6 +1838,13 @@ void DaemonIpcServer::scheduleConversationTitle() {
     const auto resolved = m_controller->modelService()->resolve(m_providerId, m_modelId);
     if (!resolved.ok())
         return; // Readiness/network/credential policy remains authoritative.
+    const auto storageAuthority = m_controller->storageAdmission();
+    const auto storageGeneration = storageAuthority ? storageAuthority->snapshot().generation : 0;
+    auto storageLease = std::make_shared<core::StorageAdmission::Writer>(
+        storageAuthority ? storageAuthority->admit(storageGeneration)
+                         : core::StorageAdmission::Writer{});
+    if (storageAuthority && (!*storageLease || !store->coordinatedBy(storageAuthority)))
+        return;
     m_titleTurns.insert(record.id, completedTurns);
     const auto provider = resolved.provider;
     const auto cancellation = std::make_shared<std::atomic_bool>(false);
@@ -1859,7 +1866,8 @@ void DaemonIpcServer::scheduleConversationTitle() {
         return;
     }
     options.maxOutputTokens = budget.reservedOutput;
-    m_titleWorker = QThread::create([this, provider, options, cancellation, prompt = budget.prompt,
+    m_titleWorker = QThread::create([this, provider, options, cancellation, storageAuthority,
+                                     storageGeneration, storageLease, store, prompt = budget.prompt,
                                      record] {
         const auto reply = provider->sendRequest(prompt, options);
         QString title = reply.success ? reply.message.trimmed() : QString{};
@@ -1873,9 +1881,17 @@ void DaemonIpcServer::scheduleConversationTitle() {
             title = title.left(57) + QStringLiteral("...");
         QMetaObject::invokeMethod(
             this,
-            [this, cancellation, record, title] {
+            [this, cancellation, record, title, storageAuthority, storageGeneration, storageLease,
+             store] {
                 if (cancellation->load() || title.isEmpty() || !m_controller ||
                     !m_controller->conversationStore())
+                    return;
+                if (m_shuttingDown || m_controller->conversationStore() != store ||
+                    m_controller->storageAdmission() != storageAuthority)
+                    return;
+                auto writer = storageAuthority ? storageAuthority->admit(storageGeneration)
+                                               : core::StorageAdmission::Writer{};
+                if (storageAuthority && !writer)
                     return;
                 if (m_controller->conversationStore()->updateAutoTitleConversation(record.id, title,
                                                                                    record.title))
