@@ -38,16 +38,26 @@ enum class AgentTerminalReason {
 
 inline QString agentTerminalReasonName(AgentTerminalReason reason) {
     switch (reason) {
-    case AgentTerminalReason::None: return QStringLiteral("None");
-    case AgentTerminalReason::Completed: return QStringLiteral("Completed");
-    case AgentTerminalReason::Cancelled: return QStringLiteral("Cancelled");
-    case AgentTerminalReason::ApprovalDenied: return QStringLiteral("ApprovalDenied");
-    case AgentTerminalReason::ProviderFailure: return QStringLiteral("ProviderFailure");
-    case AgentTerminalReason::ToolFailure: return QStringLiteral("ToolFailure");
-    case AgentTerminalReason::CapabilityUnavailable: return QStringLiteral("CapabilityUnavailable");
-    case AgentTerminalReason::SecurityDenied: return QStringLiteral("SecurityDenied");
-    case AgentTerminalReason::IterationLimit: return QStringLiteral("IterationLimit");
-    case AgentTerminalReason::UnableToComplete: return QStringLiteral("UnableToComplete");
+    case AgentTerminalReason::None:
+        return QStringLiteral("None");
+    case AgentTerminalReason::Completed:
+        return QStringLiteral("Completed");
+    case AgentTerminalReason::Cancelled:
+        return QStringLiteral("Cancelled");
+    case AgentTerminalReason::ApprovalDenied:
+        return QStringLiteral("ApprovalDenied");
+    case AgentTerminalReason::ProviderFailure:
+        return QStringLiteral("ProviderFailure");
+    case AgentTerminalReason::ToolFailure:
+        return QStringLiteral("ToolFailure");
+    case AgentTerminalReason::CapabilityUnavailable:
+        return QStringLiteral("CapabilityUnavailable");
+    case AgentTerminalReason::SecurityDenied:
+        return QStringLiteral("SecurityDenied");
+    case AgentTerminalReason::IterationLimit:
+        return QStringLiteral("IterationLimit");
+    case AgentTerminalReason::UnableToComplete:
+        return QStringLiteral("UnableToComplete");
     }
     return QStringLiteral("None");
 }
@@ -86,7 +96,11 @@ struct AgentLoopState {
     FinalAnswerGrounding finalGrounding;
     QList<ClaimAssertion> finalClaims;
     int rejectedFinalAnswers = 0;
+    int blockedSteps = 0;
+    int consecutiveBlockedSteps = 0;
     int repeatedReadRepairs = 0;
+    int repeatedActionRepairs = 0;
+    bool repeatedActionRecoveryPending = false;
     int finalVerificationRecoveries = 0;
     int providerRecoveryAttempts = 0;
     QString finalAnswer;

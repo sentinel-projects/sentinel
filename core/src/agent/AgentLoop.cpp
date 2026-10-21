@@ -90,7 +90,10 @@ void traceStage(const AgentLoopState& state, const char* stage, const char* even
     record.insert("evidence", evidence);
     record.insert("phase", agentLoopPhaseName(state.phase));
     record.insert("rejected_finals", state.rejectedFinalAnswers);
+    record.insert("blocked_steps", state.blockedSteps);
+    record.insert("consecutive_blocked_steps", state.consecutiveBlockedSteps);
     record.insert("read_repairs", state.repeatedReadRepairs);
+    record.insert("repeated_action_repairs", state.repeatedActionRepairs);
     record.insert("verification_recoveries", state.finalVerificationRecoveries);
     if (decision) {
         record.insert("decision", int(decision->kind));
@@ -125,6 +128,27 @@ QString AgentLoop::workingDirectory() const {
     if (!workspaceContext_.rootPath.trimmed().isEmpty())
         return PathGuard::canonicalPath(workspaceContext_.rootPath);
     return QDir::currentPath();
+}
+
+QString AgentLoop::truncatedObservation(const QByteArray& output, const QString& toolName) const {
+    const auto result = truncator_.truncate(output, toolName);
+    if (!result.truncated)
+        return result.preview;
+    QString preview = result.preview;
+    // Keep the observation actionable: a model that cannot see the omitted middle must know
+    // where the complete output went and that repeating the same call will not help.
+    if (!result.fullOutputPath.isEmpty()) {
+        preview += QStringLiteral("\n\n[Output truncated: %1 bytes total. Full output: %2. "
+                                  "Request a narrower range (for example grep -n or sed -n) "
+                                  "instead of repeating the same command unchanged.]")
+                       .arg(result.totalBytes)
+                       .arg(result.fullOutputPath);
+    } else {
+        preview += QStringLiteral("\n\n[Output truncated: %1 bytes total. Request a narrower "
+                                  "range; do not repeat the same command unchanged.]")
+                       .arg(result.totalBytes);
+    }
+    return preview;
 }
 
 void AgentLoop::preparePlanningContext(const AgentLoopState& state) {
@@ -340,8 +364,7 @@ bool repeatsFailedCycle(const AgentLoopState& state, const ToolInvocationPlan& p
 
 bool repairRepeatedObservation(AgentLoopState& state, const ToolInvocationPlan& plan,
                                IAgentStepPlanner& planner) {
-    if (state.repeatedReadRepairs != 0 || plan.invocations.size() != 1 || state.steps.isEmpty() ||
-        !state.steps.last().succeeded)
+    if (plan.invocations.size() != 1 || state.steps.isEmpty() || !state.steps.last().succeeded)
         return false;
     const auto& id = plan.invocations.first().toolId;
     const bool read = id == QLatin1String("read-file") || id == QLatin1String("glob") ||
@@ -358,19 +381,34 @@ bool repairRepeatedObservation(AgentLoopState& state, const ToolInvocationPlan& 
             return item.toolId == id && item.domain == ObservationDomain::ProcessExecution &&
                    item.resource == command && item.outcome == EvidenceOutcome::Verified;
         });
-    if (!read && !verifiedCommand) {
-        return false;
+    if (read || verifiedCommand) {
+        if (state.repeatedReadRepairs != 0)
+            return false;
+        ++state.repeatedReadRepairs;
+        // Nothing is executed or assumed successful here. One planning-only repair
+        // preserves the existing evidence/approval gates and the next repeat stops.
+        planner.setPlannerFeedback(QStringLiteral(
+            "Repeated observation or already successful command was not executed. Do not rerun a "
+            "successful test for the same file revision. Review the PENDING requirements and all "
+            "current tool observations, not only "
+            "the latest result. If they satisfy the task, provide a verified final with the "
+            "required structured claims. Otherwise choose a different missing observation or "
+            "report the blocker. Do not repeat equivalent reads using another spelling of the "
+            "same path."));
+        return true;
     }
-    ++state.repeatedReadRepairs;
-    // Nothing is executed or assumed successful here. One planning-only repair
-    // preserves the existing evidence/approval gates and the next repeat stops.
+    // A blocked or failed request has no new observation to offer; the early
+    // return keeps the existing fail-closed path instead of a speculative repair.
+    if (state.repeatedActionRepairs != 0)
+        return false;
+    ++state.repeatedActionRepairs;
+    state.repeatedActionRecoveryPending = true;
+    // Mutations and other non-observation actions also get one bounded repair.
+    // The repeat itself is never executed, so no side effect is skipped silently.
     planner.setPlannerFeedback(QStringLiteral(
-        "Repeated observation or already successful command was not executed. Do not rerun a "
-        "successful test for the same file revision. Review the PENDING requirements and all "
-        "current tool observations, not only "
-        "the latest result. If they satisfy the task, provide a verified final with the required "
-        "structured claims. Otherwise choose a different missing observation or report the "
-        "blocker. Do not repeat equivalent reads using another spelling of the same path."));
+        "The repeated action was not executed because it was identical to the previous action. "
+        "Inspect the previous result and choose a different action with changed arguments. A "
+        "final answer is not accepted until the repeated mutation is resolved."));
     return true;
 }
 
@@ -751,11 +789,34 @@ void AgentLoop::advanceAsync() {
         completeAsync();
         return;
     }
-    if (asyncState_.steps.size() >= config_.maxIterations) {
+    const int productiveSteps =
+        qMax(0, static_cast<int>(asyncState_.steps.size()) - asyncState_.blockedSteps);
+    if (asyncState_.blockedSteps >= config_.maxBlockedSteps) {
+        asyncState_.phase = AgentLoopPhase::Failed;
+        asyncState_.terminalReason = AgentTerminalReason::UnableToComplete;
+        asyncState_.abortReason =
+            QStringLiteral("Too many blocked tool requests (%1). Review the tool contract and "
+                           "choose a permitted action.")
+                .arg(asyncState_.blockedSteps);
+        completeAsync();
+        return;
+    }
+    if (asyncState_.consecutiveBlockedSteps >= config_.maxConsecutiveBlockedSteps) {
+        asyncState_.phase = AgentLoopPhase::Failed;
+        asyncState_.terminalReason = AgentTerminalReason::UnableToComplete;
+        asyncState_.abortReason =
+            QStringLiteral("Too many consecutive blocked tool requests (%1). The planner did not "
+                           "recover after the previous rejection; inspect the last observation and "
+                           "choose a different permitted action.")
+                .arg(asyncState_.consecutiveBlockedSteps);
+        completeAsync();
+        return;
+    }
+    if (productiveSteps >= config_.maxIterations) {
         asyncState_.phase = AgentLoopPhase::Failed;
         asyncState_.terminalReason = AgentTerminalReason::IterationLimit;
-        asyncState_.abortReason =
-            QStringLiteral("Iteration limit reached (%1 steps).").arg(config_.maxIterations);
+        asyncState_.abortReason = QStringLiteral("Iteration limit reached (%1 productive steps).")
+                                      .arg(config_.maxIterations);
         completeAsync();
         return;
     }
@@ -1000,8 +1061,7 @@ void AgentLoop::executeStepAsync(const ToolInvocationPlan& originalPlan, const Q
                 fillRecordFromPlan(partial, plan);
                 partial.statusText = toolExecutionStatusName(ToolExecutionStatus::Cancelled);
                 partial.failureCategory = ToolFailureCategory::Cancelled;
-                partial.observation =
-                    truncator_.truncate(result.summary.toUtf8(), partial.toolId).preview;
+                partial.observation = truncatedObservation(result.summary.toUtf8(), partial.toolId);
                 partial.structuredObservation = result.structuredObservation;
                 asyncState_.steps.append(partial);
                 if (descriptor && result.structuredObservation)
@@ -1029,12 +1089,15 @@ void AgentLoop::executeStepAsync(const ToolInvocationPlan& originalPlan, const Q
             record.succeeded = result.status == ToolExecutionStatus::Succeeded ||
                                result.status == ToolExecutionStatus::PlaceholderSucceeded;
             record.statusText = toolExecutionStatusName(result.status);
-            record.observation =
-                truncator_.truncate(result.summary.toUtf8(), record.toolId).preview;
+            record.observation = truncatedObservation(result.summary.toUtf8(), record.toolId);
             record.structuredObservation = result.structuredObservation;
             record.sandbox = result.sandbox;
             record.failureCategory = result.failureCategory;
             asyncState_.steps.append(record);
+            asyncState_.consecutiveBlockedSteps = 0;
+            asyncState_.repeatedActionRecoveryPending = false;
+            if (record.succeeded)
+                doomDetector_.reset(asyncState_.sessionId);
             if (!record.succeeded && result.status != ToolExecutionStatus::Cancelled)
                 planner_.setPlannerFeedback(
                     QStringLiteral(
@@ -1110,12 +1173,15 @@ void AgentLoop::executeBatchAsync(const ToolInvocationPlan& plan, const QString&
                 record.succeeded = result.status == ToolExecutionStatus::Succeeded ||
                                    result.status == ToolExecutionStatus::PlaceholderSucceeded;
                 record.statusText = toolExecutionStatusName(result.status);
-                record.observation =
-                    truncator_.truncate(result.summary.toUtf8(), record.toolId).preview;
+                record.observation = truncatedObservation(result.summary.toUtf8(), record.toolId);
                 record.structuredObservation = result.structuredObservation;
                 record.sandbox = result.sandbox;
                 record.failureCategory = result.failureCategory;
                 asyncState_.steps.append(record);
+                asyncState_.consecutiveBlockedSteps = 0;
+                asyncState_.repeatedActionRecoveryPending = false;
+                if (record.succeeded)
+                    doomDetector_.reset(asyncState_.sessionId);
                 if (!record.succeeded && result.status != ToolExecutionStatus::Cancelled)
                     planner_.setPlannerFeedback(
                         QStringLiteral(
@@ -1209,11 +1275,32 @@ AgentLoopState AgentLoop::advance(AgentLoopState state) {
             return state;
         }
 
-        if (static_cast<int>(state.steps.size()) >= config_.maxIterations) {
+        const int productiveSteps =
+            qMax(0, static_cast<int>(state.steps.size()) - state.blockedSteps);
+        if (state.blockedSteps >= config_.maxBlockedSteps) {
+            state.phase = AgentLoopPhase::Failed;
+            state.terminalReason = AgentTerminalReason::UnableToComplete;
+            state.abortReason =
+                QStringLiteral("Too many blocked tool requests (%1). Review the tool contract and "
+                               "choose a permitted action.")
+                    .arg(state.blockedSteps);
+            return state;
+        }
+        if (state.consecutiveBlockedSteps >= config_.maxConsecutiveBlockedSteps) {
+            state.phase = AgentLoopPhase::Failed;
+            state.terminalReason = AgentTerminalReason::UnableToComplete;
+            state.abortReason =
+                QStringLiteral("Too many consecutive blocked tool requests (%1). The planner did "
+                               "not recover after the previous rejection; inspect the last "
+                               "observation and choose a different permitted action.")
+                    .arg(state.consecutiveBlockedSteps);
+            return state;
+        }
+        if (productiveSteps >= config_.maxIterations) {
             state.phase = AgentLoopPhase::Failed;
             state.terminalReason = AgentTerminalReason::IterationLimit;
-            state.abortReason =
-                QStringLiteral("Iteration limit reached (%1 steps).").arg(config_.maxIterations);
+            state.abortReason = QStringLiteral("Iteration limit reached (%1 productive steps).")
+                                    .arg(config_.maxIterations);
             return state;
         }
 
@@ -1467,12 +1554,16 @@ void AgentLoop::executeStep(AgentLoopState& state, const ToolInvocationPlan& ori
     record.succeeded = result.status == ToolExecutionStatus::Succeeded ||
                        result.status == ToolExecutionStatus::PlaceholderSucceeded;
     record.statusText = toolExecutionStatusName(result.status);
-    record.observation = truncator_.truncate(result.summary.toUtf8(), record.toolId).preview;
+    record.observation = truncatedObservation(result.summary.toUtf8(), record.toolId);
 
     record.structuredObservation = result.structuredObservation;
     record.sandbox = result.sandbox;
     record.failureCategory = result.failureCategory;
     state.steps.append(record);
+    state.consecutiveBlockedSteps = 0;
+    state.repeatedActionRecoveryPending = false;
+    if (record.succeeded)
+        doomDetector_.reset(state.sessionId);
     if (!record.succeeded && result.status != ToolExecutionStatus::Cancelled)
         planner_.setPlannerFeedback(
             QStringLiteral("Tool %1 returned %2: %3. Replan using this observation; do not repeat "
@@ -1522,6 +1613,8 @@ void AgentLoop::appendBlockedStep(AgentLoopState& state, const ToolInvocationPla
     record.structuredObservation = std::move(structuredObservation);
 
     state.steps.append(record);
+    ++state.blockedSteps;
+    ++state.consecutiveBlockedSteps;
     planner_.setPlannerFeedback(
         QStringLiteral(
             "Tool %1 was blocked (%2). %3 Do not retry the same action unchanged or request "
@@ -1569,6 +1662,14 @@ void AgentLoop::initializeObservationIntent(AgentLoopState& state) {
 }
 
 bool AgentLoop::acceptFinalAnswer(AgentLoopState& state, const AgentStepDecision& decision) {
+    if (state.repeatedActionRecoveryPending) {
+        state.phase = AgentLoopPhase::Stuck;
+        state.terminalReason = AgentTerminalReason::ToolFailure;
+        state.abortReason =
+            QStringLiteral("Agent repeated a previously executed action and did not choose a "
+                           "different action after the bounded repair.");
+        return true;
+    }
     planner_.setStructuredFacts(
         ClaimGroundingResolver::facts(state.observationIntent, state.evidence));
     auto gate = EvidencePolicy::evaluate(state.observationIntent, state.evidence,
@@ -1664,10 +1765,18 @@ bool AgentLoop::acceptFinalAnswer(AgentLoopState& state, const AgentStepDecision
         const auto canonical = ClaimGroundingResolver::filesystemFinalAnswer(
             state.observationIntent, state.evidence, decision.answer);
         if (canonical && decision.answer != *canonical) {
-            gate.accepted = false;
-            gate.repair =
-                QStringLiteral("Filesystem final must use the evidence-derived scoped "
-                               "representation; unstructured additional claims are not accepted.");
+            // Narrow safety net: an observation whose coverage cannot support an absence
+            // conclusion must keep the evidence-derived representation. Productive coding
+            // finals and ordinary file explanations are published as natural language.
+            if (ClaimGroundingResolver::canonicalObservationRequired(state.evidence)) {
+                gate.accepted = false;
+                gate.repair =
+                    QStringLiteral("The current observation scope cannot support that conclusion. "
+                                   "Use the evidence-derived scoped representation or obtain "
+                                   "complete coverage.");
+            } else if (decision.answer.trimmed().isEmpty()) {
+                gate.answerOverride = *canonical;
+            }
         }
     }
     if (gate.accepted && decision.observationRequirementDeclared && decision.requiresObservation &&
@@ -1764,7 +1873,7 @@ void AgentLoop::recordEvidence(AgentLoopState& state, const ToolDescriptor& desc
             "The mutation was reported successful. Observe the affected path before claiming "
             "its final filesystem state."));
     traceStage(state, "evidence", "updated", nullptr, workingDirectory());
-    while (state.evidence.size() > 48)
+    while (state.evidence.size() > 96)
         state.evidence.removeFirst();
 }
 

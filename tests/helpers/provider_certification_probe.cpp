@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Explicit live certification helper; never run by CTest.
+#include "ProviderCertificationRoot.h"
 #include "sentinel/core/agent/AgentRuntime.h"
 #include "sentinel/core/agent/LlmAgentRuntime.h"
 #include "sentinel/core/agent/NullAgentRuntime.h"
@@ -13,7 +14,6 @@
 #include "sentinel/core/runtime/RealToolExecutor.h"
 #include "sentinel/core/security/StaticApprovalPolicy.h"
 #include "sentinel/core/security/StaticSandboxPolicy.h"
-#include "ProviderCertificationRoot.h"
 #include <QCoreApplication>
 #include <QEventLoop>
 #include <QFile>
@@ -68,13 +68,17 @@ int main(int argc, char** argv) {
     const QString certificationRoot = validatedProviderCertificationRoot(
         qEnvironmentVariable("SENTINEL_CERTIFICATION_WORKSPACE_ROOT"));
     if (certificationRoot.isEmpty()) {
-        report({{"configuration_error", "A canonical absolute existing readable workspace directory is required in SENTINEL_CERTIFICATION_WORKSPACE_ROOT; no fallback is allowed."}});
+        report({{"configuration_error",
+                 "A canonical absolute existing readable workspace directory is required in "
+                 "SENTINEL_CERTIFICATION_WORKSPACE_ROOT; no fallback is allowed."}});
         return 2;
     }
     if (args.size() < 4)
         return 2;
     const bool skillProbe = args.size() > 4 && args[4].startsWith("skill-");
     const bool pluginProbe = args.size() > 4 && args[4] == "plugin";
+    const bool proseFinalProbe = args.size() > 4 && args[4] == "prose-final";
+    bool proseFinalOk = true;
     QString skillPreferences;
     if (skillProbe || pluginProbe) {
         QStandardPaths::setTestModeEnabled(true);
@@ -340,6 +344,8 @@ int main(int argc, char** argv) {
         options.availableToolIds = {"read-file"};
     if (provider == "llama-cpp-server" && args[3].contains("definitely-does-not-exist-12345.txt"))
         options.availableToolIds = {"glob"};
+    if (proseFinalProbe)
+        options.availableToolIds = {"read-file"};
     options.restrictAvailableTools = true;
     options.onStatus = [](const QString& status) { report({{"status", status}}); };
     options.onStep = [](const AgentStepRecord& step) {
@@ -362,6 +368,15 @@ int main(int argc, char** argv) {
                 {"final", state.finalAnswer},
                 {"failure", state.abortReason},
                 {"steps", state.steps.size()}});
+        if (proseFinalProbe) {
+            const auto answer = state.finalAnswer.trimmed();
+            const bool canonical = answer.startsWith(QStringLiteral("{\"source\":")) ||
+                                   answer.startsWith(QStringLiteral("{\"explanations\":")) ||
+                                   answer.startsWith(QStringLiteral("{\"operations\":"));
+            proseFinalOk =
+                state.phase == AgentLoopPhase::Completed && !answer.isEmpty() && !canonical;
+            report({{"prose_final_contract", proseFinalOk}});
+        }
         loop.quit();
     };
     runtime.configureSession(session, options);
@@ -424,5 +439,7 @@ int main(int argc, char** argv) {
     }
     if (skillProbe && QFile::exists(skillPreferences))
         QFile::remove(skillPreferences);
+    if (!proseFinalOk)
+        return 1;
     return runtime.sessionState(session).phase == AgentLoopPhase::Completed ? 0 : 1;
 }

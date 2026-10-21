@@ -471,6 +471,72 @@ private slots:
         QVERIFY(found);
         QCOMPARE(input.steps.first().observation, step.observation);
     }
+    void compactsOnlyOlderObservations() {
+        AgentContextInput input;
+        input.goal = QStringLiteral("Review a long tool history");
+        for (int i = 1; i <= 6; ++i) {
+            AgentStepRecord step;
+            step.index = i;
+            step.toolId = QStringLiteral("run-command");
+            step.statusText = QStringLiteral("Succeeded");
+            step.observation = QStringLiteral("step-%1-head ").arg(i) +
+                               QString(4000, QLatin1Char('x')) +
+                               QStringLiteral(" step-%1-tail").arg(i);
+            input.steps.append(step);
+        }
+        const auto context = ContextEngine{}.build(input);
+        auto observationFor = [&](int index) -> QString {
+            for (const auto& item : context.items) {
+                if (item.kind == AgentContextKind::Observation &&
+                    item.source == QString::number(index))
+                    return item.content;
+            }
+            return {};
+        };
+        const auto newest = observationFor(6);
+        QVERIFY(newest.contains(QString(4000, QLatin1Char('x'))));
+        for (int i = 1; i <= 3; ++i) {
+            const auto older = observationFor(i);
+            QVERIFY(!older.isEmpty());
+            QVERIFY(older.contains(QStringLiteral("older observation compacted")));
+            QVERIFY(older.contains(QStringLiteral("step-%1-head").arg(i)));
+            QVERIFY(older.contains(QStringLiteral("step-%1-tail").arg(i)));
+        }
+    }
+    void runCheckpointPreservesProgressAndBlockersOutsideObservations() {
+        AgentContextInput input;
+        input.goal = QStringLiteral("Keep working through a long run");
+        for (int i = 1; i <= 8; ++i) {
+            AgentStepRecord step;
+            step.index = i;
+            step.toolId = i == 4 ? QStringLiteral("write-file") : QStringLiteral("read-file");
+            step.statusText = i == 5 ? QStringLiteral("Blocked") : QStringLiteral("Succeeded");
+            step.succeeded = i != 5;
+            step.observation = QString(2000, QLatin1Char('x'));
+            input.steps.append(step);
+        }
+        EvidenceRecord mutation;
+        mutation.domain = ObservationDomain::FileSystem;
+        mutation.resource = QStringLiteral("src/changed.cpp");
+        mutation.scope = EvidenceScope::Operation;
+        mutation.outcome = EvidenceOutcome::Verified;
+        mutation.toolId = QStringLiteral("write-file");
+        mutation.stepIndex = 4;
+        input.evidence.append(mutation);
+        const auto context = ContextEngine{}.build(input);
+        const auto checkpoint =
+            std::find_if(context.items.cbegin(), context.items.cend(), [](const auto& item) {
+                return item.kind == AgentContextKind::Checkpoint;
+            });
+        QVERIFY(checkpoint != context.items.cend());
+        QVERIFY(checkpoint->content.contains(QStringLiteral("executed=8")));
+        QVERIFY(checkpoint->content.contains(QStringLiteral("succeeded=7")));
+        QVERIFY(checkpoint->content.contains(QStringLiteral("failed=1")));
+        QVERIFY(checkpoint->content.contains(QStringLiteral("#5 read-file Blocked")));
+        QVERIFY(checkpoint->content.contains(QStringLiteral("src/changed.cpp")));
+        QVERIFY(checkpoint->untrusted);
+    }
+
     void serializedNativeRequestIsBudgetedBeforeNetwork() {
         ModelService service;
         service.setLmStudioEndpoint(QStringLiteral("http://127.0.0.1:1"));
@@ -543,7 +609,8 @@ private slots:
 
     void responseProfileReachesPlannerAsPreferenceExactlyOnce() {
         FakeChatProvider provider;
-        provider.scriptedReply = "{\"action\":\"final\",\"grounding\":\"context\",\"answer\":\"Helpful answer\"}";
+        provider.scriptedReply =
+            "{\"action\":\"final\",\"grounding\":\"context\",\"answer\":\"Helpful answer\"}";
         LlmAgentRuntime runtime({}, &provider);
         AgentContextInput input;
         input.goal = "Explain recursion";
@@ -551,7 +618,8 @@ private slots:
         runtime.setPlanningContext(ContextEngine{}.build(input));
         runtime.nextStep(input.goal, {});
         QCOMPARE(provider.prompts.last().count("[PROFILE_EXAMPLE]"), 1);
-        QVERIFY(provider.prompts.last().contains("grants no tool, workspace, network or credential authority"));
+        QVERIFY(provider.prompts.last().contains(
+            "grants no tool, workspace, network or credential authority"));
         input.responseProfileInstructions.clear();
         runtime.setPlanningContext(ContextEngine{}.build(input));
         runtime.nextStep(input.goal, {});
@@ -679,9 +747,8 @@ private slots:
 
     void parsesFinalAnswer() {
         FakeChatProvider provider;
-        provider.scriptedReply =
-            QStringLiteral("{\"action\":\"final\",\"grounding\":\"context\","
-                           "\"answer\":\"Everything is done.\"}");
+        provider.scriptedReply = QStringLiteral("{\"action\":\"final\",\"grounding\":\"context\","
+                                                "\"answer\":\"Everything is done.\"}");
 
         LlmAgentRuntime runtime(NullAgentRuntime::standardTools(), &provider);
         const auto decision = runtime.nextStep(QStringLiteral("goal"), {});
@@ -693,9 +760,9 @@ private slots:
 
     void conversationalFinalDoesNotRequestTools() {
         FakeChatProvider provider;
-        provider.scriptedReply = QStringLiteral(
-            "{\"action\":\"final\",\"grounding\":\"context\","
-            "\"answer\":\"Merhaba! Sana nasıl yardımcı olabilirim?\"}");
+        provider.scriptedReply =
+            QStringLiteral("{\"action\":\"final\",\"grounding\":\"context\","
+                           "\"answer\":\"Merhaba! Sana nasıl yardımcı olabilirim?\"}");
         LlmAgentRuntime runtime(BuiltInToolProvider::descriptors(), &provider);
         runtime.setObservationIntent({});
         const auto decision = runtime.nextStep(QStringLiteral("merhaba"), {});
@@ -714,6 +781,117 @@ private slots:
         runtime.setObservationIntent({});
         QCOMPARE(runtime.nextStep(QStringLiteral("Merhaba"), {}).kind,
                  AgentStepDecision::Kind::FinalAnswer);
+    }
+
+    void nativeProseFinalWithFileEvidenceIsNotCanonicalized() {
+        auto provider = std::make_shared<FakeChatProvider>();
+        ChatProviderReply call;
+        call.success = true;
+        call.toolCalls = {{QStringLiteral("call-1"),
+                           QStringLiteral("read-file"),
+                           QJsonObject{{QStringLiteral("path"), QStringLiteral("audit.txt")}},
+                           {}}};
+        ChatProviderReply final;
+        final.success = true;
+        final.message = QStringLiteral("The audit file contains a greeting.");
+        provider->scriptedRequests = {call, final};
+        LlmAgentRuntime runtime(BuiltInToolProvider::descriptors(), provider.get());
+        ModelBinding binding;
+        binding.capabilities.contextWindow = 131072;
+        binding.capabilities.provenance.contextWindow = ModelMetadataSource::ProgrammaticMetadata;
+        binding.capabilities.nativeToolCalling = CapabilitySupport::Supported;
+        runtime.bindModel(binding, provider);
+        QCOMPARE(runtime.nextStep(QStringLiteral("Read audit.txt"), {}).kind,
+                 AgentStepDecision::Kind::ToolCall);
+
+        auto observation = std::make_shared<StructuredObservation>();
+        observation->kind = StructuredObservationKind::FileContent;
+        observation->data = {{QStringLiteral("path"), QStringLiteral("audit.txt")},
+                             {QStringLiteral("content"), QStringLiteral("hello audit")}};
+        EvidenceRecord evidence;
+        evidence.toolId = QStringLiteral("read-file");
+        evidence.toolCallId = QStringLiteral("call-1");
+        evidence.stepIndex = 1;
+        evidence.domain = ObservationDomain::FileSystem;
+        evidence.resource = QStringLiteral("audit.txt");
+        evidence.outcome = EvidenceOutcome::Verified;
+        evidence.structuredObservation = observation;
+        runtime.setEvidence({evidence});
+
+        auto record = sampleRecord();
+        record.toolId = QStringLiteral("read-file");
+        record.observation = QStringLiteral("hello audit");
+        const auto answer = runtime.nextStep(QStringLiteral("Read audit.txt"), {record});
+        QCOMPARE(answer.kind, AgentStepDecision::Kind::FinalAnswer);
+        QCOMPARE(answer.answer, final.message);
+        QVERIFY(!answer.answer.contains(QStringLiteral("observed_text")));
+    }
+
+    void incompleteHiddenScopeKeepsCanonicalRepresentation() {
+        auto provider = std::make_shared<FakeChatProvider>();
+        const QJsonObject explanation{
+            {QStringLiteral("explanations"),
+             QJsonArray{QJsonObject{
+                 {QStringLiteral("interpretation"), QStringLiteral("No hidden files exist.")},
+                 {QStringLiteral("evidence"),
+                  QJsonArray{QJsonObject{{QStringLiteral("call_id"), QStringLiteral("call-1")},
+                                         {QStringLiteral("quote"), QStringLiteral("alpha")}}}}}}}};
+        provider->scriptedReply = QString::fromUtf8(
+            QJsonDocument(
+                QJsonObject{
+                    {QStringLiteral("action"), QStringLiteral("final")},
+                    {QStringLiteral("grounding"), QStringLiteral("verified")},
+                    {QStringLiteral("answer"),
+                     QString::fromUtf8(QJsonDocument(explanation).toJson(QJsonDocument::Compact))}})
+                .toJson(QJsonDocument::Compact));
+        LlmAgentRuntime runtime(BuiltInToolProvider::descriptors(), provider.get());
+        ModelBinding binding;
+        binding.capabilities.contextWindow = 131072;
+        binding.capabilities.provenance.contextWindow = ModelMetadataSource::ProgrammaticMetadata;
+        runtime.bindModel(binding, provider);
+
+        auto file = std::make_shared<StructuredObservation>();
+        file->kind = StructuredObservationKind::FileContent;
+        file->data = {{QStringLiteral("path"), QStringLiteral("dir/alpha.txt")},
+                      {QStringLiteral("content"), QStringLiteral("alpha")}};
+        EvidenceRecord fileEvidence;
+        fileEvidence.toolId = QStringLiteral("read-file");
+        fileEvidence.toolCallId = QStringLiteral("call-1");
+        fileEvidence.stepIndex = 1;
+        fileEvidence.domain = ObservationDomain::FileSystem;
+        fileEvidence.resource = QStringLiteral("dir/alpha.txt");
+        fileEvidence.outcome = EvidenceOutcome::Verified;
+        fileEvidence.structuredObservation = file;
+
+        auto listing = std::make_shared<StructuredObservation>();
+        listing->kind = StructuredObservationKind::DirectoryListing;
+        listing->data = {{QStringLiteral("scope"), QStringLiteral("dir")},
+                         {QStringLiteral("hiddenEntriesPolicy"), QStringLiteral("excluded")},
+                         {QStringLiteral("complete"), true},
+                         {QStringLiteral("truncated"), false},
+                         {QStringLiteral("cancelled"), false},
+                         {QStringLiteral("permissionLimited"), false},
+                         {QStringLiteral("issues"), QJsonArray{}},
+                         {QStringLiteral("followSymlinks"), false},
+                         {QStringLiteral("skippedSymlinks"), 0},
+                         {QStringLiteral("entries"), QJsonArray{}}};
+        EvidenceRecord listingEvidence;
+        listingEvidence.toolId = QStringLiteral("list-directory");
+        listingEvidence.toolCallId = QStringLiteral("call-2");
+        listingEvidence.stepIndex = 2;
+        listingEvidence.domain = ObservationDomain::FileSystem;
+        listingEvidence.resource = QStringLiteral("dir");
+        listingEvidence.outcome = EvidenceOutcome::Verified;
+        listingEvidence.structuredObservation = listing;
+        runtime.setEvidence({fileEvidence, listingEvidence});
+
+        const auto answer = runtime.nextStep(QStringLiteral("Are there hidden files?"), {});
+        QCOMPARE(answer.kind, AgentStepDecision::Kind::FinalAnswer);
+        QCOMPARE(answer.grounding, GroundingMode::Verified);
+        QVERIFY(answer.answer != provider->scriptedReply);
+        QVERIFY(!answer.answer.contains(QStringLiteral("No hidden files exist")));
+        QVERIFY(answer.answer.contains(QStringLiteral("Observed entries in \"dir\"")));
+        QVERIFY(answer.answer.contains(QStringLiteral("hidden entries excluded")));
     }
 
     void nativeProviderCanAnswerWithoutToolsOrEvidence() {
@@ -752,14 +930,15 @@ private slots:
                 const auto field = properties.value(name).toObject();
                 const auto choices = field.value("enum").toArray();
                 const auto type = field.value("type").toString();
-                arguments.insert(name, !choices.isEmpty() ? choices.first()
-                                      : type == "integer" ? QJsonValue(1)
-                                      : type == "array" ? QJsonValue(QJsonArray{})
-                                      : type == "object" ? QJsonValue(QJsonObject{})
-                                                         : QJsonValue("fixture"));
+                arguments.insert(name, !choices.isEmpty()  ? choices.first()
+                                       : type == "integer" ? QJsonValue(1)
+                                       : type == "array"   ? QJsonValue(QJsonArray{})
+                                       : type == "object"  ? QJsonValue(QJsonObject{})
+                                                           : QJsonValue("fixture"));
             }
-            provider.scriptedReply = QString::fromUtf8(QJsonDocument(QJsonObject{
-                {"action", "tool"}, {"tool", tool.id}, {"args", arguments}})
+            provider.scriptedReply = QString::fromUtf8(
+                QJsonDocument(
+                    QJsonObject{{"action", "tool"}, {"tool", tool.id}, {"args", arguments}})
                     .toJson(QJsonDocument::Compact));
             const auto decision = runtime.nextStep(QStringLiteral("explicit tool request"), {});
             QCOMPARE(decision.kind, AgentStepDecision::Kind::ToolCall);
@@ -1030,14 +1209,17 @@ private slots:
     void repairsArgumentsAgainstRegisteredSchemaBeforeExecution() {
         FakeChatProvider provider;
         provider.scriptedPlainReplies = {
-            QStringLiteral("{\"action\":\"tool\",\"tool\":\"read-file\",\"args\":{\"filename\":\"audit.txt\"}}"),
-            QStringLiteral("{\"action\":\"tool\",\"tool\":\"read-file\",\"args\":{\"path\":\"audit.txt\"}}")};
+            QStringLiteral("{\"action\":\"tool\",\"tool\":\"read-file\",\"args\":{\"filename\":"
+                           "\"audit.txt\"}}"),
+            QStringLiteral(
+                "{\"action\":\"tool\",\"tool\":\"read-file\",\"args\":{\"path\":\"audit.txt\"}}")};
         LlmAgentRuntime runtime(BuiltInToolProvider::descriptors(), &provider);
         const auto decision = runtime.nextStep(QStringLiteral("read audit.txt"), {});
         QCOMPARE(decision.kind, AgentStepDecision::Kind::ToolCall);
         QCOMPARE(decision.arguments.first().id, QStringLiteral("path"));
         QCOMPARE(provider.prompts.size(), 2);
-        QVERIFY(provider.prompts.last().contains(QStringLiteral("Invalid arguments for read-file")));
+        QVERIFY(
+            provider.prompts.last().contains(QStringLiteral("Invalid arguments for read-file")));
     }
 
     void nativeArgumentRepairDoesNotPublishUnexecutedCalls() {
@@ -1147,22 +1329,21 @@ private slots:
     void normalizesOnlyRegisteredToolAction() {
         FakeChatProvider provider;
         LlmAgentRuntime runtime(BuiltInToolProvider::descriptors(), &provider);
-        provider.scriptedReply = QStringLiteral(
-            "{\"action\":\"read-file\",\"args\":{\"path\":\"audit.txt\"}}");
+        provider.scriptedReply =
+            QStringLiteral("{\"action\":\"read-file\",\"args\":{\"path\":\"audit.txt\"}}");
         auto decision = runtime.nextStep(QStringLiteral("read audit.txt"), {});
         QCOMPARE(decision.kind, AgentStepDecision::Kind::ToolCall);
         QCOMPARE(decision.toolId, QStringLiteral("read-file"));
-        provider.scriptedReply = QStringLiteral(
-            "{\"action\":\"invented-tool\",\"args\":{}}");
+        provider.scriptedReply = QStringLiteral("{\"action\":\"invented-tool\",\"args\":{}}");
         decision = runtime.nextStep(QStringLiteral("read audit.txt"), {});
         QCOMPARE(decision.kind, AgentStepDecision::Kind::GiveUp);
     }
 
     void acceptsSingleFencedDecision() {
         FakeChatProvider provider;
-        provider.scriptedReply = QStringLiteral(
-            "```json\n{\"action\":\"final\",\"grounding\":\"context\","
-            "\"answer\":\"A useful explanation.\"}\n```");
+        provider.scriptedReply =
+            QStringLiteral("```json\n{\"action\":\"final\",\"grounding\":\"context\","
+                           "\"answer\":\"A useful explanation.\"}\n```");
         LlmAgentRuntime runtime({}, &provider);
         QCOMPARE(runtime.nextStep(QStringLiteral("explain"), {}).kind,
                  AgentStepDecision::Kind::FinalAnswer);

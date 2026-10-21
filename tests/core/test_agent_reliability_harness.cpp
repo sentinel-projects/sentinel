@@ -3348,8 +3348,9 @@ private slots:
 
     // ------------------------------------------------------------------
     // COR-15: grounded final accepted only through verified observations,
-    // an independent build/test receipt and a diff; a receipt-only final
-    // cannot complete the run.
+    // an independent build/test receipt and a diff. A receipt-only final is
+    // completed only after the runtime obtains the missing read-only
+    // verification itself; the claim alone never completes the run.
     // ------------------------------------------------------------------
     void cor15_groundedFinalEvidence_data() {
         QTest::addColumn<bool>("async");
@@ -3459,11 +3460,20 @@ private slots:
                                 }));
             QCOMPARE(fixture.handler.counts.value(QStringLiteral("git-diff"), 0), 1);
         } else {
-            // Tool success alone does not complete the run when the fresh diff
-            // requirement is still unmet.
-            QVERIFY2(state.phase == AgentLoopPhase::Failed,
+            // The runtime recovers the missing read-only verification before accepting
+            // the final. Tool success plus a prose receipt alone is never enough.
+            QVERIFY2(state.phase == AgentLoopPhase::Completed,
                      qPrintable(terminalFailureDescription(state)));
-            QVERIFY(state.finalAnswer.isEmpty());
+            QVERIFY(state.finalAnswer.contains(QStringLiteral("ALL_TESTS_PASSED")));
+            QVERIFY(state.finalAnswer.contains(QStringLiteral("return a + b")));
+            QVERIFY(state.finalVerificationRecoveries >= 1);
+            QCOMPARE(fixture.handler.counts.value(QStringLiteral("git-diff"), 0), 1);
+            QVERIFY(std::any_of(state.evidence.cbegin(), state.evidence.cend(),
+                                [](const EvidenceRecord& item) {
+                                    return item.domain == ObservationDomain::Workspace &&
+                                           item.toolId == QLatin1String("git-diff") &&
+                                           item.outcome == EvidenceOutcome::Verified;
+                                }));
         }
         QCOMPARE(fixture.handler.unauthorizedCalls, 0);
         QCOMPARE(verifier.fileContent(QStringLiteral("src/calc.cpp")),
@@ -3475,7 +3485,7 @@ private slots:
                  beforeOracle); // Compiler/test must not mutate sources or tests.
         QVERIFY2(verifier.matches(expected, &actual), qPrintable(actual));
         QVERIFY2(real.passed(), qPrintable(real.summary()));
-        QCOMPARE(independentlyAccepted(state, verifier, expected, real), withVerification);
+        QCOMPARE(independentlyAccepted(state, verifier, expected, real), true);
     }
 
     // ------------------------------------------------------------------

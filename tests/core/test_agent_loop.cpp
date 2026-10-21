@@ -219,7 +219,7 @@ private slots:
         QTest::addColumn<bool>("async");
         for (const auto& scenario :
              {"complete", "test-fails", "repeated-read", "read-after-write", "missing-diff",
-              "stale-after-write", "provider-extra-read", "cancel-final", "unsupported-success",
+              "stale-after-write", "provider-extra-read", "cancel-final", "prose-final",
               "wrong-diff", "test-before-edit", "relative-write", "provider-extra-test",
               "recover-missing-diff", "cancel-recovery", "denied-recovery",
               "recover-missing-multiple", "stale-denied", "verification-budget"})
@@ -266,7 +266,7 @@ private slots:
             }
         }
         ScriptedPlanner planner;
-        planner.canonicalFinal = scenario != "unsupported-success";
+        planner.canonicalFinal = scenario != "prose-final";
         auto read = toolDecision("read-file");
         read.arguments = {{"path", path}};
         auto write = toolDecision("write-file");
@@ -359,16 +359,22 @@ private slots:
                              scenario == "relative-write" || scenario == "provider-extra-test" ||
                              scenario == "recover-missing-diff" ||
                              scenario == "recover-missing-multiple" ||
-                             scenario == "stale-after-write";
+                             scenario == "stale-after-write" || scenario == "prose-final";
         if (success) {
             QVERIFY2(state.phase == AgentLoopPhase::Completed, qPrintable(state.abortReason));
             QCOMPARE(handler->calls.count("run-command"), 1);
             QCOMPARE(handler->calls.count("read-file"),
                      scenario == "recover-missing-multiple" ? 3 : 2);
             QCOMPARE(handler->calls.count("git-diff"), 1);
-            QVERIFY(state.finalAnswer.contains("ALL_TESTS_PASSED"));
-            QVERIFY(state.finalAnswer.contains("git-diff"));
-            QVERIFY(state.finalAnswer.contains("return a + b"));
+            if (scenario == "prose-final") {
+                QCOMPARE(
+                    state.finalAnswer,
+                    QStringLiteral("All tests succeeded and the requested diff was verified."));
+            } else {
+                QVERIFY(state.finalAnswer.contains("ALL_TESTS_PASSED"));
+                QVERIFY(state.finalAnswer.contains("git-diff"));
+                QVERIFY(state.finalAnswer.contains("return a + b"));
+            }
             QVERIFY(
                 std::any_of(state.evidence.cbegin(), state.evidence.cend(), [](const auto& item) {
                     return item.scope == EvidenceScope::Operation &&
@@ -732,10 +738,10 @@ private slots:
         QCOMPARE(planner.calls, 3);
     }
 
-    void repeatedMutationDoesNotGetReadRepair() {
+    void repeatedMutationGetsOneBoundedRepairWithoutReexecution() {
         ScriptedPlanner planner;
         const auto write = toolDecision(QStringLiteral("write-file"));
-        planner.decisions = {write, write};
+        planner.decisions = {write, write, finalDecision(QStringLiteral("write observed"))};
         RecordingExecutor executor;
         StaticApprovalPolicy approval;
         auto sandbox = permissiveSandbox();
@@ -744,7 +750,9 @@ private slots:
         const auto state = loop.run(QStringLiteral("Write file"));
         QCOMPARE(state.phase, AgentLoopPhase::Stuck);
         QCOMPARE(state.repeatedReadRepairs, 0);
+        QCOMPARE(state.repeatedActionRepairs, 1);
         QCOMPARE(executor.requests.size(), 1);
+        QVERIFY(state.finalAnswer.isEmpty());
     }
 
     void multipleToolResultsRequireAcceptedFinal() {
@@ -847,6 +855,47 @@ private slots:
         QCOMPARE(state.phase, AgentLoopPhase::Failed);
         QCOMPARE(state.steps.size(), 3);
         QVERIFY(state.abortReason.contains(QStringLiteral("Iteration limit")));
+    }
+
+    void doomLoopRequiresTrailingRepetition() {
+        DoomLoopDetector detector{DoomLoopDetector::Config{}};
+        for (const auto& action : {QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("c"),
+                                   QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("c")})
+            detector.recordAction(QStringLiteral("session"), action);
+        QVERIFY(!detector.isStuck(QStringLiteral("session")));
+        for (const auto& action : {QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("c")})
+            detector.recordAction(QStringLiteral("session"), action);
+        QVERIFY(detector.isStuck(QStringLiteral("session")));
+        detector.reset(QStringLiteral("session"));
+        QVERIFY(!detector.isStuck(QStringLiteral("session")));
+    }
+
+    void consecutiveBlockedBudgetResetsAfterProductiveStep() {
+        ScriptedPlanner planner;
+        const auto unknownTool = [](const QString& id) {
+            AgentStepDecision decision;
+            decision.kind = AgentStepDecision::Kind::ToolCall;
+            decision.toolId = id;
+            decision.toolName = id;
+            return decision;
+        };
+        planner.decisions = {
+            unknownTool(QStringLiteral("missing-1")), toolDecision(QStringLiteral("run-command")),
+            unknownTool(QStringLiteral("missing-2")), unknownTool(QStringLiteral("missing-3")),
+            unknownTool(QStringLiteral("missing-4"))};
+        RecordingExecutor executor;
+        StaticApprovalPolicy approval;
+        auto sandbox = permissiveSandbox();
+        AgentLoop::Config config;
+        config.maxConsecutiveBlockedSteps = 3;
+        AgentLoop loop(planner, executor, approval, sandbox,
+                       QStringList{QStringLiteral("run-command")}, config);
+        const auto state = loop.run(QStringLiteral("recover from invalid requests"));
+        QCOMPARE(state.phase, AgentLoopPhase::Failed);
+        QVERIFY(state.abortReason.contains(QStringLiteral("consecutive blocked")));
+        QCOMPARE(state.blockedSteps, 4);
+        QCOMPARE(state.consecutiveBlockedSteps, 3);
+        QCOMPARE(executor.requests.size(), 1);
     }
 
     void pausesForApprovalAndResumes() {
@@ -1010,6 +1059,9 @@ private slots:
         QCOMPARE(state.phase, AgentLoopPhase::Completed);
         QVERIFY(state.steps.first().observation.toUtf8().size() < 5000);
         QVERIFY(state.steps.first().observation.contains(QStringLiteral("omitted")));
+        QVERIFY(state.steps.first().observation.contains(QStringLiteral("Output truncated:")));
+        QVERIFY(state.steps.first().observation.contains(QStringLiteral("Full output:")));
+        QVERIFY(state.steps.first().observation.contains(QStringLiteral("instead of repeating")));
     }
 };
 

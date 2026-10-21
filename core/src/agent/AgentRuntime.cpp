@@ -18,6 +18,7 @@
 #include "sentinel/core/security/PathGuard.h"
 #include "sentinel/core/security/ResourceAuthorizationResolver.h"
 
+#include <QCoreApplication>
 #include <QDeadlineTimer>
 #include <QDebug>
 #include <QDir>
@@ -109,16 +110,16 @@ AgentRuntime::AgentRuntime(std::unique_ptr<IAgentRuntime> metadata, IAgentStepPl
         [this](const QString& path, bool write, const QString& sessionId) {
             const QList<AccessMode> modes =
                 write ? QList<AccessMode>{AccessMode::Write, AccessMode::Delete}
-            : QList<AccessMode>{AccessMode::Read};
-        for (const auto mode : modes) {
-            const AuthorizationRequest request{SecurityDomain::FileSystem, mode, path,
-                                               ToolRiskLevel::Medium, {}, {}};
-            if (permissionService_.evaluateAuthorization(request, sessionId) ==
-                PermissionEffect::Allow)
-                return true;
-        }
-        return false;
-    });
+                      : QList<AccessMode>{AccessMode::Read};
+            for (const auto mode : modes) {
+                const AuthorizationRequest request{SecurityDomain::FileSystem, mode, path,
+                                                   ToolRiskLevel::Medium,      {},   {}};
+                if (permissionService_.evaluateAuthorization(request, sessionId) ==
+                    PermissionEffect::Allow)
+                    return true;
+            }
+            return false;
+        });
     if (auto* nativeExecutor = dynamic_cast<RealToolExecutor*>(&executor_)) {
         nativeExecutor->setExternalDirectoryGate(&externalDirectoryGate_);
         nativeExecutor->setMemoryContextResolver([this](const QString& sessionId) {
@@ -241,12 +242,12 @@ ToolExecutionResult AgentRuntime::inspectWorkspace(const QString& sessionId, con
     auto inspection = std::make_shared<Inspection>();
     ToolExecutionRequest inspectionRequest{plan, approval, sandbox, {toolId}};
     inspectionRequest.synchronousReadOnly = true;
-    auto cancel = gateway.executeAsync(inspectionRequest, executor_, sessionId,
-                                       QUuid::createUuid().toString(QUuid::WithoutBraces), {},
-                                       [inspection](ToolExecutionResult value) {
-                                           inspection->result = std::move(value);
-                                           inspection->completed.store(true, std::memory_order_release);
-                                       });
+    auto cancel = gateway.executeAsync(
+        inspectionRequest, executor_, sessionId, QUuid::createUuid().toString(QUuid::WithoutBraces),
+        {}, [inspection](ToolExecutionResult value) {
+            inspection->result = std::move(value);
+            inspection->completed.store(true, std::memory_order_release);
+        });
     if (!inspection->completed.load(std::memory_order_acquire)) {
         if (cancel)
             cancel();
@@ -620,6 +621,8 @@ bool AgentRuntime::cancel(const QString& sessionId) {
             waitingForApproval = true;
         } else if (cancelRequested_)
             return false;
+        approvalTimerGenerations_.remove(sessionId);
+        ++approvalTimerSequence_;
         cancelRequested_ = true;
         modelCancellationToken_->store(true);
         cancellationEventPending_ = true;
@@ -671,6 +674,16 @@ AgentLoopState AgentRuntime::sessionState(const QString& sessionId) const {
 AgentRuntimeError AgentRuntime::error(const QString& sessionId) const {
     std::lock_guard lock(mutex_);
     return errors_.value(sessionId);
+}
+
+void AgentRuntime::setApprovalTimeoutMs(int timeoutMs) {
+    std::lock_guard lock(mutex_);
+    approvalTimeoutMs_ = qMax(0, timeoutMs);
+}
+
+int AgentRuntime::approvalTimeoutMs() const {
+    std::lock_guard lock(mutex_);
+    return approvalTimeoutMs_;
 }
 
 void AgentRuntime::configureSession(const QString& sessionId, AgentSessionOptions options) {
@@ -745,6 +758,8 @@ bool AgentRuntime::launch(const QString& sessionId, bool isResume, bool approved
         runType = options_.value(sessionId).runType;
         runOptions = options_.value(sessionId);
         sessions_[sessionId].phase = AgentLoopPhase::Running;
+        approvalTimerGenerations_.remove(sessionId);
+        ++approvalTimerSequence_;
         cancelRequested_ = false;
         if (!isResume) {
             modelCancellationToken_ = std::make_shared<std::atomic_bool>(false);
@@ -933,7 +948,7 @@ void AgentRuntime::prepareExecution(const QStringList& availableToolIds) {
         }
         AgentLoop::Config config;
         config.autonomousMode = true;
-        config.maxIterations = 6;
+        config.maxIterations = 12;
         config.maxParallelTools = 1;
         {
             std::lock_guard lock(mutex_);
@@ -1000,7 +1015,7 @@ void AgentRuntime::prepareExecution(const QStringList& availableToolIds) {
                 delegatedEvidenceRevision_.value(delegationKey) >= evidenceRevision)
                 return {
                     ToolExecutionStatus::Blocked,
-                        QStringLiteral("Equivalent subagent work already ran without new evidence.")};
+                    QStringLiteral("Equivalent subagent work already ran without new evidence.")};
             if (subagentsThisRun_.fetch_add(1) >= 3)
                 return {ToolExecutionStatus::Blocked,
                         QStringLiteral("Subagent limit reached for this run.")};
@@ -1050,12 +1065,12 @@ void AgentRuntime::prepareExecution(const QStringList& availableToolIds) {
         });
         loop.setContextCallback(
             [this, subagentSessionId](int index, const AgentPlanningContext& context) {
-            publish(subagentSessionId, AgentEventType::ContextSnapshot,
-                    AgentContextEvent{context.estimatedTokens,
-                                      static_cast<int>(context.items.size()),
+                publish(subagentSessionId, AgentEventType::ContextSnapshot,
+                        AgentContextEvent{context.estimatedTokens,
+                                          static_cast<int>(context.items.size()),
                                           context.omittedItems, context.compacted},
                         index);
-        });
+            });
         loop.setStepCallback([this, subagentSessionId](const AgentStepRecord& step) {
             publish(subagentSessionId, AgentEventType::AgentStepCompleted, AgentStepEvent{step},
                     step.index, !step.toolId.isEmpty());
@@ -1100,7 +1115,7 @@ void AgentRuntime::prepareExecution(const QStringList& availableToolIds) {
                 break;
             case AgentLoop::ToolTransition::ExecutionFinished:
                 type = record && record->succeeded ? AgentEventType::ToolExecutionCompleted
-                           : AgentEventType::ToolExecutionFailed;
+                                                   : AgentEventType::ToolExecutionFailed;
                 break;
             }
             publish(subagentSessionId, type, payload, index, true);
@@ -1144,7 +1159,7 @@ void AgentRuntime::configureLoop(AgentLoop& loop, const QString& sessionId,
         llm->setAllowedToolIds(
             (options.restrictAvailableTools || !options.availableToolIds.isEmpty())
                 ? options.availableToolIds
-                                                               : toolIds());
+                : toolIds());
         loop.setObservationIntentPolicy(std::make_shared<ObservationIntentPolicy>(
             llm->modelProvider(), modelCancellationToken_, llm->modelBinding()));
     }
@@ -1268,7 +1283,61 @@ void AgentRuntime::configureLoop(AgentLoop& loop, const QString& sessionId,
     });
 }
 
+void AgentRuntime::scheduleApprovalTimeout(const QString& sessionId, quint64 generation) {
+    int timeoutMs = 0;
+    {
+        std::lock_guard lock(mutex_);
+        if (approvalTimerGenerations_.value(sessionId) != generation)
+            return;
+        timeoutMs = approvalTimeoutMs_;
+    }
+    if (timeoutMs <= 0 || !QCoreApplication::instance())
+        return;
+    QTimer::singleShot(timeoutMs, &approvalTimerContext_,
+                       [this, sessionId, generation] { expireApproval(sessionId, generation); });
+}
+
+void AgentRuntime::expireApproval(const QString& sessionId, quint64 generation) {
+    QString reason;
+    {
+        std::lock_guard lock(mutex_);
+        if (approvalTimerGenerations_.value(sessionId) != generation)
+            return;
+        approvalTimerGenerations_.remove(sessionId);
+        const auto state = sessions_.value(sessionId);
+        if (state.phase != AgentLoopPhase::AwaitingApproval || !activeSessionId_.isEmpty() ||
+            shuttingDown_)
+            return;
+        reason = QStringLiteral("Approval timed out after %1 seconds. No action was executed. "
+                                "Retry the task or cancel it explicitly.")
+                     .arg(qMax(1, (approvalTimeoutMs_ + 999) / 1000));
+    }
+    // A timeout is not consent. Record an explicit denial for the paused plan so
+    // nothing can be granted implicitly by a later resume or reconnect.
+    recordDeniedAuthorization(sessionId);
+    AgentLoopState finalState;
+    {
+        std::lock_guard lock(mutex_);
+        auto& state = sessions_[sessionId];
+        if (state.phase != AgentLoopPhase::AwaitingApproval || !activeSessionId_.isEmpty())
+            return;
+        state.phase = AgentLoopPhase::Failed;
+        state.terminalReason = AgentTerminalReason::ApprovalDenied;
+        state.abortReason = reason;
+        state.pendingApprovalPlan = {};
+        state.pendingApprovalThought.clear();
+        state.pendingAuthorizationRequests.clear();
+        errors_[sessionId] = {AgentRuntimeErrorCode::ApprovalDenied, reason, true};
+        operationLeases_.remove(sessionId);
+        finalState = state;
+    }
+    permissionService_.clearSessionGrants(sessionId);
+    finishTurn(sessionId, finalState);
+}
+
 void AgentRuntime::commitResult(const QString& sessionId, AgentLoopState& result) {
+    bool awaitingApproval = false;
+    quint64 approvalGeneration = 0;
     {
         std::unique_lock lock(mutex_);
         cancellationPublished_.wait(lock, [this] { return !cancellationEventPending_; });
@@ -1293,6 +1362,14 @@ void AgentRuntime::commitResult(const QString& sessionId, AgentLoopState& result
         activeSessionId_.clear();
         activeLoop_ = nullptr;
         workerContext_ = nullptr;
+        if (result.phase == AgentLoopPhase::AwaitingApproval) {
+            awaitingApproval = true;
+            approvalGeneration = ++approvalTimerSequence_;
+            approvalTimerGenerations_[sessionId] = approvalGeneration;
+        } else {
+            approvalTimerGenerations_.remove(sessionId);
+            ++approvalTimerSequence_;
+        }
     }
     if (result.phase != AgentLoopPhase::AwaitingApproval)
         permissionService_.clearSessionGrants(sessionId);
@@ -1301,6 +1378,8 @@ void AgentRuntime::commitResult(const QString& sessionId, AgentLoopState& result
         std::lock_guard lock(mutex_);
         operationLeases_.remove(sessionId);
     }
+    if (awaitingApproval)
+        scheduleApprovalTimeout(sessionId, approvalGeneration);
     if (persistenceFailed_) {
         std::lock_guard lock(mutex_);
         result.phase = AgentLoopPhase::Failed;

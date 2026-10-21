@@ -357,12 +357,37 @@ ClaimGroundingResolver::filesystemExplanation(const ObservationIntent& intent,
         rendered.join(QStringLiteral("\n\n"))};
 }
 
+bool ClaimGroundingResolver::canonicalObservationRequired(const QList<EvidenceRecord>& evidence) {
+    for (const auto& item : evidence) {
+        if (!item.structuredObservation)
+            continue;
+        const auto kind = item.structuredObservation->kind;
+        if (kind != StructuredObservationKind::DirectoryListing &&
+            kind != StructuredObservationKind::PathMatches &&
+            kind != StructuredObservationKind::TextSearch)
+            continue;
+        const auto coverage = FileSystemCoverage::fromObservation(*item.structuredObservation);
+        if (kind == StructuredObservationKind::DirectoryListing &&
+            coverage.hiddenEntriesPolicy != HiddenEntriesPolicy::Included)
+            return true;
+        if (!coverage.supportsAbsence(coverage.hiddenEntriesPolicy == HiddenEntriesPolicy::Included,
+                                      coverage.recursive))
+            return true;
+    }
+    return false;
+}
+
 std::optional<QString>
 ClaimGroundingResolver::filesystemFinalAnswer(const ObservationIntent& intent,
                                               const QList<EvidenceRecord>& evidence,
                                               const QString& proposed) {
-    if (const auto explanation = filesystemExplanation(intent, evidence, proposed))
-        return explanation->canonical;
+    // An explanation cites a read, but it cannot widen a listing/search scope
+    // whose hidden, recursive, or completion coverage is insufficient. In that
+    // case the evidence-derived observation representation is authoritative.
+    if (!canonicalObservationRequired(evidence)) {
+        if (const auto explanation = filesystemExplanation(intent, evidence, proposed))
+            return explanation->canonical;
+    }
     const bool codingOperation =
         !intent.indeterminate &&
         std::any_of(intent.requirements.cbegin(), intent.requirements.cend(),

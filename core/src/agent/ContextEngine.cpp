@@ -22,6 +22,17 @@ QString bounded(QString text, int limit) {
     return text.left(limit) + QStringLiteral(" [excerpt; more available via tool]");
 }
 
+// Older observations keep a readable head and, most importantly, the failure tail. This is a
+// deterministic compaction step: recent observations stay intact, while a long run cannot grow
+// the planner request without bound.
+QString compactObservation(QString text, int limit) {
+    if (text.size() <= limit)
+        return text;
+    const int head = limit * 2 / 3;
+    const int tail = limit - head;
+    return text.left(head) + QStringLiteral("\n... [older observation compacted] ...\n") +
+           text.right(tail);
+}
 
 int cost(const AgentContextItem& item) {
     return static_cast<int>(ContextBudgetManager::estimateText(item.content + item.source)) + 16;
@@ -44,7 +55,8 @@ AgentPlanningContext ContextEngine::build(const AgentContextInput& input) const 
     int remaining = budget - 550; // Planner contract and JSON response framing.
     auto add = [&](AgentContextItem item, int sectionCap) {
         if (item.priority == AgentContextPriority::Critical ||
-            item.kind == AgentContextKind::Observation || item.kind == AgentContextKind::Fact ||
+            item.kind == AgentContextKind::Observation ||
+            item.kind == AgentContextKind::Checkpoint || item.kind == AgentContextKind::Fact ||
             item.kind == AgentContextKind::Workspace ||
             item.kind == AgentContextKind::ResponseProfile) {
             remaining -= cost(item);
@@ -105,7 +117,9 @@ AgentPlanningContext ContextEngine::build(const AgentContextInput& input) const 
 
     if (!input.responseProfileInstructions.trimmed().isEmpty())
         add({AgentContextKind::ResponseProfile, AgentContextPriority::Normal,
-             QStringLiteral("user-response-profile"), input.responseProfileInstructions.left(2000), false}, 600);
+             QStringLiteral("user-response-profile"), input.responseProfileInstructions.left(2000),
+             false},
+            600);
 
     // Detailed contracts may not all fit. Preserve bounded discovery first, so
     // QMap ordering cannot silently hide late tools such as write-file. This is
@@ -181,7 +195,52 @@ AgentPlanningContext ContextEngine::build(const AgentContextInput& input) const 
              false},
             1100);
 
+    // A compact, deterministic run checkpoint keeps the goal state and prior
+    // failures visible after older observations are compacted. It contains only
+    // tool status metadata and resource names, never raw model prose.
+    if (!input.steps.isEmpty()) {
+        int succeeded = 0;
+        QStringList blockers;
+        for (const auto& step : input.steps) {
+            if (step.succeeded) {
+                ++succeeded;
+                continue;
+            }
+            if (blockers.size() < 4)
+                blockers.append(QStringLiteral("#%1 %2 %3")
+                                    .arg(step.index)
+                                    .arg(step.toolId.left(64), step.statusText.left(64)));
+        }
+        QStringList changed;
+        QSet<QString> seenResources;
+        for (const auto& item : input.evidence) {
+            if (item.scope != EvidenceScope::Operation ||
+                item.outcome != EvidenceOutcome::Verified ||
+                (item.domain != ObservationDomain::FileSystem &&
+                 item.domain != ObservationDomain::Workspace) ||
+                item.resource.isEmpty() || seenResources.contains(item.resource))
+                continue;
+            seenResources.insert(item.resource);
+            if (changed.size() < 8)
+                changed.append(item.resource.left(256));
+        }
+        QStringList summary{QStringLiteral("executed=%1 succeeded=%2 failed=%3")
+                                .arg(input.steps.size())
+                                .arg(succeeded)
+                                .arg(input.steps.size() - succeeded)};
+        if (!blockers.isEmpty())
+            summary.append(QStringLiteral("recent blockers: ") +
+                           blockers.join(QStringLiteral("; ")));
+        if (!changed.isEmpty())
+            summary.append(QStringLiteral("changed resources: ") +
+                           changed.join(QStringLiteral(", ")));
+        add({AgentContextKind::Checkpoint, AgentContextPriority::Critical,
+             QStringLiteral("run-checkpoint"), summary.join(QLatin1Char('\n')), true},
+            900);
+    }
+
     int observationBudget = qMin(remaining / 2, 1700);
+    int observationsKept = 0;
     for (int i = input.steps.size() - 1; i >= 0; --i) {
         const auto& step = input.steps.at(i);
         const auto evidence = std::find_if(
@@ -215,14 +274,18 @@ AgentPlanningContext ContextEngine::build(const AgentContextInput& input) const 
                     .arg(coverage.permissionLimited)
                     .arg(coverage.skippedSymlinks));
         }
-        AgentContextItem item{AgentContextKind::Observation, AgentContextPriority::High,
-                              evidence != input.evidence.crend() ? evidence->toolCallId
-                                                                 : QString::number(step.index),
-                              QStringLiteral("tool=%1 resource=%2 status=%3 result=%4")
-                                  .arg(step.toolId, resource, step.statusText, excerpt),
-                              true};
-        if (add(std::move(item), observationBudget))
+        AgentContextItem item{
+            AgentContextKind::Observation, AgentContextPriority::High,
+            evidence != input.evidence.crend() ? evidence->toolCallId : QString::number(step.index),
+            QStringLiteral("tool=%1 resource=%2 status=%3 result=%4")
+                .arg(step.toolId, resource, step.statusText,
+                     observationsKept >= 3 ? compactObservation(std::move(excerpt), 1200)
+                                           : excerpt),
+            true};
+        if (add(std::move(item), observationBudget)) {
             observationBudget -= cost(result.items.last());
+            ++observationsKept;
+        }
     }
 
     if (!input.workspaceContext.id.isEmpty()) {

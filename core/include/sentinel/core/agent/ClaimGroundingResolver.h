@@ -25,6 +25,10 @@ public:
     static std::optional<QString> filesystemFinalAnswer(const ObservationIntent& intent,
                                                         const QList<EvidenceRecord>& evidence,
                                                         const QString& proposed);
+    // True when the current observations cannot safely support a natural-language
+    // absence or completeness conclusion. Callers must keep the scoped,
+    // evidence-derived representation in that case.
+    static bool canonicalObservationRequired(const QList<EvidenceRecord>& evidence);
     static ClaimResolution resolve(const ObservationRequirement& claim,
                                    const QList<EvidenceRecord>& evidence,
                                    const ClaimAssertion& assertion);
