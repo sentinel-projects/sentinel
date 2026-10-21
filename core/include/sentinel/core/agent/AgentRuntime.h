@@ -17,6 +17,7 @@
 
 #include <QDeadlineTimer>
 #include <QHash>
+#include <QObject>
 #include <QPointer>
 #include <QThread>
 #include <atomic>
@@ -72,6 +73,10 @@ public:
     bool cancel(const QString& sessionId) override;
     AgentLoopState sessionState(const QString& sessionId) const override;
     AgentRuntimeError error(const QString& sessionId) const override;
+    // A pending approval is a paused run, not an unbounded wait. Zero disables
+    // the timeout; the default is five minutes.
+    void setApprovalTimeoutMs(int timeoutMs);
+    int approvalTimeoutMs() const;
 
     void configureSession(const QString& sessionId, AgentSessionOptions options) override;
     bool start(const QString& sessionId, const QString& goal) override;
@@ -122,6 +127,8 @@ private:
     void configureLoop(AgentLoop& loop, const QString& sessionId,
                        const AgentSessionOptions& options, const QString& goal);
     void commitResult(const QString& sessionId, AgentLoopState& result);
+    void scheduleApprovalTimeout(const QString& sessionId, quint64 generation);
+    void expireApproval(const QString& sessionId, quint64 generation);
     void recordDeniedAuthorization(const QString& sessionId);
     bool launch(const QString& sessionId, bool isResume, bool approved, const QString& goal);
     void prepareExecution(const QStringList& toolIds);
@@ -171,6 +178,11 @@ private:
     QHash<QString, AgentLoopState> sessions_;
     QHash<QString, AgentSessionOptions> options_;
     QHash<QString, AgentRuntimeError> errors_;
+    int approvalTimeoutMs_ = 300000;
+    quint64 approvalTimerSequence_ = 0;
+    QHash<QString, quint64> approvalTimerGenerations_;
+    // Timer context: destroying it cancels every outstanding approval callback.
+    QObject approvalTimerContext_;
     QString activeSessionId_;
     std::atomic<bool> cancelRequested_{false};
     std::shared_ptr<std::atomic_bool> modelCancellationToken_ =

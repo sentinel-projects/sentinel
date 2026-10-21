@@ -932,6 +932,66 @@ private slots:
         QCOMPARE(finished.finalAnswer, QStringLiteral("finished"));
     }
 
+    void approvalTimeoutFailsClosedWithoutExecuting() {
+        Planner planner;
+        planner.decision.kind = AgentStepDecision::Kind::ToolCall;
+        planner.decision.toolId = QStringLiteral("run-command");
+        planner.decision.toolName = QStringLiteral("run-command");
+        planner.decision.riskLevel = ToolRiskLevel::High;
+        RecordingExecutor executor;
+        StaticApprovalPolicy approval;
+        StaticSandboxPolicy sandbox;
+        AgentRuntime runtime(std::make_unique<NullAgentRuntime>(NullAgentRuntime::standardTools()),
+                             planner, executor, approval, sandbox);
+        runtime.setApprovalTimeoutMs(150);
+        QCOMPARE(runtime.approvalTimeoutMs(), 150);
+        const QString session = runtime.createSession();
+        AgentSessionOptions options;
+        options.availableToolIds = {QStringLiteral("run-command")};
+        runtime.configureSession(session, std::move(options));
+        QVERIFY(runtime.start(session, QStringLiteral("task")));
+        QTRY_COMPARE_WITH_TIMEOUT(runtime.sessionState(session).phase, AgentLoopPhase::Failed,
+                                  5000);
+        const auto error = runtime.error(session);
+        QCOMPARE(error.code, AgentRuntimeErrorCode::ApprovalDenied);
+        QVERIFY(error.retryable);
+        QVERIFY(error.message.contains(QStringLiteral("timed out"), Qt::CaseInsensitive));
+        QCOMPARE(executor.calls, 0);
+        QVERIFY(runtime.sessionState(session).pendingApprovalPlan.invocations.isEmpty());
+        // A timed-out approval is not a grant; resuming it must not dispatch.
+        QVERIFY(!runtime.continueSession(session, true));
+        QCOMPARE(executor.calls, 0);
+    }
+
+    void approvalBeforeTimeoutInvalidatesTimer() {
+        Planner planner;
+        planner.decision.kind = AgentStepDecision::Kind::ToolCall;
+        planner.decision.toolId = QStringLiteral("run-command");
+        planner.decision.toolName = QStringLiteral("run-command");
+        planner.decision.riskLevel = ToolRiskLevel::High;
+        RecordingExecutor executor;
+        StaticApprovalPolicy approval;
+        StaticSandboxPolicy sandbox;
+        AgentRuntime runtime(std::make_unique<NullAgentRuntime>(NullAgentRuntime::standardTools()),
+                             planner, executor, approval, sandbox);
+        runtime.setApprovalTimeoutMs(200);
+        const QString session = runtime.createSession();
+        AgentSessionOptions options;
+        options.availableToolIds = {QStringLiteral("run-command")};
+        runtime.configureSession(session, std::move(options));
+        QVERIFY(runtime.start(session, QStringLiteral("task")));
+        QTRY_COMPARE_WITH_TIMEOUT(runtime.sessionState(session).phase,
+                                  AgentLoopPhase::AwaitingApproval, 5000);
+        QVERIFY(runtime.approve(session, false));
+        QVERIFY(runtime.continueSession(session, true));
+        QTRY_COMPARE_WITH_TIMEOUT(runtime.sessionState(session).phase, AgentLoopPhase::Completed,
+                                  5000);
+        QCOMPARE(executor.calls, 1);
+        QTest::qWait(350);
+        QCOMPARE(runtime.sessionState(session).phase, AgentLoopPhase::Completed);
+        QCOMPARE(runtime.error(session).code, AgentRuntimeErrorCode::None);
+    }
+
     void propagatesPlannerFailure() {
         Planner planner;
         planner.decision.kind = AgentStepDecision::Kind::GiveUp;
