@@ -967,6 +967,14 @@ void AgentLoop::executeStepAsync(const ToolInvocationPlan& originalPlan, const Q
     const auto sandbox = sandboxPolicy_.evaluate(plan, approval);
     if (toolCallback_)
         toolCallback_(ToolTransition::ExecutionStarted, index, plan, nullptr);
+    if (persistenceCheck_ && !persistenceCheck_()) {
+        asyncState_.phase = AgentLoopPhase::Failed;
+        asyncState_.terminalReason = AgentTerminalReason::UnableToComplete;
+        asyncState_.abortReason =
+            QStringLiteral("Agent audit persistence failed; tool dispatch refused.");
+        completeAsync();
+        return;
+    }
     waitingForTool_ = true;
     ToolInvocationPlan cancellablePlan = plan;
     for (auto& invocation : cancellablePlan.invocations)
@@ -1070,6 +1078,7 @@ void AgentLoop::executeBatchAsync(const ToolInvocationPlan& plan, const QString&
     waitingForTool_ = true;
     scheduler_ = std::make_shared<AgentExecutionScheduler>(
         gateway_, executor_, config_.maxParallelTools, config_.executionBudget);
+    scheduler_->setPersistenceCheck(persistenceCheck_);
     scheduler_->start(
         std::move(requests), asyncState_.sessionId, std::move(callIds),
         [this, plan, firstIndex](int i) {
@@ -1434,6 +1443,13 @@ void AgentLoop::executeStep(AgentLoopState& state, const ToolInvocationPlan& ori
         toolCallback_(ToolTransition::ExecutionStarted, stepIndex, plan, nullptr);
     }
 
+    if (persistenceCheck_ && !persistenceCheck_()) {
+        state.phase = AgentLoopPhase::Failed;
+        state.terminalReason = AgentTerminalReason::UnableToComplete;
+        state.abortReason =
+            QStringLiteral("Agent audit persistence failed; tool dispatch refused.");
+        return;
+    }
     const auto result = gateway_.execute(
         ToolExecutionRequest{
             plan,

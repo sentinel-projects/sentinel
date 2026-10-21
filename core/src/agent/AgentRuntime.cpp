@@ -92,12 +92,19 @@ AgentRuntime::AgentRuntime(std::unique_ptr<IAgentRuntime> metadata, IAgentStepPl
                            IToolExecutor& executor, const IApprovalPolicy& approval,
                            const ISandboxPolicy& sandbox, const IMemoryStore* memoryStore,
                            const IChatHistoryStore* chatHistoryStore, IAgentRunStore* runStore,
-                           std::shared_ptr<IPermissionGrantStore> permissionGrantStore)
+                           std::shared_ptr<IPermissionGrantStore> permissionGrantStore,
+                           std::shared_ptr<StorageAdmission> admission)
     : metadata_(std::move(metadata)),
       extensionService_(nullptr, &pluginManager_, &skillService_, &toolRegistry_),
-      permissionService_(std::move(permissionGrantStore)), planner_(planner), executor_(executor),
+      permissionService_(permissionGrantStore), planner_(planner), executor_(executor),
       approval_(approval), sandbox_(sandbox), memoryStore_(memoryStore),
       chatHistoryStore_(chatHistoryStore), runStore_(runStore) {
+    admission_ = std::move(admission);
+    generation_ = admission_ ? admission_->snapshot().generation : 0;
+    coordinatedStores_ =
+        !admission_ || (runStore_ && runStore_->coordinatedBy(admission_) && permissionGrantStore &&
+                        permissionGrantStore->coordinatedBy(admission_) && chatHistoryStore_ &&
+                        chatHistoryStore_->coordinatedBy(admission_));
     externalDirectoryGate_.setAuthorizationCheck(
         [this](const QString& path, bool write, const QString& sessionId) {
             const QList<AccessMode> modes =
@@ -372,13 +379,42 @@ void AgentRuntime::publish(const QString& sessionId, AgentEventType type, AgentE
             next = pendingEvents_.takeFirst();
             listeners = subscribers_.values();
         }
-        if (runStore_) {
+        const auto* projectedRun = std::get_if<AgentRunEvent>(&next.payload);
+        const bool terminalProjection = next.type == AgentEventType::RuntimeStateChanged &&
+                                        projectedRun &&
+                                        projectedRun->phase != AgentLoopPhase::AwaitingApproval;
+        // finishTurn already committed this complete snapshot before terminal delivery.
+        // Its trailing UI projection must not become a new writer after that commit.
+        if (runStore_ && !terminalProjection) {
             if (!runStore_->record(next)) {
+                persistenceFailed_ = true;
                 if (!persistenceWarningEmitted_.exchange(true))
                     qWarning("Agent execution history persistence is unavailable.");
             } else {
                 persistenceWarningEmitted_ = false;
             }
+        }
+        if (persistenceFailed_ && next.type == AgentEventType::AgentCompleted) {
+            next.type = AgentEventType::AgentFailed;
+            next.payload = AgentTextEvent{QStringLiteral(
+                "Agent terminal audit persistence failed; completion is unverified.")};
+        }
+        if (persistenceFailed_) {
+            if (auto* run = std::get_if<AgentRunEvent>(&next.payload);
+                run && run->phase == AgentLoopPhase::Completed) {
+                run->phase = AgentLoopPhase::Failed;
+                run->terminalReason = AgentTerminalReason::UnableToComplete;
+                run->finalAnswer.clear();
+                run->abortReason = QStringLiteral(
+                    "Agent audit persistence failed; completed side effects may exist.");
+            }
+            std::lock_guard lock(eventMutex_);
+            auto& events = history_[next.sessionId];
+            for (auto& prior : events)
+                if (prior.id == next.id) {
+                    prior = next;
+                    break;
+                }
         }
         for (const auto& listener : listeners) {
             {
@@ -436,13 +472,6 @@ void AgentRuntime::finishTurn(const QString& sessionId, const AgentLoopState& st
         publish(sessionId, AgentEventType::RuntimeStateChanged, run);
         return;
     }
-    AgentEventType type;
-    if (state.phase == AgentLoopPhase::Completed)
-        type = AgentEventType::AgentCompleted;
-    else if (state.phase == AgentLoopPhase::Cancelled)
-        type = AgentEventType::AgentCancelled;
-    else
-        type = AgentEventType::AgentFailed;
     {
         std::lock_guard lock(eventMutex_);
         auto& turn = turns_[sessionId];
@@ -450,9 +479,41 @@ void AgentRuntime::finishTurn(const QString& sessionId, const AgentLoopState& st
             return;
         turn.terminal = true;
     }
-    publish(sessionId, type,
-            AgentTextEvent{state.phase == AgentLoopPhase::Completed ? state.finalAnswer
-                                                                    : state.abortReason});
+    // Persist the complete evidence projection before delivering terminal success, without
+    // publishing a second Completed state to consumers that append the accepted answer.
+    if (runStore_) {
+        AgentEvent snapshot;
+        snapshot.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        snapshot.sessionId = sessionId;
+        snapshot.type = AgentEventType::RuntimeStateChanged;
+        snapshot.timestamp = QDateTime::currentDateTimeUtc();
+        snapshot.payload = run;
+        {
+            std::lock_guard lock(eventMutex_);
+            snapshot.turnId = turns_.value(sessionId).id;
+        }
+        if (!runStore_->record(snapshot)) {
+            persistenceFailed_ = true;
+        }
+    }
+    if (persistenceFailed_) {
+        run.phase = AgentLoopPhase::Failed;
+        run.terminalReason = AgentTerminalReason::UnableToComplete;
+        run.finalAnswer.clear();
+        run.abortReason = QStringLiteral("Agent audit persistence failed; completed side effects "
+                                         "may exist. No actions were replayed.");
+    }
+    AgentEventType type;
+    if (run.phase == AgentLoopPhase::Completed)
+        type = AgentEventType::AgentCompleted;
+    else if (run.phase == AgentLoopPhase::Cancelled)
+        type = AgentEventType::AgentCancelled;
+    else
+        type = AgentEventType::AgentFailed;
+    publish(
+        sessionId, type,
+        AgentTextEvent{run.phase == AgentLoopPhase::Completed ? run.finalAnswer : run.abortReason});
+    // Preserve the public terminal-then-state event order after the evidence preflight.
     publish(sessionId, AgentEventType::RuntimeStateChanged, run);
 }
 
@@ -596,6 +657,8 @@ bool AgentRuntime::cancel(const QString& sessionId) {
         }
         permissionService_.clearSessionGrants(sessionId);
         finishTurn(sessionId, finalState);
+        std::lock_guard lock(mutex_);
+        operationLeases_.remove(sessionId);
     }
     return true;
 }
@@ -656,6 +719,28 @@ bool AgentRuntime::launch(const QString& sessionId, bool isResume, bool approved
                                   QStringLiteral("Agent session is in the wrong state."), false};
             return false;
         }
+        if (admission_) {
+            if (!coordinatedStores_) {
+                errors_[sessionId] = {
+                    AgentRuntimeErrorCode::ExecutionFailed,
+                    QStringLiteral("Agent storage owner does not support shared admission."),
+                    false};
+                return false;
+            }
+            if (!isResume) {
+                auto lease =
+                    std::make_shared<StorageAdmission::Writer>(admission_->admit(generation_));
+                if (!*lease) {
+                    errors_[sessionId] = {AgentRuntimeErrorCode::ExecutionFailed,
+                                          QStringLiteral("Agent storage admission refused."),
+                                          false};
+                    return false;
+                }
+                operationLeases_[sessionId] = std::move(lease);
+            } else if (!operationLeases_.contains(sessionId)) {
+                return false;
+            }
+        }
         activeSessionId_ = sessionId;
         runType = options_.value(sessionId).runType;
         runOptions = options_.value(sessionId);
@@ -675,6 +760,7 @@ bool AgentRuntime::launch(const QString& sessionId, bool isResume, bool approved
         worker_ = nullptr;
     }
     if (!isResume) {
+        persistenceFailed_ = false;
         beginTurn(sessionId);
     }
     if (isResume) {
@@ -698,6 +784,17 @@ bool AgentRuntime::launch(const QString& sessionId, bool isResume, bool approved
     }
     publish(sessionId, AgentEventType::RuntimeStateChanged,
             AgentStateEvent{AgentLoopPhase::Running});
+    if (persistenceFailed_) {
+        std::lock_guard lock(mutex_);
+        auto& state = sessions_[sessionId];
+        state.phase = AgentLoopPhase::Failed;
+        state.abortReason =
+            QStringLiteral("Agent audit persistence failed; execution was not started.");
+        errors_[sessionId] = {AgentRuntimeErrorCode::ExecutionFailed, state.abortReason, false};
+        activeSessionId_.clear();
+        operationLeases_.remove(sessionId);
+        return false;
+    }
     worker_ = new QThread;
     auto* context = new QObject;
     context->moveToThread(worker_);
@@ -785,6 +882,7 @@ bool AgentRuntime::drainShutdown(QDeadlineTimer deadline) {
         unsubscribe(id);
     {
         std::lock_guard lock(mutex_);
+        operationLeases_.clear();
         shutdownComplete_ = true;
     }
     return true;
@@ -934,7 +1032,9 @@ void AgentRuntime::prepareExecution(const QStringList& availableToolIds) {
             permissionState = toolPermissionState_;
         }
         loop.setPermissionPolicy(&toolPermissionPolicy_, permissionState);
-        loop.setCancelQuery([this] { return cancelRequested_.load(); });
+        loop.setPersistenceCheck([this] { return !persistenceFailed_.load(); });
+        loop.setCancelQuery(
+            [this] { return cancelRequested_.load() || persistenceFailed_.load(); });
         loop.setCancellationToken(modelCancellationToken_);
         const auto subagentSessionId =
             QStringLiteral("subagent-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
@@ -1063,7 +1163,8 @@ void AgentRuntime::configureLoop(AgentLoop& loop, const QString& sessionId,
         }
         loop.setObservationContext(recent.join(QLatin1Char('\n')));
     }
-    loop.setCancelQuery([this] { return cancelRequested_.load(); });
+    loop.setPersistenceCheck([this] { return !persistenceFailed_.load(); });
+    loop.setCancelQuery([this] { return cancelRequested_.load() || persistenceFailed_.load(); });
     loop.setCancellationToken(modelCancellationToken_);
     loop.setStepCallback([this, sessionId, callback = options.onStep](const AgentStepRecord& step) {
         publish(sessionId, AgentEventType::AgentStepCompleted, AgentStepEvent{step}, step.index,
@@ -1176,6 +1277,14 @@ void AgentRuntime::commitResult(const QString& sessionId, AgentLoopState& result
             result.terminalReason = AgentTerminalReason::Cancelled;
             result.abortReason = QStringLiteral("Agent run cancelled by user.");
         }
+        if (persistenceFailed_) {
+            result.phase = AgentLoopPhase::Failed;
+            result.terminalReason = AgentTerminalReason::UnableToComplete;
+            result.finalAnswer.clear();
+            result.abortReason =
+                QStringLiteral("Agent audit persistence failed; completed tool side effects may "
+                               "exist. No actions were replayed.");
+        }
         result.terminalReason = terminalReasonFor(result);
         sessions_[sessionId] = result;
         const auto code = errorCodeFor(result);
@@ -1188,6 +1297,20 @@ void AgentRuntime::commitResult(const QString& sessionId, AgentLoopState& result
     if (result.phase != AgentLoopPhase::AwaitingApproval)
         permissionService_.clearSessionGrants(sessionId);
     finishTurn(sessionId, result);
+    if (result.phase != AgentLoopPhase::AwaitingApproval) {
+        std::lock_guard lock(mutex_);
+        operationLeases_.remove(sessionId);
+    }
+    if (persistenceFailed_) {
+        std::lock_guard lock(mutex_);
+        result.phase = AgentLoopPhase::Failed;
+        result.terminalReason = AgentTerminalReason::UnableToComplete;
+        result.finalAnswer.clear();
+        result.abortReason = QStringLiteral("Agent audit persistence failed; completed tool side "
+                                            "effects may exist. No actions were replayed.");
+        sessions_[sessionId] = result;
+        errors_[sessionId] = {AgentRuntimeErrorCode::ExecutionFailed, result.abortReason, false};
+    }
 }
 
 void AgentRuntime::advanceAsync(const QString& sessionId, bool isResume, bool approved,
@@ -1285,6 +1408,20 @@ AgentLoopState AgentRuntime::advance(const QString& sessionId, bool isResume, bo
             errors_[sessionId] = {AgentRuntimeErrorCode::InvalidState, seed.abortReason, false};
             return seed;
         }
+        if (admission_ && !prepared) {
+            auto lease = std::make_shared<StorageAdmission::Writer>(admission_->admit(generation_));
+            if (!coordinatedStores_ || !*lease) {
+                seed.phase = AgentLoopPhase::Failed;
+                seed.abortReason = QStringLiteral("Agent storage admission refused.");
+                errors_[sessionId] = {AgentRuntimeErrorCode::ExecutionFailed, seed.abortReason,
+                                      false};
+                return seed;
+            }
+            if (!isResume)
+                operationLeases_[sessionId] = std::move(lease);
+            else if (!operationLeases_.contains(sessionId))
+                return seed;
+        }
         if (!prepared) {
             activeSessionId_ = sessionId;
             cancelRequested_ = false;
@@ -1303,6 +1440,7 @@ AgentLoopState AgentRuntime::advance(const QString& sessionId, bool isResume, bo
 
     if (!prepared) {
         if (!isResume) {
+            persistenceFailed_ = false;
             beginTurn(sessionId);
         }
         if (isResume) {
@@ -1327,6 +1465,13 @@ AgentLoopState AgentRuntime::advance(const QString& sessionId, bool isResume, bo
                 AgentStateEvent{AgentLoopPhase::Running});
     }
 
+    if (persistenceFailed_) {
+        seed.phase = AgentLoopPhase::Failed;
+        seed.abortReason =
+            QStringLiteral("Agent audit persistence failed; execution was not started.");
+        commitResult(sessionId, seed);
+        return seed;
+    }
     const auto availableToolIds =
         (options.restrictAvailableTools || !options.availableToolIds.isEmpty())
             ? options.availableToolIds
@@ -1352,25 +1497,7 @@ AgentLoopState AgentRuntime::advance(const QString& sessionId, bool isResume, bo
         result.phase = AgentLoopPhase::Failed;
         result.abortReason = QStringLiteral("Agent execution failed.");
     }
-    {
-        std::unique_lock lock(mutex_);
-        cancellationPublished_.wait(lock, [this] { return !cancellationEventPending_; });
-        if (cancelRequested_ && result.phase != AgentLoopPhase::Completed) {
-            result.phase = AgentLoopPhase::Cancelled;
-            result.terminalReason = AgentTerminalReason::Cancelled;
-            result.abortReason = QStringLiteral("Agent run cancelled by user.");
-        }
-        result.terminalReason = terminalReasonFor(result);
-        sessions_[sessionId] = result;
-        const auto code = errorCodeFor(result);
-        if (code != AgentRuntimeErrorCode::None) {
-            errors_[sessionId] = {code, result.abortReason, false};
-        }
-        activeSessionId_.clear();
-    }
-    if (result.phase != AgentLoopPhase::AwaitingApproval)
-        permissionService_.clearSessionGrants(sessionId);
-    finishTurn(sessionId, result);
+    commitResult(sessionId, result);
     return result;
 }
 

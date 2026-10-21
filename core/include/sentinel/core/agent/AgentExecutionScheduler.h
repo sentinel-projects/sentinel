@@ -25,6 +25,9 @@ public:
     void start(QList<ToolExecutionRequest> calls, QString sessionId, QStringList callIds,
                Started started, Output output, Completion completion);
     void cancel();
+    void setPersistenceCheck(std::function<bool()> check) {
+        persistenceCheck_ = std::move(check);
+    }
 
 private:
     bool canStart(int index) const;
@@ -44,6 +47,7 @@ private:
     QList<IToolExecutor::Cancel> cancels_;
     Output output_;
     Started onStarted_;
+    std::function<bool()> persistenceCheck_;
     Completion completion_;
     int active_ = 0;
     SharedBudget budget_;
