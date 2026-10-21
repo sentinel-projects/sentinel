@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Sopwit <sopwith.osdev@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "sentinel/core/app/StorageAdmission.h"
 
 #include "sentinel/core/agent/AgentEvent.h"
 
@@ -103,6 +104,9 @@ struct StoredAgentAuthorization {
 class IAgentRunStore {
 public:
     virtual ~IAgentRunStore() = default;
+    virtual bool coordinatedBy(const std::shared_ptr<StorageAdmission>&) const {
+        return false;
+    }
     virtual bool clearHistory() { return false; }
     virtual int pruneCompletedBefore(const QDateTime& cutoffUtc, int limit = 100) {
         Q_UNUSED(cutoffUtc)

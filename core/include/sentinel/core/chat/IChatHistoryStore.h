@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #pragma once
+#include "sentinel/core/app/StorageAdmission.h"
 
 #include "sentinel/core/chat/ChatMessage.h"
 
@@ -14,6 +15,9 @@ namespace sentinel::core {
 class IChatHistoryStore {
 public:
     virtual ~IChatHistoryStore() = default;
+    virtual bool coordinatedBy(const std::shared_ptr<StorageAdmission>&) const {
+        return false;
+    }
 
     virtual QList<ChatMessage> loadMessages() const = 0;
     virtual QList<ChatMessage> recentMessages(int limit) const {

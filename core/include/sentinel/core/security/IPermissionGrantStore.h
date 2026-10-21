@@ -1,4 +1,5 @@
 #pragma once
+#include "sentinel/core/app/StorageAdmission.h"
 
 #include "sentinel/core/runtime/ToolDescriptor.h"
 
@@ -21,6 +22,9 @@ struct PersistentPermissionGrant {
 class IPermissionGrantStore {
 public:
     virtual ~IPermissionGrantStore() = default;
+    virtual bool coordinatedBy(const std::shared_ptr<StorageAdmission>&) const {
+        return false;
+    }
     virtual bool load(QList<PersistentPermissionGrant>& grants) = 0;
     virtual bool save(const QList<PersistentPermissionGrant>& grants) = 0;
     virtual bool remove(const QString& id) = 0;

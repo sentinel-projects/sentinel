@@ -25,9 +25,12 @@ namespace {
 struct Connection {
     QString name = QStringLiteral("sentinel_run_%1").arg(QUuid::createUuid().toString(QUuid::Id128));
     QSqlDatabase db;
-    explicit Connection(const QString& path) {
+    explicit Connection(const QString& path, bool readOnly = false) {
         db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name);
         db.setDatabaseName(path);
+        if (readOnly) {
+            db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
+        }
         if (db.open()) {
             QSqlQuery pragma(db);
             pragma.exec(QStringLiteral("PRAGMA foreign_keys=ON"));
@@ -134,9 +137,29 @@ bool ensureColumn(QSqlDatabase& db, const QString& table, const QString& column,
 
 } // namespace
 
-SQLiteAgentRunStore::SQLiteAgentRunStore(QString databasePath)
-    : databasePath_(std::move(databasePath)) {
+SQLiteAgentRunStore::SQLiteAgentRunStore(QString databasePath,
+                                         std::shared_ptr<StorageAdmission> admission,
+                                         std::uint64_t generation)
+    : admission_(std::move(admission)), generation_(generation   ? generation
+                                                    : admission_ ? admission_->snapshot().generation
+                                                                 : 0),
+      databasePath_(std::move(databasePath)) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return;
+    }
     ready_ = initialize();
+}
+
+StorageAdmission::Writer SQLiteAgentRunStore::admitWrite() {
+    if (!admission_) {
+        return {};
+    }
+    auto writer = admission_->admit(generation_);
+    if (!writer) {
+        lastError_ = QStringLiteral("Storage admission refused (busy, stale or shutdown).");
+    }
+    return writer;
 }
 
 bool SQLiteAgentRunStore::initialize() {
@@ -307,6 +330,10 @@ bool SQLiteAgentRunStore::initialize() {
 
 bool SQLiteAgentRunStore::clearHistory() {
     std::lock_guard lock(mutex_);
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return false;
+    }
     if (!ready_) return false;
     Connection connection(databasePath_);
     if (!connection.db.isOpen() || !connection.db.transaction()) {
@@ -314,6 +341,15 @@ bool SQLiteAgentRunStore::clearHistory() {
         return false;
     }
     QSqlQuery query(connection.db);
+    if (!query.exec(QStringLiteral("SELECT 1 FROM agent_runs WHERE finished_at IS NULL LIMIT 1")) ||
+        query.next()) {
+        lastError_ = QStringLiteral(
+            "Agent history clear refused while execution evidence is active or unavailable.");
+        query.finish();
+        connection.db.rollback();
+        return false;
+    }
+    query.finish();
     if (!query.exec(QStringLiteral("DELETE FROM agent_runs")) || !connection.db.commit()) {
         lastError_ = query.lastError().isValid() ? query.lastError().text()
                                                 : connection.db.lastError().text();
@@ -326,6 +362,10 @@ bool SQLiteAgentRunStore::clearHistory() {
 
 int SQLiteAgentRunStore::pruneCompletedBefore(const QDateTime& cutoffUtc, int limit) {
     std::lock_guard lock(mutex_);
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return -1;
+    }
     if (!ready_ || !cutoffUtc.isValid() || limit < 1 || limit > 100) return -1;
     Connection connection(databasePath_);
     if (!connection.db.isOpen() || !connection.db.transaction()) return -1;
@@ -353,6 +393,10 @@ int SQLiteAgentRunStore::pruneCompletedBefore(const QDateTime& cutoffUtc, int li
 
 bool SQLiteAgentRunStore::record(const AgentEvent& event) {
     std::lock_guard lock(mutex_);
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return false;
+    }
     if (event.turnId.isEmpty())
         return true;
     if (!ready_)
@@ -387,6 +431,43 @@ bool SQLiteAgentRunStore::record(const AgentEvent& event) {
         lastError_ = db.lastError().text();
         return false;
     }
+    if (event.type != AgentEventType::RunStarted) {
+        QSqlQuery existing(db);
+        existing.prepare(QStringLiteral("SELECT 1 FROM agent_runs WHERE run_id=?"));
+        existing.addBindValue(event.turnId);
+        if (!existing.exec() || !existing.next()) {
+            lastError_ = QStringLiteral("Agent evidence refused: owning run is missing.");
+            existing.finish();
+            db.rollback();
+            return false;
+        }
+    }
+    // Event IDs are runtime-owned; reject accidental cross-session/run redirection before mutation.
+    auto owns = [&](const QString& sql, const QString& id, const QString& expected) {
+        if (id.isEmpty())
+            return true;
+        QSqlQuery owner(db);
+        owner.prepare(sql);
+        owner.addBindValue(id);
+        if (!owner.exec()) {
+            lastError_ = owner.lastError().text();
+            return false;
+        }
+        if (owner.next() && owner.value(0).toString() != expected) {
+            lastError_ = QStringLiteral("Agent evidence ownership mismatch.");
+            return false;
+        }
+        return true;
+    };
+    if (!owns(QStringLiteral("SELECT session_id FROM agent_runs WHERE run_id=?"), event.turnId,
+              event.sessionId) ||
+        !owns(QStringLiteral("SELECT run_id FROM agent_steps WHERE step_id=?"), event.stepId,
+              event.turnId) ||
+        !owns(QStringLiteral("SELECT step_id FROM agent_tool_calls WHERE tool_call_id=?"),
+              event.toolCallId, event.stepId)) {
+        db.rollback();
+        return false;
+    }
     const QString at = timeText(event.timestamp);
     bool ok = true;
     auto exec = [&](const QString& sql, const QVariantList& values) {
@@ -410,8 +491,10 @@ bool SQLiteAgentRunStore::record(const AgentEvent& event) {
               start ? start->presetId.left(120) : QString{},
               start ? start->profileVersion.left(32) : QString{}});
         exec(QStringLiteral("DELETE FROM agent_runs WHERE run_id IN ("
-                            "SELECT run_id FROM agent_runs ORDER BY started_at DESC,run_id DESC "
-                            "LIMIT -1 OFFSET 500)"), {});
+                            "SELECT run_id FROM agent_runs WHERE finished_at IS NOT NULL ORDER BY "
+                            "started_at DESC,run_id DESC "
+                            "LIMIT -1 OFFSET 500)"),
+             {});
     } else if (event.type == AgentEventType::ModelRequestStarted) {
         exec(QStringLiteral("UPDATE agent_runs SET provider_id=?,model_id=? WHERE run_id=?"),
              {event.providerId, event.modelId, event.turnId});
@@ -660,7 +743,7 @@ QList<StoredAgentRun> SQLiteAgentRunStore::recentRuns(int limit) const {
     std::lock_guard lock(mutex_);
     QList<StoredAgentRun> result;
     if (!ready_ || limit <= 0) return result;
-    Connection connection(databasePath_);
+    Connection connection(databasePath_, true);
     QSqlQuery query(connection.db);
     query.prepare(QStringLiteral("SELECT %1 FROM agent_runs ORDER BY started_at DESC,run_id DESC LIMIT ?")
                       .arg(runColumns));
@@ -675,7 +758,7 @@ QList<StoredAgentRun> SQLiteAgentRunStore::runsBefore(const QDateTime& startedAt
     std::lock_guard lock(mutex_);
     QList<StoredAgentRun> result;
     if (!ready_ || limit <= 0 || !startedAt.isValid() || runId.isEmpty()) return result;
-    Connection connection(databasePath_);
+    Connection connection(databasePath_, true);
     QSqlQuery query(connection.db);
     query.prepare(QStringLiteral("SELECT %1 FROM agent_runs WHERE started_at < ? "
                                  "OR (started_at = ? AND run_id < ?) "
@@ -693,7 +776,7 @@ QList<StoredAgentRun> SQLiteAgentRunStore::runsBefore(const QDateTime& startedAt
 StoredAgentRun SQLiteAgentRunStore::runById(const QString& runId) const {
     std::lock_guard lock(mutex_);
     if (!ready_) return {};
-    Connection connection(databasePath_);
+    Connection connection(databasePath_, true);
     QSqlQuery query(connection.db);
     query.prepare(QStringLiteral("SELECT %1 FROM agent_runs WHERE run_id=?").arg(runColumns));
     query.addBindValue(runId);
@@ -706,7 +789,7 @@ QList<StoredAgentRun> SQLiteAgentRunStore::childRuns(const QString& parentRunId,
     std::lock_guard lock(mutex_);
     QList<StoredAgentRun> result;
     if (!ready_ || parentRunId.isEmpty() || limit <= 0) return result;
-    Connection connection(databasePath_);
+    Connection connection(databasePath_, true);
     QSqlQuery query(connection.db);
     query.prepare(QStringLiteral("SELECT %1 FROM agent_runs WHERE parent_run_id=? "
                                  "ORDER BY started_at DESC,run_id DESC LIMIT ?").arg(runColumns));
@@ -721,7 +804,7 @@ QList<StoredAgentStep> SQLiteAgentRunStore::stepsForRun(const QString& runId, in
     std::lock_guard lock(mutex_);
     QList<StoredAgentStep> result;
     if (!ready_ || limit <= 0) return result;
-    Connection connection(databasePath_);
+    Connection connection(databasePath_, true);
     QSqlQuery query(connection.db);
     query.prepare(QStringLiteral("SELECT step_id,run_id,sequence,status,tool_call_id,started_at,"
                                  "finished_at,observation_kind,filesystem_failure,step_type "
@@ -742,7 +825,7 @@ QList<StoredAgentToolCall> SQLiteAgentRunStore::toolCallsForRun(const QString& r
     std::lock_guard lock(mutex_);
     QList<StoredAgentToolCall> result;
     if (!ready_ || limit <= 0) return result;
-    Connection connection(databasePath_);
+    Connection connection(databasePath_, true);
     QSqlQuery query(connection.db);
     query.prepare(QStringLiteral("SELECT t.tool_call_id,t.step_id,t.tool_id,t.source,t.status,"
                                  "t.resource_summary,t.observation_summary,t.started_at,t.finished_at,"
@@ -767,7 +850,7 @@ QList<StoredAgentEvidence> SQLiteAgentRunStore::evidenceForRun(const QString& ru
     std::lock_guard lock(mutex_);
     QList<StoredAgentEvidence> result;
     if (!ready_ || limit <= 0) return result;
-    Connection connection(databasePath_);
+    Connection connection(databasePath_, true);
     QSqlQuery query(connection.db);
     query.prepare(QStringLiteral("SELECT tool_call_id,domain,resource_summary,outcome,freshness "
                                  "FROM agent_evidence WHERE run_id=? ORDER BY rowid ASC LIMIT ?"));
@@ -785,7 +868,7 @@ QList<StoredAgentClaim> SQLiteAgentRunStore::claimsForRun(const QString& runId,
     std::lock_guard lock(mutex_);
     QList<StoredAgentClaim> result;
     if (!ready_ || limit <= 0) return result;
-    Connection connection(databasePath_);
+    Connection connection(databasePath_, true);
     QSqlQuery query(connection.db);
     query.prepare(QStringLiteral("SELECT claim_id,assertion_value,verdict,resource_summary,"
                                  "supporting_tool_calls,claim_type FROM agent_claims WHERE run_id=? "
@@ -809,7 +892,7 @@ QList<StoredAgentAuthorization> SQLiteAgentRunStore::authorizationsForRun(
     std::lock_guard lock(mutex_);
     QList<StoredAgentAuthorization> result;
     if (!ready_ || limit <= 0) return result;
-    Connection connection(databasePath_);
+    Connection connection(databasePath_, true);
     QSqlQuery query(connection.db);
     query.prepare(QStringLiteral("SELECT a.tool_call_id,a.domain,a.access,a.resource_summary,"
                                  "a.decision,a.scope FROM agent_authorizations a "

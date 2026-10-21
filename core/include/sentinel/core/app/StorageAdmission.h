@@ -53,7 +53,7 @@ public:
     Snapshot snapshot() const;
     Writer admit(std::uint64_t generation);
     // Caller must not hold a writer, SQL transaction, callback mutex or application event loop.
-    // Only the local enrolled memory/conversation owner set is covered; all-domain preparation is
+    // Only explicitly enrolled local owners/lifetimes are covered; all-domain preparation is
     // unsupported.
     Result prepareLocal(std::chrono::milliseconds timeout);
     Result prepareApplication() const {

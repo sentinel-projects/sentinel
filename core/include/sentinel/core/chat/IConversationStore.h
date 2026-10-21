@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #pragma once
+#include "sentinel/core/app/StorageAdmission.h"
 
 #include "sentinel/core/chat/ChatMessage.h"
 
@@ -99,6 +100,9 @@ public:
     Q_DISABLE_COPY(IConversationStore)
     IConversationStore() = default;
     virtual ~IConversationStore() = default;
+    virtual bool coordinatedBy(const std::shared_ptr<StorageAdmission>&) const {
+        return false;
+    }
 
     virtual ConversationRecord createConversation(const QString& title) = 0;
     virtual QList<ConversationRecord> listConversations() const = 0;

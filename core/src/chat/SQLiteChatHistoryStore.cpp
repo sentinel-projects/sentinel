@@ -84,12 +84,32 @@ bool tableHasColumn(const QSqlDatabase& database, const QString& table, const QS
 
 } // namespace
 
-SQLiteChatHistoryStore::SQLiteChatHistoryStore(QString databasePath)
-    : databasePath_(std::move(databasePath)),
+SQLiteChatHistoryStore::SQLiteChatHistoryStore(QString databasePath,
+                                               std::shared_ptr<StorageAdmission> admission,
+                                               std::uint64_t generation)
+    : admission_(std::move(admission)), generation_(generation   ? generation
+                                                    : admission_ ? admission_->snapshot().generation
+                                                                 : 0),
+      databasePath_(std::move(databasePath)),
       connectionName_(
           QStringLiteral("sentinel_chat_%1").arg(QUuid::createUuid().toString(QUuid::Id128))) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return;
+    }
     open();
     initializeSchema();
+}
+
+StorageAdmission::Writer SQLiteChatHistoryStore::admitWrite() {
+    if (!admission_) {
+        return {};
+    }
+    auto writer = admission_->admit(generation_);
+    if (!writer) {
+        lastError_ = QStringLiteral("Storage admission refused (busy, stale or shutdown).");
+    }
+    return writer;
 }
 
 SQLiteChatHistoryStore::~SQLiteChatHistoryStore() {
@@ -212,6 +232,10 @@ QList<ChatMessage> SQLiteChatHistoryStore::searchMessages(const QString& text, i
 }
 
 void SQLiteChatHistoryStore::appendMessage(const ChatMessage& message) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return;
+    }
     if (!database_.isOpen()) {
         setLastError(QStringLiteral("SQLite chat history database is not open."));
         return;
@@ -257,6 +281,10 @@ void SQLiteChatHistoryStore::appendMessage(const ChatMessage& message) {
 }
 
 void SQLiteChatHistoryStore::clear() {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return;
+    }
     if (!database_.isOpen()) {
         setLastError(QStringLiteral("SQLite chat history database is not open."));
         return;
@@ -271,6 +299,10 @@ void SQLiteChatHistoryStore::clear() {
 }
 
 int SQLiteChatHistoryStore::pruneCompletedBefore(const QDateTime& cutoffUtc, int limit) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return -1;
+    }
     if (!database_.isOpen() || !cutoffUtc.isValid() || limit < 1 || limit > 500 ||
         !database_.transaction()) {
         setLastError(QStringLiteral("Chat retention unavailable."));

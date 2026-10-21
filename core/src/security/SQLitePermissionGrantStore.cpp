@@ -14,9 +14,12 @@ namespace {
 struct Connection {
     QString name = QStringLiteral("sentinel_permission_%1").arg(QUuid::createUuid().toString(QUuid::Id128));
     QSqlDatabase db;
-    explicit Connection(const QString& path) {
+    explicit Connection(const QString& path, bool readOnly = false) {
         db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name);
         db.setDatabaseName(path);
+        if (readOnly) {
+            db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
+        }
         if (db.open()) {
             QSqlQuery query(db);
             query.exec(QStringLiteral("PRAGMA busy_timeout=5000"));
@@ -29,9 +32,29 @@ struct Connection {
 };
 } // namespace
 
-SQLitePermissionGrantStore::SQLitePermissionGrantStore(QString databasePath)
-    : databasePath_(std::move(databasePath)) {
+SQLitePermissionGrantStore::SQLitePermissionGrantStore(QString databasePath,
+                                                       std::shared_ptr<StorageAdmission> admission,
+                                                       std::uint64_t generation)
+    : admission_(std::move(admission)), generation_(generation   ? generation
+                                                    : admission_ ? admission_->snapshot().generation
+                                                                 : 0),
+      databasePath_(std::move(databasePath)) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return;
+    }
     ready_ = initialize();
+}
+
+StorageAdmission::Writer SQLitePermissionGrantStore::admitWrite() {
+    if (!admission_) {
+        return {};
+    }
+    auto writer = admission_->admit(generation_);
+    if (!writer) {
+        lastError_ = QStringLiteral("Storage admission refused (busy, stale or shutdown).");
+    }
+    return writer;
 }
 
 bool SQLitePermissionGrantStore::initialize() {
@@ -83,6 +106,7 @@ bool SQLitePermissionGrantStore::initialize() {
         connection.db.rollback();
         return false;
     }
+    lastError_.clear();
     return true;
 }
 
@@ -90,7 +114,7 @@ bool SQLitePermissionGrantStore::load(QList<PersistentPermissionGrant>& grants) 
     grants.clear();
     if (!ready_)
         return false;
-    Connection connection(databasePath_);
+    Connection connection(databasePath_, true);
     QSqlQuery query(connection.db);
     if (!connection.db.isOpen() ||
         !query.exec(
@@ -123,10 +147,15 @@ bool SQLitePermissionGrantStore::load(QList<PersistentPermissionGrant>& grants) 
                        QDateTime::fromString(query.value(5).toString(), Qt::ISODateWithMs),
                        query.value(6).toString()});
     }
+    lastError_.clear();
     return true;
 }
 
 bool SQLitePermissionGrantStore::save(const QList<PersistentPermissionGrant>& grants) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return false;
+    }
     if (!ready_)
         return false;
     Connection connection(databasePath_);
@@ -157,10 +186,15 @@ bool SQLitePermissionGrantStore::save(const QList<PersistentPermissionGrant>& gr
         lastError_ = connection.db.lastError().text();
         return false;
     }
+    lastError_.clear();
     return true;
 }
 
 bool SQLitePermissionGrantStore::remove(const QString& id) {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return false;
+    }
     if (!ready_)
         return false;
     Connection connection(databasePath_);
@@ -171,10 +205,15 @@ bool SQLitePermissionGrantStore::remove(const QString& id) {
         lastError_ = connection.db.isOpen() ? query.lastError().text() : connection.db.lastError().text();
         return false;
     }
+    lastError_.clear();
     return true;
 }
 
 bool SQLitePermissionGrantStore::clear() {
+    auto writer = admitWrite();
+    if (admission_ && !writer) {
+        return false;
+    }
     if (!ready_)
         return false;
     Connection connection(databasePath_);
@@ -183,6 +222,7 @@ bool SQLitePermissionGrantStore::clear() {
         lastError_ = connection.db.isOpen() ? query.lastError().text() : connection.db.lastError().text();
         return false;
     }
+    lastError_.clear();
     return true;
 }
 
