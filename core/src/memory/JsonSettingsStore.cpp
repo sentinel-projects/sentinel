@@ -37,6 +37,25 @@ void JsonSettingsStore::remove(const QString& key) {
     if (!save()) values_ = previous;
 }
 
+bool JsonSettingsStore::applyChanges(const QMap<QString, QString>& values,
+                                     const QStringList& removals) {
+    if (!errorCode_.isEmpty()) {
+        return false;
+    }
+    const auto previous = values_;
+    for (const auto& key : removals) {
+        values_.remove(key);
+    }
+    for (auto it = values.cbegin(); it != values.cend(); ++it) {
+        values_.insert(it.key(), it.value());
+    }
+    if (save()) {
+        return true;
+    }
+    values_ = previous;
+    return false;
+}
+
 QString JsonSettingsStore::filePath() const {
     return filePath_;
 }
@@ -92,8 +111,8 @@ bool JsonSettingsStore::save() const {
 
     auto output = values_;
     output.insert(QStringLiteral("sentinelSettingsSchemaVersion"), 1);
-    if (file.write(QJsonDocument(output).toJson(QJsonDocument::Indented)) < 0 ||
-        !file.commit()) {
+    const auto bytes = QJsonDocument(output).toJson(QJsonDocument::Indented);
+    if (file.write(bytes) != bytes.size() || !file.commit()) {
         errorCode_ = QStringLiteral("StoreUnavailable");
         return false;
     }

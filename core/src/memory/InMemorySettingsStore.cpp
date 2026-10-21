@@ -18,4 +18,15 @@ void InMemorySettingsStore::remove(const QString& key) {
     values_.remove(key);
 }
 
+bool InMemorySettingsStore::applyChanges(const QMap<QString, QString>& values,
+                                         const QStringList& removals) {
+    for (const auto& key : removals) {
+        values_.remove(key);
+    }
+    for (auto it = values.cbegin(); it != values.cend(); ++it) {
+        values_.insert(it.key(), it.value());
+    }
+    return true;
+}
+
 } // namespace sentinel::core

@@ -4,9 +4,11 @@
 
 #pragma once
 
+#include "sentinel/core/app/StorageAdmission.h"
 #include "sentinel/core/interfaces/ISettingsStore.h"
 #include "sentinel/core/model/ModelRouting.h"
 #include "sentinel/core/security/CredentialStore.h"
+#include <atomic>
 
 #include <QObject>
 #include <QString>
@@ -391,6 +393,19 @@ public:
     void setNetworkMode(const QString& mode);
     QString credentialState(const QString& logicalId) const;
     QString storageErrorCode() const;
+    void clearStorageWriteError();
+    // Transient discovery/fallback readers must never migrate or publish settings.
+    void disablePersistence() {
+        persistenceReadOnly_ = true;
+    }
+    std::shared_ptr<StorageAdmission> storageAdmission() const {
+        return storageAdmission_;
+    }
+    bool attachStorageAdmission(std::shared_ptr<StorageAdmission> admission);
+    bool applyPortableSettings(const QString& theme, const QString& language,
+                               const QString& network);
+    bool persistWorkspaceState(const QString& catalog, const QString& selection);
+
     QString retentionPolicyJson() const;
     void setRetentionPolicyJson(const QString& json);
 
@@ -572,9 +587,18 @@ private:
 
     QString credential(const QString& id, const QString& legacyKey) const;
     bool setCredential(const QString& id, const QString& legacyKey, const QString& value);
-    QString secureMcpServersJson(const QString& json, bool* complete) const;
+    QString secureMcpServersJson(const QString& json, bool* complete, bool migrate = true) const;
     void applyNetworkPolicy() const;
 
+    StorageAdmission::Writer admitSettingsWrite() const;
+    bool persistValue(QString key, QString value) const;
+    bool removeValue(const QString& key) const;
+    bool persistValues(const QMap<QString, QString>& values) const;
+    std::shared_ptr<StorageAdmission> storageAdmission_;
+    std::uint64_t storageGeneration_ = 0;
+    bool persistenceReadOnly_ = false;
+    mutable QString lastWriteError_;
+    mutable std::atomic_bool wrongThreadWrite_ = false;
     std::unique_ptr<ISettingsStore> store_;
     mutable CredentialStore credentialStore_;
 };

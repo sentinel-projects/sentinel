@@ -102,16 +102,27 @@ restore is enabled. See [P8-06](../audits/P8_06_COORDINATED_BACKUP_RECOVERY_RESU
 ### Storage admission foundation (P8-06A)
 
 `ApplicationControllerBuilder::withStandardDefaults` creates one process-local
-`StorageAdmission` shared by its memory/conversation SQLite owners and memory archive
+`StorageAdmission` shared by AppSettings, its memory/conversation SQLite owners and memory archive
 workers. Writers hold a move-only lease before schema or transaction mutation.
 Store generations are immutable; archive workers inherit the originating store's
 generation rather than refreshing authority when a job runs.
 
 This is partial coverage. The live application coordinator refuses maintenance
 preparation with `Unsupported` before changing state: asynchronous request lifetimes,
-settings/workspaces, transcript history, runs, grants and independent processes are
+independent settings writers, transcript history, runs, grants and independent processes are
 not collectively enrolled. `prepareApplication()` is always `Unsupported`.
 The explicit leaf-store scope supports bounded drain/maintenance tests and future
 trusted orchestration; it must not be substituted for the live application scope.
 No IPC/model maintenance command or live journal replacement is enabled. See
 `docs/audits/P8_06A_STORAGE_ADMISSION_QUIESCENCE_RESULT.md` for coverage and restrictions.
+
+
+P8-06A.1 enrolls AppSettings before standard runtime composition, including settings,
+workspace/catalog/profile setters, migration writes and portable basic-settings imports.
+ISettingsStore's optional atomic applyChanges contract publishes workspace catalog,
+selection and repaired default in one JsonSettingsStore/QSaveFile transaction; unsupported
+owners refuse without successive setter fallback. Desktop submits runtime changes as
+Pending and keeps authoritative projected values until the daemon reply. Transient
+configuration/discovery readers disable persistence. Legacy config CLI and independent
+presentation/platform preference owners still prevent profile-wide coordination. See
+[settings/workspace coordination](../audits/P8_06A1_SETTINGS_WORKSPACE_COORDINATION_RESULT.md).

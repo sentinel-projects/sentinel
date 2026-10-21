@@ -42,7 +42,7 @@ for key, field in spec['desktop_settings'].items():
  call='s->%s()' % field['read']
  conversion={'QString':call, 'bool':f'({call} ? QStringLiteral("true") : QStringLiteral("false"))', 'int':f'QString::number({call})', 'double':f'QString::number({call}, \'g\', 17)'}[field['cpp']]
  server += 'result.insert("%s", %s);\n' % (key,conversion)
-server += 'return result; }\ninline bool setting(core::AppSettings* s, const QString& key, const QString& value) { if (!s) return false;\n'
+server += 'return result; }\ninline bool setting(core::AppSettings* s, const QString& key, const QString& value) { if (!s) return false; s->clearStorageWriteError();\n'
 for key, field in spec['desktop_settings'].items():
  if not field.get('write'): continue
  typ=field['cpp']
@@ -51,7 +51,7 @@ for key, field in spec['desktop_settings'].items():
  if typ in ['int','double']: server += 'bool valid = false; const auto converted = value.%s(&valid); if (!valid) return false; ' % ('toInt' if typ=='int' else 'toDouble')
  if typ=='double': server += 'if (!std::isfinite(converted)) return false; '
  argument={'QString':'value','bool':'value == "true"','int':'converted','double':'converted'}[typ]
- server += 's->%s(%s); return true; }\n' % (field['write'],argument)
+ server += 's->%s(%s); return s->storageErrorCode().isEmpty(); }\n' % (field['write'],argument)
 server += 'return false; }\n'
 server += 'inline QJsonObject settingsServiceActions() { return QJsonDocument::fromJson(R"json(' + json.dumps(spec['desktop_settings_service'],separators=(',',':')) + ')json").object(); }\n'
 server += '}\n// clang-format on\n'

@@ -915,6 +915,8 @@ inline QJsonObject desktopSettingsActions() { return {
 {QStringLiteral("setProductProviderCredential"), QJsonDocument::fromJson(R"json({"query":false,"arguments":["string","string"]})json").object()},
 {QStringLiteral("setProductPluginCredential"), QJsonDocument::fromJson(R"json({"query":false,"arguments":["string","string","string"]})json").object()},
 {QStringLiteral("clearProductPluginCredential"), QJsonDocument::fromJson(R"json({"query":false,"arguments":["string","string"]})json").object()},
+{QStringLiteral("persistWorkspaceState"), QJsonDocument::fromJson(R"json({"query":false,"arguments":["string","string"]})json").object()},
+{QStringLiteral("setProviderModelPreference"), QJsonDocument::fromJson(R"json({"query":false,"arguments":["string","string"]})json").object()},
 }; }
 }
 // clang-format on

@@ -90,6 +90,9 @@ OnboardingActionResult OnboardingService::chooseModel(const QString& providerId,
     state.providerId = providerId;
     state.modelId = modelId;
     models_->setSelectedModel({providerId, modelId});
+    if (!settings_.storageErrorCode().isEmpty()) {
+        return persistedResult(state);
+    }
     save(state);
     return persistedResult(state);
 }
@@ -140,6 +143,9 @@ OnboardingActionResult OnboardingService::reopen() {
     state.complete = false;
     state.step = OnboardingStep::Welcome;
     settings_.setOnboardingComplete(false);
+    if (!settings_.storageErrorCode().isEmpty()) {
+        return persistedResult(state);
+    }
     save(state);
     return persistedResult(state);
 }
@@ -160,11 +166,17 @@ OnboardingActionResult OnboardingService::finish() {
         overrides.insert(QStringLiteral("privacy"), QStringLiteral("local-only"));
         settings_.setWorkspaceProfilesJson(workspaces.updateProfile(
             raw, workspaceId, entry.value(QStringLiteral("presetId")).toString(), overrides));
+        if (!settings_.storageErrorCode().isEmpty()) {
+            return persistedResult(state);
+        }
     }
     state.step = OnboardingStep::Ready;
     if (!state.completedSteps.contains(stepId(OnboardingStep::Ready)))
         state.completedSteps.append(stepId(OnboardingStep::Ready));
     save(state);
+    if (!settings_.storageErrorCode().isEmpty()) {
+        return persistedResult(state);
+    }
     settings_.setOnboardingComplete(true);
     state.complete = true;
     return persistedResult(state);

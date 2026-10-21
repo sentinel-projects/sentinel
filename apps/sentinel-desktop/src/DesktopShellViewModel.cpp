@@ -5048,8 +5048,9 @@ bool DesktopShellViewModel::setWorkspaceProfile(const QString& workspaceId, cons
                                         QJsonObject::fromVariantMap(overrides));
     if (json.isEmpty())
         return false;
+    settings_.clearStorageWriteError();
     settings_.setWorkspaceProfilesJson(json);
-    return true;
+    return settings_.storageErrorCode().isEmpty();
 }
 
 QString DesktopShellViewModel::createPreset(const QString& name, const QVariantMap& preferences) {
@@ -5058,7 +5059,11 @@ QString DesktopShellViewModel::createPreset(const QString& name, const QVariantM
                                                      QJsonObject::fromVariantMap(preferences));
     if (json.isEmpty())
         return {};
+    settings_.clearStorageWriteError();
     settings_.setWorkspaceProfilesJson(json);
+    if (!settings_.storageErrorCode().isEmpty()) {
+        return {};
+    }
     const auto after = workspaceService_.presets(json);
     for (const auto& preset : after) {
         const auto existing = std::find_if(
@@ -5075,8 +5080,9 @@ bool DesktopShellViewModel::renamePreset(const QString& presetId, const QString&
         workspaceService_.renamePreset(settings_.workspaceProfilesJson(), presetId, name);
     if (json.isEmpty())
         return false;
+    settings_.clearStorageWriteError();
     settings_.setWorkspaceProfilesJson(json);
-    return true;
+    return settings_.storageErrorCode().isEmpty();
 }
 
 bool DesktopShellViewModel::updatePreset(const QString& presetId, const QVariantMap& preferences) {
@@ -5084,8 +5090,9 @@ bool DesktopShellViewModel::updatePreset(const QString& presetId, const QVariant
                                                      QJsonObject::fromVariantMap(preferences));
     if (json.isEmpty())
         return false;
+    settings_.clearStorageWriteError();
     settings_.setWorkspaceProfilesJson(json);
-    return true;
+    return settings_.storageErrorCode().isEmpty();
 }
 
 QString DesktopShellViewModel::duplicatePreset(const QString& presetId) {
@@ -5094,7 +5101,11 @@ QString DesktopShellViewModel::duplicatePreset(const QString& presetId) {
         workspaceService_.duplicatePreset(settings_.workspaceProfilesJson(), presetId);
     if (json.isEmpty())
         return {};
+    settings_.clearStorageWriteError();
     settings_.setWorkspaceProfilesJson(json);
+    if (!settings_.storageErrorCode().isEmpty()) {
+        return {};
+    }
     const auto after = workspaceService_.presets(json);
     for (const auto& preset : after) {
         const auto existing = std::find_if(
@@ -5110,8 +5121,9 @@ bool DesktopShellViewModel::deletePreset(const QString& presetId) {
     const auto json = workspaceService_.deletePreset(settings_.workspaceProfilesJson(), presetId);
     if (json.isEmpty())
         return false;
+    settings_.clearStorageWriteError();
     settings_.setWorkspaceProfilesJson(json);
-    return true;
+    return settings_.storageErrorCode().isEmpty();
 }
 
 void DesktopShellViewModel::setSelectedWorkspaceId(const QString& workspaceId) {
@@ -5120,12 +5132,19 @@ void DesktopShellViewModel::setSelectedWorkspaceId(const QString& workspaceId) {
 }
 
 bool DesktopShellViewModel::setWorkspaceRoot(const QString& workspaceId, const QString& rootPath) {
-    const auto result =
+    auto result =
         workspaceService_.setWorkspaceRoot(settings_.workspaceCatalogJson(), workspaceId, rootPath);
     workspaceLastActionStatus_ = result.status;
     workspaceLastActionSummary_ = result.summary;
-    if (result.success)
-        settings_.setWorkspaceCatalogJson(result.catalogJson);
+    if (result.success) {
+        const auto selected = workspaceService_.normalizedWorkspaceId(
+            settings_.selectedWorkspaceId(), result.catalogJson);
+        result.success = settings_.persistWorkspaceState(result.catalogJson, selected);
+        if (!result.success) {
+            workspaceLastActionStatus_ = settings_.storageErrorCode();
+            workspaceLastActionSummary_ = workspaceLastActionStatus_;
+        }
+    }
     emit workspaceChanged();
     return result.success;
 }
@@ -5167,8 +5186,12 @@ bool DesktopShellViewModel::openWorkspaceFolder(const QString& rootPath) {
         emit workspaceChanged();
         return false;
     }
-    settings_.setWorkspaceCatalogJson(rooted.catalogJson);
-    settings_.setSelectedWorkspaceId(created.selectedWorkspaceId);
+    if (!settings_.persistWorkspaceState(rooted.catalogJson, created.selectedWorkspaceId)) {
+        workspaceLastActionStatus_ = settings_.storageErrorCode();
+        workspaceLastActionSummary_ = workspaceLastActionStatus_;
+        emit workspaceChanged();
+        return false;
+    }
     emit workspaceChanged();
     return true;
 }
@@ -5467,63 +5490,86 @@ QStringList DesktopShellViewModel::privacyCenterSummaries() const {
 }
 
 QString DesktopShellViewModel::createWorkspace(const QString& name, const QString& templateName) {
-    const auto result =
+    auto result =
         workspaceService_.createWorkspace(settings_.workspaceCatalogJson(), name, templateName);
     workspaceLastActionStatus_ = result.status;
     workspaceLastActionSummary_ = result.summary;
     if (result.success) {
-        settings_.setWorkspaceCatalogJson(result.catalogJson);
-        settings_.setSelectedWorkspaceId(result.selectedWorkspaceId);
+        result.success =
+            settings_.persistWorkspaceState(result.catalogJson, result.selectedWorkspaceId);
+        if (!result.success) {
+            workspaceLastActionStatus_ = settings_.storageErrorCode();
+            workspaceLastActionSummary_ = workspaceLastActionStatus_;
+        }
     }
     emit workspaceChanged();
     return result.success ? result.selectedWorkspaceId : QString();
 }
 
 bool DesktopShellViewModel::renameWorkspace(const QString& workspaceId, const QString& name) {
-    const auto result =
+    auto result =
         workspaceService_.renameWorkspace(settings_.workspaceCatalogJson(), workspaceId, name);
     workspaceLastActionStatus_ = result.status;
     workspaceLastActionSummary_ = result.summary;
     if (result.success) {
-        settings_.setWorkspaceCatalogJson(result.catalogJson);
+        const auto selected = workspaceService_.normalizedWorkspaceId(
+            settings_.selectedWorkspaceId(), result.catalogJson);
+        result.success = settings_.persistWorkspaceState(result.catalogJson, selected);
+        if (!result.success) {
+            workspaceLastActionStatus_ = settings_.storageErrorCode();
+            workspaceLastActionSummary_ = workspaceLastActionStatus_;
+        }
     }
     emit workspaceChanged();
     return result.success;
 }
 
 bool DesktopShellViewModel::archiveWorkspace(const QString& workspaceId) {
-    const auto result =
-        workspaceService_.archiveWorkspace(settings_.workspaceCatalogJson(), workspaceId);
+    auto result = workspaceService_.archiveWorkspace(settings_.workspaceCatalogJson(), workspaceId);
     workspaceLastActionStatus_ = result.status;
     workspaceLastActionSummary_ = result.summary;
     if (result.success) {
-        settings_.setWorkspaceCatalogJson(result.catalogJson);
+        const auto selected = workspaceService_.normalizedWorkspaceId(
+            settings_.selectedWorkspaceId(), result.catalogJson);
+        result.success = settings_.persistWorkspaceState(result.catalogJson, selected);
+        if (!result.success) {
+            workspaceLastActionStatus_ = settings_.storageErrorCode();
+            workspaceLastActionSummary_ = workspaceLastActionStatus_;
+        }
     }
     emit workspaceChanged();
     return result.success;
 }
 
 bool DesktopShellViewModel::deleteWorkspace(const QString& workspaceId) {
-    const auto result = workspaceService_.deleteWorkspace(
-        settings_.workspaceCatalogJson(), workspaceId, settings_.selectedWorkspaceId());
+    auto result = workspaceService_.deleteWorkspace(settings_.workspaceCatalogJson(), workspaceId,
+                                                    settings_.selectedWorkspaceId());
     workspaceLastActionStatus_ = result.status;
     workspaceLastActionSummary_ = result.summary;
     if (result.success) {
-        settings_.setWorkspaceCatalogJson(result.catalogJson);
-        settings_.setSelectedWorkspaceId(result.selectedWorkspaceId);
+        result.success =
+            settings_.persistWorkspaceState(result.catalogJson, result.selectedWorkspaceId);
+        if (!result.success) {
+            workspaceLastActionStatus_ = settings_.storageErrorCode();
+            workspaceLastActionSummary_ = workspaceLastActionStatus_;
+        }
     }
     emit workspaceChanged();
     return result.success;
 }
 
 QString DesktopShellViewModel::duplicateWorkspace(const QString& workspaceId) {
-    const auto result =
+    auto result =
         workspaceService_.duplicateWorkspace(settings_.workspaceCatalogJson(), workspaceId);
     workspaceLastActionStatus_ = result.status;
     workspaceLastActionSummary_ = result.summary;
     if (result.success) {
-        settings_.setWorkspaceCatalogJson(result.catalogJson);
-        settings_.setSelectedWorkspaceId(result.selectedWorkspaceId);
+        result.success =
+            settings_.persistWorkspaceState(result.catalogJson, result.selectedWorkspaceId);
+        if (!result.success) {
+            workspaceLastActionStatus_ = settings_.storageErrorCode();
+            workspaceLastActionSummary_ = workspaceLastActionStatus_;
+        }
     }
     emit workspaceChanged();
     return result.success ? result.selectedWorkspaceId : QString();

@@ -380,9 +380,7 @@ BackupResult BackupService::importJson(const QByteArray& bytes,
         if (selectedDomains.contains(QStringLiteral("workspaceProfiles")))
             settings_.setWorkspaceProfilesJson(oldProfiles);
         if (selectedDomains.contains(QStringLiteral("settings"))) {
-            settings_.setNetworkMode(oldNetwork);
-            settings_.setAppLanguage(oldLanguage);
-            settings_.setThemeName(oldTheme);
+            settings_.applyPortableSettings(oldTheme, oldLanguage, oldNetwork);
         }
         if (!settings_.storageErrorCode().isEmpty() ||
             settings_.mcpServersJson() != oldExtensions ||
@@ -404,9 +402,14 @@ BackupResult BackupService::importJson(const QByteArray& bytes,
 
     if (selectedDomains.contains(QStringLiteral("settings")) &&
         mode == ImportMode::ReplaceSelectedDomains) {
-        settings_.setThemeName(settings.value(QStringLiteral("theme")).toString());
-        settings_.setAppLanguage(settings.value(QStringLiteral("language")).toString());
-        settings_.setNetworkMode(settings.value(QStringLiteral("networkMode")).toString());
+        if (!settings_.applyPortableSettings(
+                settings.value(QStringLiteral("theme")).toString(),
+                settings.value(QStringLiteral("language")).toString(),
+                settings.value(QStringLiteral("networkMode")).toString())) {
+            return failed(BackupError::ImportCommitFailure,
+                          QStringLiteral("Settings import rejected: ") +
+                              settings_.storageErrorCode());
+        }
     }
     if (selectedDomains.contains(QStringLiteral("workspaceProfiles")) &&
         (mode == ImportMode::ReplaceSelectedDomains || settings_.workspaceProfilesJson().isEmpty()))

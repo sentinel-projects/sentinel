@@ -295,6 +295,64 @@ struct RuntimePeer : Peer {
 class DesktopIpcTest final : public QObject {
     Q_OBJECT
 private slots:
+    void settingsStorageAdmissionRefusalIsTruthfulOverIpc() {
+        using namespace sentinel::core;
+        using namespace std::chrono_literals;
+        QTemporaryDir profile;
+        QVERIFY(profile.isValid());
+        const auto path = profile.filePath("settings.json");
+        auto admission = std::make_shared<StorageAdmission>();
+        AppSettings settings(std::make_unique<JsonSettingsStore>(path),
+                             inMemoryTestCredentialStore());
+        QVERIFY(settings.attachStorageAdmission(admission));
+        settings.setLocalKnowledgeBaseEnabled(false);
+        sentinel::test::DeterministicModelServiceFixture models;
+        ApplicationControllerBuilder builder;
+        auto controller = builder.withModelService(models.takeModelService())
+                              .withOllamaRuntimeClient(std::make_unique<MetadataClient>())
+                              .withMemoryStore(std::make_unique<InMemoryStore>())
+                              .build();
+        sentinel::daemon::DaemonIpcServer server(controller.get());
+        server.setSettings(&settings);
+        QVERIFY(server.startServer(profile.filePath("settings.sock")));
+        DaemonClient transport(profile.filePath("settings.sock"), 3000, 10);
+        sentinel::desktop::DesktopRuntimeClient runtime(transport);
+        QTRY_VERIFY(runtime.ready());
+        AppSettings projected(std::make_unique<sentinel::desktop::DesktopSettingsStore>(
+                                  runtime, profile.filePath("presentation.json")),
+                              inMemoryTestCredentialStore());
+        QSignalSpy failed(&runtime, &sentinel::desktop::DesktopRuntimeClient::operationFailed);
+        QSignalSpy changed(&projected, &AppSettings::workspaceSettingsChanged);
+        QCOMPARE(admission->prepareLocal(0ms), StorageAdmission::Result::Ready);
+        projected.setLocalKnowledgeBaseEnabled(true);
+        QCOMPARE(projected.storageErrorCode(), QString("Pending"));
+        QVERIFY(!projected.localKnowledgeBaseEnabled());
+        QCOMPARE(changed.count(), 0);
+        QTRY_VERIFY(!failed.isEmpty());
+        QCOMPARE(failed.last().first().toString(), QString("StorageBusy"));
+        QVERIFY(!settings.localKnowledgeBaseEnabled());
+        auto created = WorkspaceService{}.createWorkspace({}, "IPC fixture", "Personal");
+        QVERIFY(created.success);
+        failed.clear();
+        QVERIFY(!projected.persistWorkspaceState(created.catalogJson, created.selectedWorkspaceId));
+        QCOMPARE(projected.storageErrorCode(), QString("Pending"));
+        QTRY_VERIFY(!failed.isEmpty());
+        QCOMPARE(failed.last().first().toString(), QString("StorageBusy"));
+        QVERIFY(settings.workspaceCatalogJson().isEmpty());
+        QCOMPARE(settings.selectedWorkspaceId(), QString("personal"));
+        QCOMPARE(admission->resume(), StorageAdmission::Result::Ready);
+        QTest::qWait(20); // A refused write is not replayed on resume.
+        QVERIFY(settings.workspaceCatalogJson().isEmpty());
+        QVERIFY(!projected.persistWorkspaceState(created.catalogJson, created.selectedWorkspaceId));
+        QTRY_COMPARE(settings.selectedWorkspaceId(), created.selectedWorkspaceId);
+        QTRY_COMPARE(runtime.settingsValue("selectedWorkspaceId", {}), created.selectedWorkspaceId);
+        JsonSettingsStore disk(path);
+        QCOMPARE(disk.value("workspaceCatalogJson"), created.catalogJson);
+        QCOMPARE(disk.value("selectedWorkspaceId"), created.selectedWorkspaceId);
+        projected.setLocalKnowledgeBaseEnabled(true);
+        QTRY_VERIFY(settings.localKnowledgeBaseEnabled());
+        transport.disconnectFromDaemon();
+    }
     void largeMemoryArchiveUsesNativeDesktopBoundary() {
         using namespace sentinel::core;
         QTemporaryDir directory{QDir::tempPath() + "/ma-XXXXXX"};

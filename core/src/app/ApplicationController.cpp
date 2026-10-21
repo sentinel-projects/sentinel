@@ -10097,6 +10097,7 @@ RuntimeProviderRegistry ApplicationController::currentRuntimeProviderRegistry() 
         QDir(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation))
             .filePath(QStringLiteral("settings.json"));
     AppSettings cloudSettings(std::make_unique<JsonSettingsStore>(settingsPath));
+    cloudSettings.disablePersistence();
     const auto cloudProvider = cloudSettings.selectedCloudProvider();
     const bool cloudSelected = selectedRuntimeProvider() == QStringLiteral("cloud-api") ||
                                selectedRuntimeProvider() == QStringLiteral("openai") ||
@@ -10306,6 +10307,7 @@ void ApplicationController::pollOllama() {
                 QDir(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation))
                     .filePath(QStringLiteral("settings.json"));
             AppSettings settings(std::make_unique<JsonSettingsStore>(settingsPath));
+            settings.disablePersistence();
             const QString cloudProv = settings.selectedCloudProvider().toLower().trimmed();
 
             const auto cloudStrategy = registry.discoveryStrategy(provider, cloudProv);

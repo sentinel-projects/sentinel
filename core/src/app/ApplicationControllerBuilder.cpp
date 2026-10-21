@@ -26,6 +26,14 @@ ApplicationControllerBuilder::~ApplicationControllerBuilder() = default;
 ApplicationControllerBuilder&
 ApplicationControllerBuilder::withStandardDefaults(const StandardPathProvider& pathProvider,
                                                    AppSettings& settings) {
+    if (!m_storageAdmission) {
+        m_storageAdmission = settings.storageAdmission();
+    }
+    if (!m_storageAdmission) {
+        m_storageAdmission =
+            std::make_shared<StorageAdmission>(StorageAdmission::Scope::LiveApplication);
+    }
+    settings.attachStorageAdmission(m_storageAdmission);
     const auto ollamaConfig = OllamaConfig::fromEndpoint(settings.ollamaEndpoint());
 
     if (!m_modelService)
@@ -35,8 +43,6 @@ ApplicationControllerBuilder::withStandardDefaults(const StandardPathProvider& p
     m_localRuntimeSessions = std::make_unique<OllamaRuntimeSessionManager>(ollamaConfig, m_modelService.get());
     m_localRuntimeAdapter = std::make_unique<OllamaLocalRuntimeAdapter>(ollamaConfig, m_modelService.get());
     m_providerRuntimeBridge = std::make_unique<OllamaProviderRuntimeBridge>(ollamaConfig);
-    m_storageAdmission =
-        std::make_shared<StorageAdmission>(StorageAdmission::Scope::LiveApplication);
     m_memoryStore =
         std::make_unique<SQLiteMemoryStore>(pathProvider.memoryDatabasePath(), m_storageAdmission);
     m_chatHistoryStore =

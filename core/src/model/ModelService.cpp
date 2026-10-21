@@ -441,7 +441,13 @@ ModelSelection ModelService::selectedModel() const {
 }
 
 void ModelService::setSelectedModel(const ModelSelection& selection) {
+    if (settings_) {
+        settings_->clearStorageWriteError();
+    }
     setSelectedProviderId(selection.providerId);
+    if (settings_ && !settings_->storageErrorCode().isEmpty()) {
+        return;
+    }
     setSelectedModelId(selection.modelId);
 }
 
@@ -451,19 +457,33 @@ void ModelService::setSelectedProviderId(const QString& providerId) {
         providerFactories_.contains(normalized) ? normalized : defaultProviderId();
     if (selected == selection_.providerId)
         return;
-    selection_.providerId = selected;
-    if (settings_)
+    const auto previous = selection_.providerId;
+    selection_.providerId =
+        selected; // Guard synchronous settings callbacks against recursive submission.
+    if (settings_) {
+        settings_->clearStorageWriteError();
         settings_->setSelectedRuntimeProvider(selected);
+        if (!settings_->storageErrorCode().isEmpty()) {
+            selection_.providerId = previous;
+            return;
+        }
+    }
     emit selectedModelChanged();
 }
-
 void ModelService::setSelectedModelId(const QString& modelId) {
     const auto normalized = modelId.trimmed();
     if (normalized == selection_.modelId)
         return;
+    const auto previous = selection_.modelId;
     selection_.modelId = normalized;
-    if (settings_ && !selection_.providerId.isEmpty())
+    if (settings_ && !selection_.providerId.isEmpty()) {
+        settings_->clearStorageWriteError();
         settings_->setSelectedModelForProvider(selection_.providerId, normalized);
+        if (!settings_->storageErrorCode().isEmpty()) {
+            selection_.modelId = previous;
+            return;
+        }
+    }
     emit selectedModelChanged();
 }
 
@@ -851,6 +871,7 @@ LMStudioConfig ModelService::providerConfig(const ModelBinding& binding) const {
                 .filePath(QStringLiteral("settings.json"));
         fallbackSettings =
             std::make_unique<AppSettings>(std::make_unique<JsonSettingsStore>(settingsPath));
+        fallbackSettings->disablePersistence();
         liveSettings = fallbackSettings.get();
     }
 

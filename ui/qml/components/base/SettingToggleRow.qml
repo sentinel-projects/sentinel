@@ -36,8 +36,7 @@ Rectangle {
         enabled: root.interactive
         cursorShape: Qt.PointingHandCursor
         onClicked: {
-            root.checked = !root.checked
-            root.toggled(root.checked)
+            root.toggled(!root.checked)
         }
     }
 
@@ -85,8 +84,9 @@ Rectangle {
             checked: root.checked
             accent: root.accent
             onToggled: {
-                root.checked = checked
                 root.toggled(checked)
+                // The owner confirms persistence. Keep its binding on refusal or Pending.
+                switchControl.checked = Qt.binding(function() { return root.checked })
             }
         }
     }

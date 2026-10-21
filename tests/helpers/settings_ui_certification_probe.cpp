@@ -1365,6 +1365,50 @@ int main(int argc, char** argv) {
                 window->property("settingsPanel").value<QColor>().alpha() != 255) { app.exit(56); return; }
             viewModel.setHighContrastEnabled(false);
             viewModel.setThemeName("Paper");
+            // Leaf scope is an explicit test fixture; production live preparation stays
+            // Unsupported.
+            auto admission = std::make_shared<sentinel::core::StorageAdmission>();
+            if (!settings.attachStorageAdmission(admission) ||
+                admission->prepareLocal(std::chrono::milliseconds(0)) !=
+                    sentinel::core::StorageAdmission::Result::Ready) {
+                app.exit(63);
+                return;
+            }
+            page->setProperty("activeCategory", "Notifications");
+            QApplication::processEvents();
+            auto* blockedSwitch = findItem(findItem, page, "settingsDndSwitch");
+            if (!blockedSwitch || !blockedSwitch->isVisible()) {
+                app.exit(64);
+                return;
+            }
+            blockedSwitch->forceActiveFocus(Qt::TabFocusReason);
+            const bool previousDnd = viewModel.dndEnabled();
+            QTest::keyClick(window, Qt::Key_Space);
+            QApplication::processEvents();
+            if (viewModel.dndEnabled() != previousDnd ||
+                blockedSwitch->property("checked").toBool() != previousDnd ||
+                window->activeFocusItem() != blockedSwitch ||
+                settings.storageErrorCode() != "StorageBusy") {
+                qWarning() << "P806A1 blocked UI" << previousDnd << viewModel.dndEnabled()
+                           << blockedSwitch->property("checked") << window->activeFocusItem()
+                           << blockedSwitch << settings.storageErrorCode();
+                app.exit(65);
+                return;
+            }
+            window->grabWindow().save(QDir::tempPath() + "/sentinel-settings-storage-blocked.png");
+            if (admission->resume() != sentinel::core::StorageAdmission::Result::Ready) {
+                app.exit(66);
+                return;
+            }
+            QTest::keyClick(window, Qt::Key_Space);
+            if (viewModel.dndEnabled() == previousDnd) {
+                app.exit(67);
+                return;
+            }
+            QTest::keyClick(window, Qt::Key_Space);
+            page->setProperty("activeCategory", "Appearance");
+            qInfo("P806A1: blocked keyboard settings write preserved visible value and focus; "
+                  "explicit retry after resume succeeded");
             QTimer::singleShot(200, &app, [&, window] {
                 const auto screenshotPath = QDir::tempPath() + "/sentinel-settings-appearance.png";
                 const bool saved = window->grabWindow().save(screenshotPath);

@@ -69,6 +69,18 @@ void DpapiEncryptedSettingsStore::remove(const QString& key) {
     inner_->remove(key);
 }
 
+bool DpapiEncryptedSettingsStore::applyChanges(const QMap<QString, QString>& values,
+                                               const QStringList& removals) {
+    QMap<QString, QString> encoded;
+    for (auto it = values.cbegin(); it != values.cend(); ++it) {
+        encoded.insert(it.key(),
+                       isSecretKey(it.key()) && !it.value().isEmpty()
+                           ? encryptedPrefix + QString::fromLatin1(encrypt(it.value()).toBase64())
+                           : it.value());
+    }
+    return inner_ && inner_->applyChanges(encoded, removals);
+}
+
 QString DpapiEncryptedSettingsStore::errorCode() const {
     return inner_ ? inner_->errorCode() : QStringLiteral("StoreUnavailable");
 }
@@ -108,7 +120,7 @@ QString DpapiEncryptedSettingsStore::decrypt(const QByteArray& cipherData) const
 
 #elif defined(Q_OS_MACOS) || defined(__APPLE__)
 
-static QByteArray getOrCreateMacKeychainKey() {
+static QByteArray getOrCreateMacKeychainKey(bool create = true) {
     static const char* kService = "dev.sentinel.Sentinel";
     static const char* kAccount = "master_encryption_key";
 
@@ -138,6 +150,13 @@ static QByteArray getOrCreateMacKeychainKey() {
         CFRelease(serviceStr);
         CFRelease(accountStr);
         return key;
+    }
+
+    // Decryption is a read path, including settings inspection during maintenance.
+    if (!create) {
+        CFRelease(serviceStr);
+        CFRelease(accountStr);
+        return {};
     }
 
     QByteArray newKey(32, 0);
@@ -194,7 +213,7 @@ QByteArray DpapiEncryptedSettingsStore::encrypt(const QString& plainText) {
 }
 
 QString DpapiEncryptedSettingsStore::decrypt(const QByteArray& cipherData) const {
-    const QByteArray key = keySource_ ? keySource_() : getOrCreateMacKeychainKey();
+    const QByteArray key = keySource_ ? keySource_() : getOrCreateMacKeychainKey(false);
     if (key.isEmpty() || cipherData.size() <= kCCBlockSizeAES128) {
         return QString::fromUtf8(cipherData);
     }

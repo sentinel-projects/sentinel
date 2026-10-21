@@ -232,3 +232,13 @@ can still be inspected and imported **one selected domain at a time**; this is a
 independent portable import, with no application-wide consistency or crash-recovery
 guarantee. No new top-level command, generated signature, trust override or
 automatic recovery action is introduced.
+
+
+P8-06A.1 adds finite `desktop.settings_service` actions `persistWorkspaceState`
+(catalog and selection strings) and `setProviderModelPreference` (provider and model
+strings). The daemon uses its existing AppSettings owner and captured storage generation;
+no client-selected generation or maintenance capability is accepted. Workspace catalog,
+selection and default repair publish atomically. Runtime Desktop mutations remain Pending
+until an authoritative reply; refusal uses the existing typed code/error envelope and
+never updates proposed values optimistically. Generated `desktop.setting` acceptance
+now checks persistence status, including StorageBusy/StaleStorageGeneration/StorageUnavailable.

@@ -530,76 +530,76 @@ result.insert("notifySystemUpdates", (s->notifySystemUpdates() ? QStringLiteral(
 result.insert("soundEffectsEnabled", (s->soundEffectsEnabled() ? QStringLiteral("true") : QStringLiteral("false")));
 result.insert("networkMode", s->networkMode());
 return result; }
-inline bool setting(core::AppSettings* s, const QString& key, const QString& value) { if (!s) return false;
-if (key == "themeName") { s->setThemeName(value); return true; }
-if (key == "configurationProfile") { s->setConfigurationProfile(value); return true; }
-if (key == "appLanguage") { s->setAppLanguage(value); return true; }
-if (key == "routingMode") { s->setRoutingModeName(value); return true; }
-if (key == "ollamaEndpoint") { s->setOllamaEndpoint(value); return true; }
-if (key == "lmStudioEndpoint") { s->setLmStudioEndpoint(value); return true; }
-if (key == "llamaCppEndpoint") { s->setLlamaCppEndpoint(value); return true; }
-if (key == "cloudApiEndpoint") { s->setCloudApiEndpoint(value); return true; }
-if (key == "webSearchProvider") { s->setWebSearchProvider(value); return true; }
-if (key == "webSearchMaxResults") { bool valid = false; const auto converted = value.toInt(&valid); if (!valid) return false; s->setWebSearchMaxResults(converted); return true; }
-if (key == "mcpServersJson") { s->setMcpServersJson(value); return true; }
-if (key == "semanticProvider") { s->setSemanticProvider(value); return true; }
-if (key == "semanticEmbeddingModel") { s->setSemanticEmbeddingModel(value); return true; }
-if (key == "selectedRuntimeProvider") { s->setSelectedRuntimeProvider(value); return true; }
-if (key == "selectedCloudProvider") { s->setSelectedCloudProvider(value); return true; }
-if (key == "localInferenceTimeoutMs") { bool valid = false; const auto converted = value.toInt(&valid); if (!valid) return false; s->setLocalInferenceTimeoutMs(converted); return true; }
-if (key == "localInferenceTemperature") { bool valid = false; const auto converted = value.toDouble(&valid); if (!valid) return false; if (!std::isfinite(converted)) return false; s->setLocalInferenceTemperature(converted); return true; }
-if (key == "localInferenceTopP") { bool valid = false; const auto converted = value.toDouble(&valid); if (!valid) return false; if (!std::isfinite(converted)) return false; s->setLocalInferenceTopP(converted); return true; }
-if (key == "localInferenceMaxTokens") { bool valid = false; const auto converted = value.toInt(&valid); if (!valid) return false; s->setLocalInferenceMaxTokens(converted); return true; }
-if (key == "promptContextInjectionEnabled") { if(value != "true" && value != "false") return false; s->setPromptContextInjectionEnabled(value == "true"); return true; }
-if (key == "semanticPromptInclusionEnabled") { if(value != "true" && value != "false") return false; s->setSemanticPromptInclusionEnabled(value == "true"); return true; }
-if (key == "contextExplainabilityVisible") { if(value != "true" && value != "false") return false; s->setContextExplainabilityVisible(value == "true"); return true; }
-if (key == "companionEnabled") { if(value != "true" && value != "false") return false; s->setCompanionEnabled(value == "true"); return true; }
-if (key == "developerModeEnabled") { if(value != "true" && value != "false") return false; s->setDeveloperModeEnabled(value == "true"); return true; }
-if (key == "agentAutonomousMode") { if(value != "true" && value != "false") return false; s->setAgentAutonomousMode(value == "true"); return true; }
-if (key == "piperBinaryPath") { s->setPiperBinaryPath(value); return true; }
-if (key == "piperModelPath") { s->setPiperModelPath(value); return true; }
-if (key == "whisperBinaryPath") { s->setWhisperBinaryPath(value); return true; }
-if (key == "whisperModelPath") { s->setWhisperModelPath(value); return true; }
-if (key == "piperFileOutputExecutionEnabled") { if(value != "true" && value != "false") return false; s->setPiperFileOutputExecutionEnabled(value == "true"); return true; }
-if (key == "selectedTtsEngine") { s->setSelectedTtsEngine(value); return true; }
-if (key == "kokoroModelPath") { s->setKokoroModelPath(value); return true; }
-if (key == "kokoroVoice") { s->setKokoroVoice(value); return true; }
-if (key == "activeConversationId") { s->setActiveConversationId(value); return true; }
-if (key == "selectedWorkspaceId") { s->setSelectedWorkspaceId(value); return true; }
-if (key == "defaultWorkspaceId") { s->setDefaultWorkspaceId(value); return true; }
-if (key == "workspaceCatalogJson") { s->setWorkspaceCatalogJson(value); return true; }
-if (key == "localKnowledgeBaseEnabled") { if(value != "true" && value != "false") return false; s->setLocalKnowledgeBaseEnabled(value == "true"); return true; }
-if (key == "retrievalExplainabilityEnabled") { if(value != "true" && value != "false") return false; s->setRetrievalExplainabilityEnabled(value == "true"); return true; }
-if (key == "attachmentBehavior") { s->setAttachmentBehavior(value); return true; }
-if (key == "exportDefaultFormat") { s->setExportDefaultFormat(value); return true; }
-if (key == "exportIncludeTimestamps") { if(value != "true" && value != "false") return false; s->setExportIncludeTimestamps(value == "true"); return true; }
-if (key == "exportIncludeCitations") { if(value != "true" && value != "false") return false; s->setExportIncludeCitations(value == "true"); return true; }
-if (key == "exportAnonymizeNames") { if(value != "true" && value != "false") return false; s->setExportAnonymizeNames(value == "true"); return true; }
-if (key == "exportIncludeModelMetadata") { if(value != "true" && value != "false") return false; s->setExportIncludeModelMetadata(value == "true"); return true; }
-if (key == "responseProfileInstructions") { s->setResponseProfileInstructions(value); return true; }
-if (key == "selectedSkillProfile") { s->setSelectedSkillProfile(value); return true; }
-if (key == "defaultPermissionPolicyState") { s->setDefaultPermissionPolicyState(value); return true; }
-if (key == "updateCheckPolicy") { s->setUpdateCheckPolicy(value); return true; }
-if (key == "updateCheckUrl") { s->setUpdateCheckUrl(value); return true; }
-if (key == "notificationPolicy") { s->setNotificationPolicy(value); return true; }
-if (key == "onboardingComplete") { if(value != "true" && value != "false") return false; s->setOnboardingComplete(value == "true"); return true; }
-if (key == "onboardingUseCase") { s->setOnboardingUseCase(value); return true; }
-if (key == "selectedSystemMode") { s->setSelectedSystemMode(value); return true; }
-if (key == "onboardingAiProvider") { s->setOnboardingAiProvider(value); return true; }
-if (key == "recoveryDraftText") { s->setRecoveryDraftText(value); return true; }
-if (key == "reducedMotionEnabled") { if(value != "true" && value != "false") return false; s->setReducedMotionEnabled(value == "true"); return true; }
-if (key == "highContrastEnabled") { if(value != "true" && value != "false") return false; s->setHighContrastEnabled(value == "true"); return true; }
-if (key == "uiDensity") { s->setUiDensity(value); return true; }
-if (key == "notificationCenterJson") { s->setNotificationCenterJson(value); return true; }
-if (key == "updateWorkflowState") { s->setUpdateWorkflowState(value); return true; }
-if (key == "controlledAgentTasksJson") { s->setControlledAgentTasksJson(value); return true; }
-if (key == "controlledAgentPermissionsJson") { s->setControlledAgentPermissionsJson(value); return true; }
-if (key == "notifyModelDownloads") { if(value != "true" && value != "false") return false; s->setNotifyModelDownloads(value == "true"); return true; }
-if (key == "notifyModelRemovals") { if(value != "true" && value != "false") return false; s->setNotifyModelRemovals(value == "true"); return true; }
-if (key == "notifyAgentResponses") { if(value != "true" && value != "false") return false; s->setNotifyAgentResponses(value == "true"); return true; }
-if (key == "notifySystemUpdates") { if(value != "true" && value != "false") return false; s->setNotifySystemUpdates(value == "true"); return true; }
-if (key == "soundEffectsEnabled") { if(value != "true" && value != "false") return false; s->setSoundEffectsEnabled(value == "true"); return true; }
+inline bool setting(core::AppSettings* s, const QString& key, const QString& value) { if (!s) return false; s->clearStorageWriteError();
+if (key == "themeName") { s->setThemeName(value); return s->storageErrorCode().isEmpty(); }
+if (key == "configurationProfile") { s->setConfigurationProfile(value); return s->storageErrorCode().isEmpty(); }
+if (key == "appLanguage") { s->setAppLanguage(value); return s->storageErrorCode().isEmpty(); }
+if (key == "routingMode") { s->setRoutingModeName(value); return s->storageErrorCode().isEmpty(); }
+if (key == "ollamaEndpoint") { s->setOllamaEndpoint(value); return s->storageErrorCode().isEmpty(); }
+if (key == "lmStudioEndpoint") { s->setLmStudioEndpoint(value); return s->storageErrorCode().isEmpty(); }
+if (key == "llamaCppEndpoint") { s->setLlamaCppEndpoint(value); return s->storageErrorCode().isEmpty(); }
+if (key == "cloudApiEndpoint") { s->setCloudApiEndpoint(value); return s->storageErrorCode().isEmpty(); }
+if (key == "webSearchProvider") { s->setWebSearchProvider(value); return s->storageErrorCode().isEmpty(); }
+if (key == "webSearchMaxResults") { bool valid = false; const auto converted = value.toInt(&valid); if (!valid) return false; s->setWebSearchMaxResults(converted); return s->storageErrorCode().isEmpty(); }
+if (key == "mcpServersJson") { s->setMcpServersJson(value); return s->storageErrorCode().isEmpty(); }
+if (key == "semanticProvider") { s->setSemanticProvider(value); return s->storageErrorCode().isEmpty(); }
+if (key == "semanticEmbeddingModel") { s->setSemanticEmbeddingModel(value); return s->storageErrorCode().isEmpty(); }
+if (key == "selectedRuntimeProvider") { s->setSelectedRuntimeProvider(value); return s->storageErrorCode().isEmpty(); }
+if (key == "selectedCloudProvider") { s->setSelectedCloudProvider(value); return s->storageErrorCode().isEmpty(); }
+if (key == "localInferenceTimeoutMs") { bool valid = false; const auto converted = value.toInt(&valid); if (!valid) return false; s->setLocalInferenceTimeoutMs(converted); return s->storageErrorCode().isEmpty(); }
+if (key == "localInferenceTemperature") { bool valid = false; const auto converted = value.toDouble(&valid); if (!valid) return false; if (!std::isfinite(converted)) return false; s->setLocalInferenceTemperature(converted); return s->storageErrorCode().isEmpty(); }
+if (key == "localInferenceTopP") { bool valid = false; const auto converted = value.toDouble(&valid); if (!valid) return false; if (!std::isfinite(converted)) return false; s->setLocalInferenceTopP(converted); return s->storageErrorCode().isEmpty(); }
+if (key == "localInferenceMaxTokens") { bool valid = false; const auto converted = value.toInt(&valid); if (!valid) return false; s->setLocalInferenceMaxTokens(converted); return s->storageErrorCode().isEmpty(); }
+if (key == "promptContextInjectionEnabled") { if(value != "true" && value != "false") return false; s->setPromptContextInjectionEnabled(value == "true"); return s->storageErrorCode().isEmpty(); }
+if (key == "semanticPromptInclusionEnabled") { if(value != "true" && value != "false") return false; s->setSemanticPromptInclusionEnabled(value == "true"); return s->storageErrorCode().isEmpty(); }
+if (key == "contextExplainabilityVisible") { if(value != "true" && value != "false") return false; s->setContextExplainabilityVisible(value == "true"); return s->storageErrorCode().isEmpty(); }
+if (key == "companionEnabled") { if(value != "true" && value != "false") return false; s->setCompanionEnabled(value == "true"); return s->storageErrorCode().isEmpty(); }
+if (key == "developerModeEnabled") { if(value != "true" && value != "false") return false; s->setDeveloperModeEnabled(value == "true"); return s->storageErrorCode().isEmpty(); }
+if (key == "agentAutonomousMode") { if(value != "true" && value != "false") return false; s->setAgentAutonomousMode(value == "true"); return s->storageErrorCode().isEmpty(); }
+if (key == "piperBinaryPath") { s->setPiperBinaryPath(value); return s->storageErrorCode().isEmpty(); }
+if (key == "piperModelPath") { s->setPiperModelPath(value); return s->storageErrorCode().isEmpty(); }
+if (key == "whisperBinaryPath") { s->setWhisperBinaryPath(value); return s->storageErrorCode().isEmpty(); }
+if (key == "whisperModelPath") { s->setWhisperModelPath(value); return s->storageErrorCode().isEmpty(); }
+if (key == "piperFileOutputExecutionEnabled") { if(value != "true" && value != "false") return false; s->setPiperFileOutputExecutionEnabled(value == "true"); return s->storageErrorCode().isEmpty(); }
+if (key == "selectedTtsEngine") { s->setSelectedTtsEngine(value); return s->storageErrorCode().isEmpty(); }
+if (key == "kokoroModelPath") { s->setKokoroModelPath(value); return s->storageErrorCode().isEmpty(); }
+if (key == "kokoroVoice") { s->setKokoroVoice(value); return s->storageErrorCode().isEmpty(); }
+if (key == "activeConversationId") { s->setActiveConversationId(value); return s->storageErrorCode().isEmpty(); }
+if (key == "selectedWorkspaceId") { s->setSelectedWorkspaceId(value); return s->storageErrorCode().isEmpty(); }
+if (key == "defaultWorkspaceId") { s->setDefaultWorkspaceId(value); return s->storageErrorCode().isEmpty(); }
+if (key == "workspaceCatalogJson") { s->setWorkspaceCatalogJson(value); return s->storageErrorCode().isEmpty(); }
+if (key == "localKnowledgeBaseEnabled") { if(value != "true" && value != "false") return false; s->setLocalKnowledgeBaseEnabled(value == "true"); return s->storageErrorCode().isEmpty(); }
+if (key == "retrievalExplainabilityEnabled") { if(value != "true" && value != "false") return false; s->setRetrievalExplainabilityEnabled(value == "true"); return s->storageErrorCode().isEmpty(); }
+if (key == "attachmentBehavior") { s->setAttachmentBehavior(value); return s->storageErrorCode().isEmpty(); }
+if (key == "exportDefaultFormat") { s->setExportDefaultFormat(value); return s->storageErrorCode().isEmpty(); }
+if (key == "exportIncludeTimestamps") { if(value != "true" && value != "false") return false; s->setExportIncludeTimestamps(value == "true"); return s->storageErrorCode().isEmpty(); }
+if (key == "exportIncludeCitations") { if(value != "true" && value != "false") return false; s->setExportIncludeCitations(value == "true"); return s->storageErrorCode().isEmpty(); }
+if (key == "exportAnonymizeNames") { if(value != "true" && value != "false") return false; s->setExportAnonymizeNames(value == "true"); return s->storageErrorCode().isEmpty(); }
+if (key == "exportIncludeModelMetadata") { if(value != "true" && value != "false") return false; s->setExportIncludeModelMetadata(value == "true"); return s->storageErrorCode().isEmpty(); }
+if (key == "responseProfileInstructions") { s->setResponseProfileInstructions(value); return s->storageErrorCode().isEmpty(); }
+if (key == "selectedSkillProfile") { s->setSelectedSkillProfile(value); return s->storageErrorCode().isEmpty(); }
+if (key == "defaultPermissionPolicyState") { s->setDefaultPermissionPolicyState(value); return s->storageErrorCode().isEmpty(); }
+if (key == "updateCheckPolicy") { s->setUpdateCheckPolicy(value); return s->storageErrorCode().isEmpty(); }
+if (key == "updateCheckUrl") { s->setUpdateCheckUrl(value); return s->storageErrorCode().isEmpty(); }
+if (key == "notificationPolicy") { s->setNotificationPolicy(value); return s->storageErrorCode().isEmpty(); }
+if (key == "onboardingComplete") { if(value != "true" && value != "false") return false; s->setOnboardingComplete(value == "true"); return s->storageErrorCode().isEmpty(); }
+if (key == "onboardingUseCase") { s->setOnboardingUseCase(value); return s->storageErrorCode().isEmpty(); }
+if (key == "selectedSystemMode") { s->setSelectedSystemMode(value); return s->storageErrorCode().isEmpty(); }
+if (key == "onboardingAiProvider") { s->setOnboardingAiProvider(value); return s->storageErrorCode().isEmpty(); }
+if (key == "recoveryDraftText") { s->setRecoveryDraftText(value); return s->storageErrorCode().isEmpty(); }
+if (key == "reducedMotionEnabled") { if(value != "true" && value != "false") return false; s->setReducedMotionEnabled(value == "true"); return s->storageErrorCode().isEmpty(); }
+if (key == "highContrastEnabled") { if(value != "true" && value != "false") return false; s->setHighContrastEnabled(value == "true"); return s->storageErrorCode().isEmpty(); }
+if (key == "uiDensity") { s->setUiDensity(value); return s->storageErrorCode().isEmpty(); }
+if (key == "notificationCenterJson") { s->setNotificationCenterJson(value); return s->storageErrorCode().isEmpty(); }
+if (key == "updateWorkflowState") { s->setUpdateWorkflowState(value); return s->storageErrorCode().isEmpty(); }
+if (key == "controlledAgentTasksJson") { s->setControlledAgentTasksJson(value); return s->storageErrorCode().isEmpty(); }
+if (key == "controlledAgentPermissionsJson") { s->setControlledAgentPermissionsJson(value); return s->storageErrorCode().isEmpty(); }
+if (key == "notifyModelDownloads") { if(value != "true" && value != "false") return false; s->setNotifyModelDownloads(value == "true"); return s->storageErrorCode().isEmpty(); }
+if (key == "notifyModelRemovals") { if(value != "true" && value != "false") return false; s->setNotifyModelRemovals(value == "true"); return s->storageErrorCode().isEmpty(); }
+if (key == "notifyAgentResponses") { if(value != "true" && value != "false") return false; s->setNotifyAgentResponses(value == "true"); return s->storageErrorCode().isEmpty(); }
+if (key == "notifySystemUpdates") { if(value != "true" && value != "false") return false; s->setNotifySystemUpdates(value == "true"); return s->storageErrorCode().isEmpty(); }
+if (key == "soundEffectsEnabled") { if(value != "true" && value != "false") return false; s->setSoundEffectsEnabled(value == "true"); return s->storageErrorCode().isEmpty(); }
 return false; }
-inline QJsonObject settingsServiceActions() { return QJsonDocument::fromJson(R"json({"extensionsHubState":{"query":true,"arguments":[]},"productSettings":{"query":true,"arguments":[]},"productSettingsSections":{"query":true,"arguments":[]},"setProductSetting":{"query":false,"arguments":["string","value"]},"resetProductSetting":{"query":false,"arguments":["string"]},"resetProductSettingsSection":{"query":false,"arguments":["integer"]},"clearWorkspaceSettingOverride":{"query":false,"arguments":["string","string"]},"providerSettingsState":{"query":true,"arguments":["string"]},"extensionSettingsState":{"query":true,"arguments":["string"]},"performExtensionSettingsAction":{"query":false,"arguments":["string","integer"]},"speechSettingsState":{"query":true,"arguments":[]},"securitySettingsState":{"query":true,"arguments":[]},"productPrivacyState":{"query":true,"arguments":[]},"productRecoveryState":{"query":true,"arguments":[]},"productBackupAvailability":{"query":true,"arguments":[]},"exportProductBackup":{"query":false,"arguments":["array"]},"importProductBackup":{"query":false,"arguments":["string","array","boolean"]},"clearProductData":{"query":false,"arguments":["string"]},"runProductMaintenance":{"query":false,"arguments":[]},"resolveInterruptedModelOperation":{"query":false,"arguments":["string"]},"clearProductCredential":{"query":false,"arguments":["string"]},"setProductProviderCredential":{"query":false,"arguments":["string","string"]},"setProductPluginCredential":{"query":false,"arguments":["string","string","string"]},"clearProductPluginCredential":{"query":false,"arguments":["string","string"]}})json").object(); }
+inline QJsonObject settingsServiceActions() { return QJsonDocument::fromJson(R"json({"extensionsHubState":{"query":true,"arguments":[]},"productSettings":{"query":true,"arguments":[]},"productSettingsSections":{"query":true,"arguments":[]},"setProductSetting":{"query":false,"arguments":["string","value"]},"resetProductSetting":{"query":false,"arguments":["string"]},"resetProductSettingsSection":{"query":false,"arguments":["integer"]},"clearWorkspaceSettingOverride":{"query":false,"arguments":["string","string"]},"providerSettingsState":{"query":true,"arguments":["string"]},"extensionSettingsState":{"query":true,"arguments":["string"]},"performExtensionSettingsAction":{"query":false,"arguments":["string","integer"]},"speechSettingsState":{"query":true,"arguments":[]},"securitySettingsState":{"query":true,"arguments":[]},"productPrivacyState":{"query":true,"arguments":[]},"productRecoveryState":{"query":true,"arguments":[]},"productBackupAvailability":{"query":true,"arguments":[]},"exportProductBackup":{"query":false,"arguments":["array"]},"importProductBackup":{"query":false,"arguments":["string","array","boolean"]},"clearProductData":{"query":false,"arguments":["string"]},"runProductMaintenance":{"query":false,"arguments":[]},"resolveInterruptedModelOperation":{"query":false,"arguments":["string"]},"clearProductCredential":{"query":false,"arguments":["string"]},"setProductProviderCredential":{"query":false,"arguments":["string","string"]},"setProductPluginCredential":{"query":false,"arguments":["string","string","string"]},"clearProductPluginCredential":{"query":false,"arguments":["string","string"]},"persistWorkspaceState":{"query":false,"arguments":["string","string"]},"setProviderModelPreference":{"query":false,"arguments":["string","string"]}})json").object(); }
 }
 // clang-format on

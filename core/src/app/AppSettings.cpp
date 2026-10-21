@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "sentinel/core/app/AppSettings.h"
+#include <QThread>
 
 #include "sentinel/core/model/ModelRegistry.h"
 #include "sentinel/core/model/ModelRouting.h"
@@ -213,18 +214,28 @@ void AppSettings::applyNetworkPolicy() const {
 }
 
 QString AppSettings::credential(const QString& id, const QString& legacyKey) const {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return {};
+    }
     const CredentialKey key{id, QStringLiteral("apiKey")};
     const auto stored = credentialStore_.readCredential(key);
+    auto legacy = store_ ? store_->value(legacyKey) : QString{};
+    if (legacy.isEmpty()) {
+        return stored.secret.value_or(QString{});
+    }
+    auto writer = admitSettingsWrite();
+    if (!lastWriteError_.isEmpty()) {
+        return stored.secret.value_or(legacy);
+    }
     if (stored.secret.has_value()) {
-        // A previous migration may have stored the secret before removal was interrupted.
-        if (store_ && !store_->value(legacyKey).isEmpty()) store_->remove(legacyKey);
+        store_->remove(legacyKey);
         return *stored.secret;
     }
-    if (!store_) return {};
-    const QString legacy = store_->value(legacyKey);
-    if (legacy.isEmpty()) return {};
     const auto written = credentialStore_.storeCredential(key, legacy);
-    if (!written.succeeded) return legacy; // Retain access and the original on migration failure.
+    if (!written.succeeded) {
+        return legacy;
+    }
     const auto confirmed = credentialStore_.readCredential(key);
     if (!confirmed.secret.has_value() || *confirmed.secret != legacy) return legacy;
     store_->remove(legacyKey);
@@ -233,22 +244,33 @@ QString AppSettings::credential(const QString& id, const QString& legacyKey) con
 
 bool AppSettings::setCredential(const QString& id, const QString& legacyKey,
                                 const QString& value) {
+    auto writer = admitSettingsWrite();
+    if (wrongThreadWrite_ || !lastWriteError_.isEmpty()) {
+        return false;
+    }
+    if (!store_->errorCode().isEmpty()) {
+        lastWriteError_ = store_->errorCode();
+        return false;
+    }
     const CredentialKey key{id, QStringLiteral("apiKey")};
     const QString normalized = value;
-    if (normalized == credential(id, legacyKey)) return true;
+    const auto current = credentialStore_.readCredential(key);
+    if (current.secret.has_value() && normalized == *current.secret) {
+        return true;
+    }
     if (normalized.isEmpty()) {
         if (credentialStore_.summary().status != CredentialStoreStatus::Ready) return false;
         const auto removed = credentialStore_.deleteCredential(key);
         if (!removed.succeeded && credentialStore_.containsCredential(key).succeeded) return false;
         if (store_) store_->remove(legacyKey);
-        return true;
+        return !store_ || store_->errorCode().isEmpty();
     }
     const auto written = credentialStore_.storeCredential(key, normalized);
     if (!written.succeeded) return false;
     const auto confirmed = credentialStore_.readCredential(key);
     if (!confirmed.secret.has_value() || *confirmed.secret != normalized) return false;
     if (store_) store_->remove(legacyKey);
-    return true;
+    return !store_ || store_->errorCode().isEmpty();
 }
 
 QString AppSettings::credentialState(const QString& logicalId) const {
@@ -272,7 +294,151 @@ QString AppSettings::credentialState(const QString& logicalId) const {
 }
 
 QString AppSettings::storageErrorCode() const {
+    if (wrongThreadWrite_) {
+        return QStringLiteral("SettingsWrongThread");
+    }
+    if (!lastWriteError_.isEmpty()) {
+        return lastWriteError_;
+    }
     return store_ ? store_->errorCode() : QStringLiteral("StoreUnavailable");
+}
+void AppSettings::clearStorageWriteError() {
+    if (QThread::currentThread() != thread()) {
+        return;
+    }
+    wrongThreadWrite_ = false;
+    lastWriteError_.clear();
+}
+bool AppSettings::attachStorageAdmission(std::shared_ptr<StorageAdmission> admission) {
+    if (QThread::currentThread() != thread() || !admission) {
+        return false;
+    }
+    if (storageAdmission_) {
+        return storageAdmission_ == admission;
+    }
+    storageGeneration_ = admission->snapshot().generation;
+    storageAdmission_ = std::move(admission);
+    return true;
+}
+StorageAdmission::Writer AppSettings::admitSettingsWrite() const {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return {};
+    }
+    wrongThreadWrite_ = false;
+    lastWriteError_.clear();
+    if (persistenceReadOnly_) {
+        lastWriteError_ = QStringLiteral("SettingsReadOnly");
+        return {};
+    }
+    if (!store_) {
+        lastWriteError_ = QStringLiteral("StoreUnavailable");
+        return {};
+    }
+    if (!storageAdmission_) {
+        return {};
+    }
+    auto writer = storageAdmission_->admit(storageGeneration_);
+    if (!writer) {
+        const auto state = storageAdmission_->snapshot();
+        lastWriteError_ = state.state == StorageAdmission::State::Unavailable
+                              ? QStringLiteral("StorageUnavailable")
+                          : state.generation != storageGeneration_
+                              ? QStringLiteral("StaleStorageGeneration")
+                              : QStringLiteral("StorageBusy");
+    }
+    return writer;
+}
+bool AppSettings::persistValue(QString key, QString value) const {
+    auto writer = admitSettingsWrite();
+    if (wrongThreadWrite_ || !lastWriteError_.isEmpty()) {
+        return false;
+    }
+    store_->setValue(std::move(key), std::move(value));
+    return store_->errorCode().isEmpty();
+}
+bool AppSettings::removeValue(const QString& key) const {
+    auto writer = admitSettingsWrite();
+    if (wrongThreadWrite_ || !lastWriteError_.isEmpty()) {
+        return false;
+    }
+    store_->remove(key);
+    return store_->errorCode().isEmpty();
+}
+bool AppSettings::persistValues(const QMap<QString, QString>& values) const {
+    auto writer = admitSettingsWrite();
+    if (wrongThreadWrite_ || !lastWriteError_.isEmpty()) {
+        return false;
+    }
+    if (store_->applyChanges(values)) {
+        return true;
+    }
+    lastWriteError_ = store_->errorCode().isEmpty() ? QStringLiteral("AtomicSettingsUnsupported")
+                                                    : store_->errorCode();
+    return false;
+}
+bool AppSettings::applyPortableSettings(const QString& theme, const QString& language,
+                                        const QString& network) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return false;
+    }
+    if (!availableThemes().contains(theme) || !availableLanguages().contains(language) ||
+        !QStringList{"Online", "Offline", "LocalOnly"}.contains(network)) {
+        lastWriteError_ = "InvalidSettings";
+        return false;
+    }
+    const auto oldTheme = themeName(), oldLanguage = appLanguage(), oldNetwork = networkMode();
+    if (!persistValues({{QString::fromLatin1(themeNameKey), theme},
+                        {QString::fromLatin1(appLanguageKey), language},
+                        {QString::fromLatin1(networkModeKey), network}})) {
+        return false;
+    }
+    applyNetworkPolicy();
+    if (oldTheme != theme) {
+        emit themeNameChanged();
+    }
+    if (oldLanguage != language) {
+        emit appLanguageChanged();
+    }
+    if (oldNetwork != network) {
+        emit networkModeChanged();
+    }
+    return true;
+}
+bool AppSettings::persistWorkspaceState(const QString& catalog, const QString& selection) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return false;
+    }
+    const auto doc = QJsonDocument::fromJson(catalog.toUtf8());
+    WorkspaceService workspaces;
+    if (!doc.isObject() || doc.object().value("version").toInt() != 1 ||
+        !doc.object().value("customWorkspaces").isArray() ||
+        workspaces.normalizedWorkspaceId(selection, catalog) != selection) {
+        lastWriteError_ = QStringLiteral("InvalidWorkspaceState");
+        return false;
+    }
+    const auto previousSelection = selectedWorkspaceId();
+    const auto previousDefault = defaultWorkspaceId();
+    const auto normalizedDefault = workspaces.normalizedWorkspaceId(previousDefault, catalog);
+    const auto nextDefault = workspaces.selectedWorkspace(normalizedDefault, catalog).archived
+                                 ? QStringLiteral("personal")
+                                 : normalizedDefault;
+    const auto nextSelection = workspaces.selectedWorkspace(selection, catalog).archived
+                                   ? QStringLiteral("personal")
+                                   : selection;
+    if (!persistValues({{QString::fromLatin1(workspaceCatalogJsonKey), catalog},
+                        {QString::fromLatin1(selectedWorkspaceIdKey), nextSelection},
+                        {QString::fromLatin1(defaultWorkspaceIdKey), nextDefault}})) {
+        return false;
+    }
+    applyNetworkPolicy();
+    if (previousSelection != nextSelection) {
+        emit selectedWorkspaceIdChanged();
+    }
+    emit workspaceSettingsChanged();
+    return true;
 }
 
 QString AppSettings::retentionPolicyJson() const {
@@ -280,7 +446,16 @@ QString AppSettings::retentionPolicyJson() const {
 }
 
 void AppSettings::setRetentionPolicyJson(const QString& json) {
-    if (store_) store_->setValue(QStringLiteral("privacy.retentionPolicy.v1"), json);
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
+    if (store_) {
+        if (!persistValue(QStringLiteral("privacy.retentionPolicy.v1"), json)) {
+            return;
+        }
+    }
 }
 
 QStringList AppSettings::availableThemes() {
@@ -297,12 +472,19 @@ QString AppSettings::themeName() const {
 }
 
 void AppSettings::setThemeName(const QString& themeName) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = themeName.trimmed();
     if (normalized.isEmpty() || normalized == this->themeName() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(themeNameKey), normalized);
+    if (!persistValue(QString::fromLatin1(themeNameKey), normalized)) {
+        return;
+    }
     emit themeNameChanged();
 }
 
@@ -313,12 +495,19 @@ QString AppSettings::configurationProfile() const {
 }
 
 void AppSettings::setConfigurationProfile(const QString& configurationProfile) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = configurationProfile.trimmed();
     if (normalized.isEmpty() || normalized == this->configurationProfile() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(configurationProfileKey), normalized);
+    if (!persistValue(QString::fromLatin1(configurationProfileKey), normalized)) {
+        return;
+    }
     emit configurationProfileChanged();
 }
 
@@ -333,6 +522,11 @@ QString AppSettings::appLanguage() const {
 }
 
 void AppSettings::setAppLanguage(const QString& language) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = language.trimmed().toLower();
     const auto systemLanguage = QLocale::system().name().left(2).toLower();
     const auto fallback =
@@ -342,7 +536,9 @@ void AppSettings::setAppLanguage(const QString& language) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(appLanguageKey), selected);
+    if (!persistValue(QString::fromLatin1(appLanguageKey), selected)) {
+        return;
+    }
     emit appLanguageChanged();
 }
 
@@ -391,12 +587,19 @@ QString AppSettings::routingModeName() const {
 }
 
 void AppSettings::setRoutingModeName(const QString& routingModeName) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = normalizedRoutingModeName(routingModeName);
     if (normalized == this->routingModeName() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(routingModeKey), normalized);
+    if (!persistValue(QString::fromLatin1(routingModeKey), normalized)) {
+        return;
+    }
     emit routingModeNameChanged();
 }
 
@@ -413,12 +616,19 @@ QString AppSettings::ollamaEndpoint() const {
 }
 
 void AppSettings::setOllamaEndpoint(const QString& endpoint) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = OllamaEndpoint::fromUserInput(endpoint).toString();
     if (normalized == ollamaEndpoint() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(ollamaEndpointKey), normalized);
+    if (!persistValue(QString::fromLatin1(ollamaEndpointKey), normalized)) {
+        return;
+    }
     emit ollamaEndpointChanged();
 }
 
@@ -430,9 +640,16 @@ QString AppSettings::lmStudioEndpoint() const {
 }
 
 void AppSettings::setLmStudioEndpoint(const QString& endpoint) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (endpoint == lmStudioEndpoint() || !store_)
         return;
-    store_->setValue(QString::fromLatin1(lmStudioEndpointKey), endpoint);
+    if (!persistValue(QString::fromLatin1(lmStudioEndpointKey), endpoint)) {
+        return;
+    }
     emit lmStudioEndpointChanged();
 }
 
@@ -444,9 +661,16 @@ QString AppSettings::llamaCppEndpoint() const {
 }
 
 void AppSettings::setLlamaCppEndpoint(const QString& endpoint) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (endpoint == llamaCppEndpoint() || !store_)
         return;
-    store_->setValue(QString::fromLatin1(llamaCppEndpointKey), endpoint);
+    if (!persistValue(QString::fromLatin1(llamaCppEndpointKey), endpoint)) {
+        return;
+    }
     emit llamaCppEndpointChanged();
 }
 
@@ -457,9 +681,16 @@ QString AppSettings::cloudApiEndpoint() const {
 }
 
 void AppSettings::setCloudApiEndpoint(const QString& endpoint) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (endpoint == cloudApiEndpoint() || !store_)
         return;
-    store_->setValue(QString::fromLatin1(cloudApiEndpointKey), endpoint);
+    if (!persistValue(QString::fromLatin1(cloudApiEndpointKey), endpoint)) {
+        return;
+    }
     emit cloudApiEndpointChanged();
 }
 
@@ -475,6 +706,11 @@ QString AppSettings::webSearchProvider() const {
 }
 
 void AppSettings::setWebSearchProvider(const QString& provider) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = provider.trimmed().toLower();
     const auto selected =
         (normalized == QStringLiteral("parallel") || normalized == QStringLiteral("duckduckgo"))
@@ -483,7 +719,9 @@ void AppSettings::setWebSearchProvider(const QString& provider) {
     if (selected == webSearchProvider() || !store_) {
         return;
     }
-    store_->setValue(QString::fromLatin1(webSearchProviderKey), selected);
+    if (!persistValue(QString::fromLatin1(webSearchProviderKey), selected)) {
+        return;
+    }
     emit webSearchSettingsChanged();
 }
 
@@ -492,30 +730,61 @@ QString AppSettings::webSearchApiKey() const {
 }
 
 void AppSettings::setWebSearchApiKey(const QString& key) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (setCredential(QStringLiteral("web-search"), QString::fromLatin1(webSearchApiKeyKey), key))
         emit webSearchSettingsChanged();
 }
 
 QString AppSettings::mcpServersJson() const {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return {};
+    }
     if (!store_) return {};
     const auto raw = store_->value(QString::fromLatin1(mcpServersJsonKey));
     if (raw.isEmpty()) return {};
     bool complete = false;
-    const auto safe = secureMcpServersJson(raw, &complete);
+    auto safe = secureMcpServersJson(raw, &complete, false);
+    if (complete && safe == raw) {
+        return safe;
+    }
+    auto writer = admitSettingsWrite();
+    if (!lastWriteError_.isEmpty()) {
+        return safe;
+    }
+    safe = secureMcpServersJson(raw, &complete);
     if (complete && safe != raw) store_->setValue(QString::fromLatin1(mcpServersJsonKey), safe);
     return safe;
 }
 
 void AppSettings::setMcpServersJson(const QString& json) {
+    auto writer = admitSettingsWrite();
+    if (wrongThreadWrite_ || !lastWriteError_.isEmpty()) {
+        return;
+    }
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (!store_) return;
     bool complete = false;
     const auto safe = secureMcpServersJson(json, &complete);
-    if (!complete || safe == mcpServersJson()) return;
+    if (!complete || safe == store_->value(QString::fromLatin1(mcpServersJsonKey))) {
+        return;
+    }
     store_->setValue(QString::fromLatin1(mcpServersJsonKey), safe);
+    if (!store_->errorCode().isEmpty()) {
+        return;
+    }
     emit mcpServersChanged();
 }
 
-QString AppSettings::secureMcpServersJson(const QString& json, bool* complete) const {
+QString AppSettings::secureMcpServersJson(const QString& json, bool* complete, bool migrate) const {
     *complete = false;
     const auto document = QJsonDocument::fromJson(json.toUtf8());
     if (!document.isObject()) return QStringLiteral("{}");
@@ -536,6 +805,11 @@ QString AppSettings::secureMcpServersJson(const QString& json, bool* complete) c
             const auto value = header.value().toString();
             if (value == reference || value.isEmpty()) continue;
             if (value.startsWith(QLatin1String("secret://"))) {
+                allStored = false;
+                header.value() = QString();
+                continue;
+            }
+            if (!migrate) {
                 allStored = false;
                 header.value() = QString();
                 continue;
@@ -570,11 +844,18 @@ int AppSettings::webSearchMaxResults() const {
 }
 
 void AppSettings::setWebSearchMaxResults(int maxResults) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = std::clamp(maxResults, 1, 20);
     if (normalized == webSearchMaxResults() || !store_) {
         return;
     }
-    store_->setValue(QString::fromLatin1(webSearchMaxResultsKey), QString::number(normalized));
+    if (!persistValue(QString::fromLatin1(webSearchMaxResultsKey), QString::number(normalized))) {
+        return;
+    }
     emit webSearchSettingsChanged();
 }
 
@@ -587,13 +868,20 @@ QString AppSettings::semanticProvider() const {
 }
 
 void AppSettings::setSemanticProvider(const QString& provider) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto selected = provider.trimmed().toLower() == QStringLiteral("ollama")
                               ? QStringLiteral("ollama")
                               : QStringLiteral("disabled");
     if (selected == semanticProvider() || !store_) {
         return;
     }
-    store_->setValue(QString::fromLatin1(semanticProviderKey), selected);
+    if (!persistValue(QString::fromLatin1(semanticProviderKey), selected)) {
+        return;
+    }
     emit semanticSettingsChanged();
 }
 
@@ -605,11 +893,18 @@ QString AppSettings::semanticEmbeddingModel() const {
 }
 
 void AppSettings::setSemanticEmbeddingModel(const QString& model) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = model.trimmed();
     if (normalized.isEmpty() || normalized == semanticEmbeddingModel() || !store_) {
         return;
     }
-    store_->setValue(QString::fromLatin1(semanticEmbeddingModelKey), normalized);
+    if (!persistValue(QString::fromLatin1(semanticEmbeddingModelKey), normalized)) {
+        return;
+    }
     emit semanticSettingsChanged();
 }
 
@@ -626,6 +921,11 @@ QString AppSettings::selectedRuntimeProvider() const {
 }
 
 void AppSettings::setSelectedRuntimeProvider(const QString& providerId) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = providerId.trimmed().toLower();
     const auto selected = isKnownRuntimeProviderId(normalized)
                               ? normalized
@@ -634,7 +934,9 @@ void AppSettings::setSelectedRuntimeProvider(const QString& providerId) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(selectedRuntimeProviderKey), selected);
+    if (!persistValue(QString::fromLatin1(selectedRuntimeProviderKey), selected)) {
+        return;
+    }
     emit selectedRuntimeProviderChanged();
 }
 
@@ -655,6 +957,11 @@ QString AppSettings::selectedCloudProvider() const {
 }
 
 void AppSettings::setSelectedCloudProvider(const QString& providerId) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = providerId.trimmed().toLower();
     const auto selected =
         (normalized == QStringLiteral("claude") || normalized == QStringLiteral("gemini") ||
@@ -666,7 +973,9 @@ void AppSettings::setSelectedCloudProvider(const QString& providerId) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(selectedCloudProviderKey), selected);
+    if (!persistValue(QString::fromLatin1(selectedCloudProviderKey), selected)) {
+        return;
+    }
     emit selectedCloudProviderChanged();
 }
 
@@ -675,6 +984,11 @@ QString AppSettings::selectedLocalModel() const {
 }
 
 void AppSettings::setSelectedLocalModel(const QString& model) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     setSelectedModelForProvider(QStringLiteral("ollama"), model);
 }
 
@@ -697,6 +1011,11 @@ QString AppSettings::selectedModelForProvider(const QString& providerId) const {
 }
 
 void AppSettings::setSelectedModelForProvider(const QString& providerId, const QString& model) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (!store_) {
         return;
     }
@@ -711,10 +1030,13 @@ void AppSettings::setSelectedModelForProvider(const QString& providerId, const Q
         return;
     }
 
-    store_->setValue(QString::fromLatin1(selectedProviderModelKeyPrefix) + normalizedProvider,
-                     normalized);
+    QMap<QString, QString> changes{
+        {QString::fromLatin1(selectedProviderModelKeyPrefix) + normalizedProvider, normalized}};
     if (normalizedProvider == QStringLiteral("ollama")) {
-        store_->setValue(QString::fromLatin1(selectedLocalModelKey), normalized);
+        changes.insert(QString::fromLatin1(selectedLocalModelKey), normalized);
+    }
+    if (!persistValues(changes)) {
+        return;
     }
     emit selectedLocalModelChanged();
 }
@@ -761,6 +1083,11 @@ ModelCapabilities AppSettings::modelCapabilitiesOverride(const QString& provider
 
 void AppSettings::setModelCapabilitiesOverride(const QString& providerId, const QString& modelId,
                                                 const ModelCapabilities& capabilities) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (!store_ || providerId.trimmed().isEmpty() || modelId.trimmed().isEmpty())
         return;
     QJsonObject object;
@@ -784,10 +1111,16 @@ void AppSettings::setModelCapabilitiesOverride(const QString& providerId, const 
         object.insert(QStringLiteral("maxOutputTokens"), *capabilities.maxOutputTokens);
     const auto key = QStringLiteral("modelCapabilities.%1.%2")
                          .arg(providerId.trimmed().toLower(), modelId.trimmed());
-    if (object.isEmpty())
-        store_->remove(key);
-    else
-        store_->setValue(key, QString::fromUtf8(QJsonDocument(object).toJson(QJsonDocument::Compact)));
+    if (object.isEmpty()) {
+        if (!removeValue(key)) {
+            return;
+        }
+    } else {
+        if (!persistValue(
+                key, QString::fromUtf8(QJsonDocument(object).toJson(QJsonDocument::Compact)))) {
+            return;
+        }
+    }
 }
 
 QString AppSettings::selectedModelForRole(const QString& roleId) const {
@@ -805,6 +1138,11 @@ QString AppSettings::selectedModelForRole(const QString& roleId) const {
 }
 
 void AppSettings::setSelectedModelForRole(const QString& roleId, const QString& modelId) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (!store_) {
         return;
     }
@@ -819,8 +1157,10 @@ void AppSettings::setSelectedModelForRole(const QString& roleId, const QString& 
         return;
     }
 
-    store_->setValue(QString::fromLatin1(selectedRoleModelKeyPrefix) + normalizedRole,
-                     normalizedModel);
+    if (!persistValue(QString::fromLatin1(selectedRoleModelKeyPrefix) + normalizedRole,
+                      normalizedModel)) {
+        return;
+    }
     emit selectedModelRoleChanged();
 }
 
@@ -829,6 +1169,11 @@ bool AppSettings::localChatInferenceEnabled() const {
 }
 
 void AppSettings::setLocalChatInferenceEnabled(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (!enabled || !store_) {
         return;
     }
@@ -838,7 +1183,9 @@ void AppSettings::setLocalChatInferenceEnabled(bool enabled) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(localChatInferenceEnabledKey), QStringLiteral("true"));
+    if (!persistValue(QString::fromLatin1(localChatInferenceEnabledKey), QStringLiteral("true"))) {
+        return;
+    }
     emit localChatInferenceEnabledChanged();
 }
 
@@ -847,6 +1194,11 @@ bool AppSettings::localInferenceStreamingEnabled() const {
 }
 
 void AppSettings::setLocalInferenceStreamingEnabled(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (!enabled || !store_) {
         return;
     }
@@ -856,8 +1208,10 @@ void AppSettings::setLocalInferenceStreamingEnabled(bool enabled) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(localInferenceStreamingEnabledKey),
-                     QStringLiteral("true"));
+    if (!persistValue(QString::fromLatin1(localInferenceStreamingEnabledKey),
+                      QStringLiteral("true"))) {
+        return;
+    }
     emit localInferenceStreamingEnabledChanged();
 }
 
@@ -874,12 +1228,20 @@ int AppSettings::localInferenceTimeoutMs() const {
 }
 
 void AppSettings::setLocalInferenceTimeoutMs(int timeoutMs) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = timeoutMs <= 0 ? 0 : std::clamp(timeoutMs, 1000, 300000);
     if (normalized == localInferenceTimeoutMs() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(localInferenceTimeoutMsKey), QString::number(normalized));
+    if (!persistValue(QString::fromLatin1(localInferenceTimeoutMsKey),
+                      QString::number(normalized))) {
+        return;
+    }
     emit localInferenceTimeoutMsChanged();
 }
 
@@ -897,13 +1259,20 @@ double AppSettings::localInferenceTemperature() const {
 }
 
 void AppSettings::setLocalInferenceTemperature(double temperature) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = std::clamp(temperature, 0.0, 2.0);
     if (qFuzzyCompare(normalized, localInferenceTemperature()) || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(localInferenceTemperatureKey),
-                     QString::number(normalized, 'f', 2));
+    if (!persistValue(QString::fromLatin1(localInferenceTemperatureKey),
+                      QString::number(normalized, 'f', 2))) {
+        return;
+    }
     emit localInferenceTemperatureChanged();
 }
 
@@ -920,13 +1289,20 @@ double AppSettings::localInferenceTopP() const {
 }
 
 void AppSettings::setLocalInferenceTopP(double topP) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = std::clamp(topP, 0.0, 1.0);
     if (qFuzzyCompare(normalized, localInferenceTopP()) || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(localInferenceTopPKey),
-                     QString::number(normalized, 'f', 2));
+    if (!persistValue(QString::fromLatin1(localInferenceTopPKey),
+                      QString::number(normalized, 'f', 2))) {
+        return;
+    }
     emit localInferenceTopPChanged();
 }
 
@@ -943,12 +1319,20 @@ int AppSettings::localInferenceMaxTokens() const {
 }
 
 void AppSettings::setLocalInferenceMaxTokens(int maxTokens) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = std::clamp(maxTokens, 1, 16384);
     if (normalized == localInferenceMaxTokens() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(localInferenceMaxTokensKey), QString::number(normalized));
+    if (!persistValue(QString::fromLatin1(localInferenceMaxTokensKey),
+                      QString::number(normalized))) {
+        return;
+    }
     emit localInferenceMaxTokensChanged();
 }
 
@@ -959,12 +1343,19 @@ bool AppSettings::promptContextInjectionEnabled() const {
 }
 
 void AppSettings::setPromptContextInjectionEnabled(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (enabled == promptContextInjectionEnabled() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(promptContextInjectionEnabledKey),
-                     enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(promptContextInjectionEnabledKey),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit promptContextInjectionEnabledChanged();
 }
 
@@ -975,12 +1366,19 @@ bool AppSettings::semanticPromptInclusionEnabled() const {
 }
 
 void AppSettings::setSemanticPromptInclusionEnabled(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (enabled == semanticPromptInclusionEnabled() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(semanticPromptInclusionEnabledKey),
-                     enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(semanticPromptInclusionEnabledKey),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit semanticPromptInclusionEnabledChanged();
 }
 
@@ -991,12 +1389,19 @@ bool AppSettings::contextExplainabilityVisible() const {
 }
 
 void AppSettings::setContextExplainabilityVisible(bool visible) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (visible == contextExplainabilityVisible() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(contextExplainabilityVisibleKey),
-                     visible ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(contextExplainabilityVisibleKey),
+                      visible ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit contextExplainabilityVisibleChanged();
 }
 
@@ -1005,10 +1410,17 @@ bool AppSettings::quickPanelStartAtLogin() const {
                                    QStringLiteral("false")) == QLatin1String("true");
 }
 void AppSettings::setQuickPanelStartAtLogin(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (!store_ || enabled == quickPanelStartAtLogin())
         return;
-    store_->setValue(QStringLiteral("quickPanelStartAtLogin"),
-                     enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QStringLiteral("quickPanelStartAtLogin"),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit quickPanelStartAtLoginChanged();
 }
 QString AppSettings::quickPanelShortcut() const {
@@ -1017,9 +1429,16 @@ QString AppSettings::quickPanelShortcut() const {
                   : QStringLiteral("Disabled");
 }
 void AppSettings::setQuickPanelShortcut(const QString& sequence) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (!store_ || sequence == quickPanelShortcut() || sequence.size() > 64)
         return;
-    store_->setValue(QStringLiteral("quickPanelShortcut"), sequence);
+    if (!persistValue(QStringLiteral("quickPanelShortcut"), sequence)) {
+        return;
+    }
     emit quickPanelShortcutChanged();
 }
 bool AppSettings::companionEnabled() const {
@@ -1029,12 +1448,19 @@ bool AppSettings::companionEnabled() const {
 }
 
 void AppSettings::setCompanionEnabled(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (enabled == companionEnabled() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(companionEnabledKey),
-                     enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(companionEnabledKey),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit companionEnabledChanged();
 }
 
@@ -1045,12 +1471,19 @@ bool AppSettings::developerModeEnabled() const {
 }
 
 void AppSettings::setDeveloperModeEnabled(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (enabled == developerModeEnabled() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(developerModeEnabledKey),
-                     enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(developerModeEnabledKey),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit developerModeEnabledChanged();
 }
 
@@ -1061,12 +1494,19 @@ bool AppSettings::agentAutonomousMode() const {
 }
 
 void AppSettings::setAgentAutonomousMode(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (enabled == agentAutonomousMode() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(agentAutonomousModeKey),
-                     enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(agentAutonomousModeKey),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit agentAutonomousModeChanged();
 }
 
@@ -1261,12 +1701,19 @@ QString AppSettings::piperBinaryPath() const {
 }
 
 void AppSettings::setPiperBinaryPath(const QString& path) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = path.trimmed();
     if (normalized == piperBinaryPath() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(piperBinaryPathKey), normalized);
+    if (!persistValue(QString::fromLatin1(piperBinaryPathKey), normalized)) {
+        return;
+    }
     emit piperBinaryPathChanged();
 }
 
@@ -1275,12 +1722,19 @@ QString AppSettings::piperModelPath() const {
 }
 
 void AppSettings::setPiperModelPath(const QString& path) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = path.trimmed();
     if (normalized == piperModelPath() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(piperModelPathKey), normalized);
+    if (!persistValue(QString::fromLatin1(piperModelPathKey), normalized)) {
+        return;
+    }
     emit piperModelPathChanged();
 }
 
@@ -1294,13 +1748,20 @@ QString AppSettings::selectedTtsEngine() const {
 }
 
 void AppSettings::setSelectedTtsEngine(const QString& engine) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = engine.trimmed();
     const auto value = (normalized == QStringLiteral("Kokoro")) ? QStringLiteral("Kokoro")
                                                                 : QStringLiteral("Piper");
     if (value == selectedTtsEngine() || !store_) {
         return;
     }
-    store_->setValue(QString::fromLatin1(selectedTtsEngineKey), value);
+    if (!persistValue(QString::fromLatin1(selectedTtsEngineKey), value)) {
+        return;
+    }
     emit selectedTtsEngineChanged();
 }
 
@@ -1310,11 +1771,18 @@ QString AppSettings::kokoroModelPath() const {
 }
 
 void AppSettings::setKokoroModelPath(const QString& path) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = path.trimmed();
     if (normalized == kokoroModelPath() || !store_) {
         return;
     }
-    store_->setValue(QString::fromLatin1(kokoroModelPathKey), normalized);
+    if (!persistValue(QString::fromLatin1(kokoroModelPathKey), normalized)) {
+        return;
+    }
     emit kokoroModelPathChanged();
 }
 
@@ -1325,11 +1793,18 @@ QString AppSettings::kokoroVoice() const {
 }
 
 void AppSettings::setKokoroVoice(const QString& voice) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = voice.trimmed();
     if (normalized == kokoroVoice() || !store_) {
         return;
     }
-    store_->setValue(QString::fromLatin1(kokoroVoiceKey), normalized);
+    if (!persistValue(QString::fromLatin1(kokoroVoiceKey), normalized)) {
+        return;
+    }
     emit kokoroVoiceChanged();
 }
 
@@ -1337,8 +1812,15 @@ QString AppSettings::voiceInputSource() const {
     return store_ ? store_->value(QStringLiteral("voiceInputSource"), QStringLiteral("local")) : QStringLiteral("local");
 }
 void AppSettings::setVoiceInputSource(const QString& source) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (store_ && (source == QLatin1String("local") || source == QLatin1String("system")))
-        store_->setValue(QStringLiteral("voiceInputSource"), source);
+        if (!persistValue(QStringLiteral("voiceInputSource"), source)) {
+            return;
+        }
 }
 
 QString AppSettings::whisperBinaryPath() const {
@@ -1347,12 +1829,19 @@ QString AppSettings::whisperBinaryPath() const {
 }
 
 void AppSettings::setWhisperBinaryPath(const QString& path) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = path.trimmed();
     if (normalized == whisperBinaryPath() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(whisperBinaryPathKey), normalized);
+    if (!persistValue(QString::fromLatin1(whisperBinaryPathKey), normalized)) {
+        return;
+    }
     emit whisperBinaryPathChanged();
 }
 
@@ -1362,12 +1851,19 @@ QString AppSettings::whisperModelPath() const {
 }
 
 void AppSettings::setWhisperModelPath(const QString& path) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = path.trimmed();
     if (normalized == whisperModelPath() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(whisperModelPathKey), normalized);
+    if (!persistValue(QString::fromLatin1(whisperModelPathKey), normalized)) {
+        return;
+    }
     emit whisperModelPathChanged();
 }
 
@@ -1418,12 +1914,19 @@ bool AppSettings::piperFileOutputExecutionEnabled() const {
 }
 
 void AppSettings::setPiperFileOutputExecutionEnabled(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (enabled == piperFileOutputExecutionEnabled() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(piperFileOutputExecutionEnabledKey),
-                     enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(piperFileOutputExecutionEnabledKey),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit piperFileOutputExecutionEnabledChanged();
 }
 
@@ -1434,11 +1937,18 @@ bool AppSettings::whisperTranscriptionExecutionEnabled() const {
 }
 
 void AppSettings::setWhisperTranscriptionExecutionEnabled(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (enabled == whisperTranscriptionExecutionEnabled() || !store_) {
         return;
     }
-    store_->setValue(QString::fromLatin1(whisperTranscriptionExecutionEnabledKey),
-                     enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(whisperTranscriptionExecutionEnabledKey),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit whisperTranscriptionExecutionEnabledChanged();
 }
 
@@ -1448,12 +1958,19 @@ QString AppSettings::activeConversationId() const {
 }
 
 void AppSettings::setActiveConversationId(const QString& conversationId) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = conversationId.trimmed();
     if (normalized == activeConversationId() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(activeConversationIdKey), normalized);
+    if (!persistValue(QString::fromLatin1(activeConversationIdKey), normalized)) {
+        return;
+    }
     emit activeConversationIdChanged();
 }
 
@@ -1465,12 +1982,19 @@ QString AppSettings::selectedWorkspaceId() const {
 }
 
 void AppSettings::setSelectedWorkspaceId(const QString& workspaceId) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto selected = normalizedWorkspaceIdSetting(workspaceId);
     if (selected == selectedWorkspaceId() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(selectedWorkspaceIdKey), selected);
+    if (!persistValue(QString::fromLatin1(selectedWorkspaceIdKey), selected)) {
+        return;
+    }
     applyNetworkPolicy();
     emit selectedWorkspaceIdChanged();
 }
@@ -1483,12 +2007,19 @@ QString AppSettings::defaultWorkspaceId() const {
 }
 
 void AppSettings::setDefaultWorkspaceId(const QString& workspaceId) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto selected = normalizedWorkspaceIdSetting(workspaceId);
     if (selected == defaultWorkspaceId() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(defaultWorkspaceIdKey), selected);
+    if (!persistValue(QString::fromLatin1(defaultWorkspaceIdKey), selected)) {
+        return;
+    }
     emit workspaceSettingsChanged();
 }
 
@@ -1497,12 +2028,15 @@ QString AppSettings::workspaceCatalogJson() const {
 }
 
 void AppSettings::setWorkspaceCatalogJson(const QString& catalogJson) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
     if (catalogJson == workspaceCatalogJson() || !store_) {
         return;
     }
-
-    store_->setValue(QString::fromLatin1(workspaceCatalogJsonKey), catalogJson);
-    emit workspaceSettingsChanged();
+    persistWorkspaceState(
+        catalogJson, WorkspaceService{}.normalizedWorkspaceId(selectedWorkspaceId(), catalogJson));
 }
 
 QString AppSettings::workspaceProfilesJson() const {
@@ -1510,6 +2044,11 @@ QString AppSettings::workspaceProfilesJson() const {
 }
 
 void AppSettings::setWorkspaceProfilesJson(const QString& profilesJson) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (profilesJson == workspaceProfilesJson() || !store_) return;
     if (!profilesJson.isEmpty()) {
         const auto document = QJsonDocument::fromJson(profilesJson.toUtf8());
@@ -1518,7 +2057,9 @@ void AppSettings::setWorkspaceProfilesJson(const QString& profilesJson) {
             !document.object().value(QStringLiteral("workspaces")).isObject() ||
             !document.object().value(QStringLiteral("presets")).isObject()) return;
     }
-    store_->setValue(QString::fromLatin1(workspaceProfilesJsonKey), profilesJson);
+    if (!persistValue(QString::fromLatin1(workspaceProfilesJsonKey), profilesJson)) {
+        return;
+    }
     applyNetworkPolicy();
     emit workspaceSettingsChanged();
 }
@@ -1530,12 +2071,19 @@ bool AppSettings::localKnowledgeBaseEnabled() const {
 }
 
 void AppSettings::setLocalKnowledgeBaseEnabled(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (enabled == localKnowledgeBaseEnabled() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(localKnowledgeBaseEnabledKey),
-                     enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(localKnowledgeBaseEnabledKey),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit workspaceSettingsChanged();
 }
 
@@ -1546,12 +2094,19 @@ bool AppSettings::retrievalExplainabilityEnabled() const {
 }
 
 void AppSettings::setRetrievalExplainabilityEnabled(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (enabled == retrievalExplainabilityEnabled() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(retrievalExplainabilityEnabledKey),
-                     enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(retrievalExplainabilityEnabledKey),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit workspaceSettingsChanged();
 }
 
@@ -1563,12 +2118,19 @@ QString AppSettings::attachmentBehavior() const {
 }
 
 void AppSettings::setAttachmentBehavior(const QString& behavior) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto selected = normalizedAttachmentBehavior(behavior);
     if (selected == attachmentBehavior() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(attachmentBehaviorKey), selected);
+    if (!persistValue(QString::fromLatin1(attachmentBehaviorKey), selected)) {
+        return;
+    }
     emit workspaceSettingsChanged();
 }
 
@@ -1580,12 +2142,19 @@ QString AppSettings::exportDefaultFormat() const {
 }
 
 void AppSettings::setExportDefaultFormat(const QString& format) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto selected = normalizedExportFormat(format);
     if (selected == exportDefaultFormat() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(exportDefaultFormatKey), selected);
+    if (!persistValue(QString::fromLatin1(exportDefaultFormatKey), selected)) {
+        return;
+    }
     emit workspaceSettingsChanged();
 }
 
@@ -1596,12 +2165,19 @@ bool AppSettings::exportIncludeTimestamps() const {
 }
 
 void AppSettings::setExportIncludeTimestamps(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (enabled == exportIncludeTimestamps() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(exportIncludeTimestampsKey),
-                     enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(exportIncludeTimestampsKey),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit workspaceSettingsChanged();
 }
 
@@ -1612,12 +2188,19 @@ bool AppSettings::exportIncludeCitations() const {
 }
 
 void AppSettings::setExportIncludeCitations(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (enabled == exportIncludeCitations() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(exportIncludeCitationsKey),
-                     enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(exportIncludeCitationsKey),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit workspaceSettingsChanged();
 }
 
@@ -1628,12 +2211,19 @@ bool AppSettings::exportAnonymizeNames() const {
 }
 
 void AppSettings::setExportAnonymizeNames(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (enabled == exportAnonymizeNames() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(exportAnonymizeNamesKey),
-                     enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(exportAnonymizeNamesKey),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit workspaceSettingsChanged();
 }
 
@@ -1644,12 +2234,19 @@ bool AppSettings::exportIncludeModelMetadata() const {
 }
 
 void AppSettings::setExportIncludeModelMetadata(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (enabled == exportIncludeModelMetadata() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(exportIncludeModelMetadataKey),
-                     enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(exportIncludeModelMetadataKey),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit workspaceSettingsChanged();
 }
 
@@ -1657,10 +2254,17 @@ QString AppSettings::responseProfileInstructions() const {
     return store_ ? store_->value(QStringLiteral("responseProfileInstructions")).left(2000) : QString{};
 }
 void AppSettings::setResponseProfileInstructions(const QString& instructions) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (!store_ || instructions.size() > 2000) return;
     const auto normalized = instructions.trimmed();
     if (normalized == responseProfileInstructions()) return;
-    store_->setValue(QStringLiteral("responseProfileInstructions"), normalized);
+    if (!persistValue(QStringLiteral("responseProfileInstructions"), normalized)) {
+        return;
+    }
     emit responseProfileInstructionsChanged();
 }
 
@@ -1673,6 +2277,11 @@ QString AppSettings::selectedSkillProfile() const {
 }
 
 void AppSettings::setSelectedSkillProfile(const QString& profileId) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto normalized = profileId.trimmed().toLower();
     const auto selected = isKnownSkillProfileId(normalized)
                               ? normalized
@@ -1681,7 +2290,9 @@ void AppSettings::setSelectedSkillProfile(const QString& profileId) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(selectedSkillProfileKey), selected);
+    if (!persistValue(QString::fromLatin1(selectedSkillProfileKey), selected)) {
+        return;
+    }
     emit selectedSkillProfileChanged();
 }
 
@@ -1694,12 +2305,19 @@ QString AppSettings::defaultPermissionPolicyState() const {
 }
 
 void AppSettings::setDefaultPermissionPolicyState(const QString& state) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto selected = normalizedPermissionPolicyState(state);
     if (selected == defaultPermissionPolicyState() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(defaultPermissionPolicyStateKey), selected);
+    if (!persistValue(QString::fromLatin1(defaultPermissionPolicyStateKey), selected)) {
+        return;
+    }
     emit defaultPermissionPolicyStateChanged();
 }
 
@@ -1711,12 +2329,19 @@ QString AppSettings::updateCheckPolicy() const {
 }
 
 void AppSettings::setUpdateCheckPolicy(const QString& policy) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto selected = normalizedUpdatePolicy(policy);
     if (selected == updateCheckPolicy() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(updateCheckPolicyKey), selected);
+    if (!persistValue(QString::fromLatin1(updateCheckPolicyKey), selected)) {
+        return;
+    }
     emit updateCheckPolicyChanged();
 }
 
@@ -1727,9 +2352,16 @@ QString AppSettings::updateCheckUrl() const {
 }
 
 void AppSettings::setUpdateCheckUrl(const QString& url) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (url == updateCheckUrl() || !store_)
         return;
-    store_->setValue(QString::fromLatin1(updateCheckUrlKey), url);
+    if (!persistValue(QString::fromLatin1(updateCheckUrlKey), url)) {
+        return;
+    }
     emit updateCheckUrlChanged();
 }
 
@@ -1741,12 +2373,19 @@ QString AppSettings::notificationPolicy() const {
 }
 
 void AppSettings::setNotificationPolicy(const QString& policy) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto selected = normalizedNotificationPolicy(policy);
     if (selected == notificationPolicy() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(notificationPolicyKey), selected);
+    if (!persistValue(QString::fromLatin1(notificationPolicyKey), selected)) {
+        return;
+    }
     emit notificationPolicyChanged();
 }
 
@@ -1757,12 +2396,19 @@ bool AppSettings::onboardingComplete() const {
 }
 
 void AppSettings::setOnboardingComplete(bool complete) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (complete == onboardingComplete() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(onboardingCompleteKey),
-                     complete ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(onboardingCompleteKey),
+                      complete ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit onboardingCompleteChanged();
 }
 
@@ -1771,8 +2417,15 @@ QString AppSettings::onboardingFlowJson() const {
 }
 
 void AppSettings::setOnboardingFlowJson(const QString& state) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (!store_ || state == onboardingFlowJson()) return;
-    store_->setValue(QString::fromLatin1(onboardingFlowJsonKey), state);
+    if (!persistValue(QString::fromLatin1(onboardingFlowJsonKey), state)) {
+        return;
+    }
     emit onboardingUseCaseChanged();
 }
 
@@ -1784,12 +2437,19 @@ QString AppSettings::onboardingUseCase() const {
 }
 
 void AppSettings::setOnboardingUseCase(const QString& useCase) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto selected = normalizedOnboardingUseCase(useCase);
     if (selected == onboardingUseCase() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(onboardingUseCaseKey), selected);
+    if (!persistValue(QString::fromLatin1(onboardingUseCaseKey), selected)) {
+        return;
+    }
     emit onboardingUseCaseChanged();
 }
 
@@ -1801,12 +2461,19 @@ QString AppSettings::onboardingAiProvider() const {
 }
 
 void AppSettings::setOnboardingAiProvider(const QString& provider) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto selected = normalizedOnboardingAiProvider(provider);
     if (selected == onboardingAiProvider() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(onboardingAiProviderKey), selected);
+    if (!persistValue(QString::fromLatin1(onboardingAiProviderKey), selected)) {
+        return;
+    }
     emit onboardingUseCaseChanged();
 }
 
@@ -1817,11 +2484,18 @@ QString AppSettings::selectedSystemMode() const {
 }
 
 void AppSettings::setSelectedSystemMode(const QString& mode) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (mode == selectedSystemMode() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(selectedSystemModeKey), mode);
+    if (!persistValue(QString::fromLatin1(selectedSystemModeKey), mode)) {
+        return;
+    }
     emit selectedSystemModeChanged();
 }
 
@@ -1830,11 +2504,18 @@ QString AppSettings::recoveryDraftText() const {
 }
 
 void AppSettings::setRecoveryDraftText(const QString& text) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (text == recoveryDraftText() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(recoveryDraftTextKey), text);
+    if (!persistValue(QString::fromLatin1(recoveryDraftTextKey), text)) {
+        return;
+    }
     emit recoveryDraftTextChanged();
 }
 
@@ -1845,12 +2526,19 @@ bool AppSettings::reducedMotionEnabled() const {
 }
 
 void AppSettings::setReducedMotionEnabled(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (enabled == reducedMotionEnabled() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(reducedMotionEnabledKey),
-                     enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(reducedMotionEnabledKey),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit productExperienceChanged();
 }
 
@@ -1859,8 +2547,16 @@ bool AppSettings::reducedTransparencyEnabled() const {
 }
 
 void AppSettings::setReducedTransparencyEnabled(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (!store_ || enabled == reducedTransparencyEnabled()) return;
-    store_->setValue(QStringLiteral("reducedTransparencyEnabled"), enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QStringLiteral("reducedTransparencyEnabled"),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit productExperienceChanged();
 }
 
@@ -1871,12 +2567,19 @@ bool AppSettings::highContrastEnabled() const {
 }
 
 void AppSettings::setHighContrastEnabled(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (enabled == highContrastEnabled() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(highContrastEnabledKey),
-                     enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(highContrastEnabledKey),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit productExperienceChanged();
 }
 
@@ -1888,12 +2591,19 @@ QString AppSettings::uiDensity() const {
 }
 
 void AppSettings::setUiDensity(const QString& density) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto selected = normalizedUiDensity(density);
     if (selected == uiDensity() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(uiDensityKey), selected);
+    if (!persistValue(QString::fromLatin1(uiDensityKey), selected)) {
+        return;
+    }
     emit productExperienceChanged();
 }
 
@@ -1904,11 +2614,18 @@ bool AppSettings::notifyModelDownloads() const {
 }
 
 void AppSettings::setNotifyModelDownloads(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (enabled == notifyModelDownloads() || !store_) {
         return;
     }
-    store_->setValue(QString::fromLatin1(notifyModelDownloadsKey),
-                     enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(notifyModelDownloadsKey),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit productExperienceChanged();
 }
 
@@ -1919,11 +2636,18 @@ bool AppSettings::notifyModelRemovals() const {
 }
 
 void AppSettings::setNotifyModelRemovals(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (enabled == notifyModelRemovals() || !store_) {
         return;
     }
-    store_->setValue(QString::fromLatin1(notifyModelRemovalsKey),
-                     enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(notifyModelRemovalsKey),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit productExperienceChanged();
 }
 
@@ -1934,11 +2658,18 @@ bool AppSettings::notifyAgentResponses() const {
 }
 
 void AppSettings::setNotifyAgentResponses(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (enabled == notifyAgentResponses() || !store_) {
         return;
     }
-    store_->setValue(QString::fromLatin1(notifyAgentResponsesKey),
-                     enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(notifyAgentResponsesKey),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit productExperienceChanged();
 }
 
@@ -1949,11 +2680,18 @@ bool AppSettings::notifySystemUpdates() const {
 }
 
 void AppSettings::setNotifySystemUpdates(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (enabled == notifySystemUpdates() || !store_) {
         return;
     }
-    store_->setValue(QString::fromLatin1(notifySystemUpdatesKey),
-                     enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(notifySystemUpdatesKey),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit productExperienceChanged();
 }
 
@@ -1964,11 +2702,18 @@ QString AppSettings::notificationCenterJson() const {
 }
 
 void AppSettings::setNotificationCenterJson(const QString& json) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (json == notificationCenterJson() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(notificationCenterJsonKey), json);
+    if (!persistValue(QString::fromLatin1(notificationCenterJsonKey), json)) {
+        return;
+    }
     emit productExperienceChanged();
 }
 
@@ -1980,12 +2725,19 @@ QString AppSettings::updateWorkflowState() const {
 }
 
 void AppSettings::setUpdateWorkflowState(const QString& state) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     const auto selected = normalizedUpdateWorkflowState(state);
     if (selected == updateWorkflowState() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(updateWorkflowStateKey), selected);
+    if (!persistValue(QString::fromLatin1(updateWorkflowStateKey), selected)) {
+        return;
+    }
     emit productExperienceChanged();
 }
 
@@ -1996,11 +2748,18 @@ QString AppSettings::controlledAgentTasksJson() const {
 }
 
 void AppSettings::setControlledAgentTasksJson(const QString& json) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (json == controlledAgentTasksJson() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(controlledAgentTasksJsonKey), json);
+    if (!persistValue(QString::fromLatin1(controlledAgentTasksJsonKey), json)) {
+        return;
+    }
     emit controlledAgentTasksChanged();
 }
 
@@ -2011,11 +2770,18 @@ QString AppSettings::controlledAgentPermissionsJson() const {
 }
 
 void AppSettings::setControlledAgentPermissionsJson(const QString& json) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (json == controlledAgentPermissionsJson() || !store_) {
         return;
     }
 
-    store_->setValue(QString::fromLatin1(controlledAgentPermissionsJsonKey), json);
+    if (!persistValue(QString::fromLatin1(controlledAgentPermissionsJsonKey), json)) {
+        return;
+    }
     emit controlledAgentTasksChanged();
 }
 
@@ -2024,6 +2790,11 @@ QString AppSettings::openAiApiKey() const {
 }
 
 void AppSettings::setOpenAiApiKey(const QString& key) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (setCredential(QStringLiteral("openai"), QString::fromLatin1(openAiApiKeyKey), key))
         emit cloudApiKeysChanged();
 }
@@ -2033,6 +2804,11 @@ QString AppSettings::claudeApiKey() const {
 }
 
 void AppSettings::setClaudeApiKey(const QString& key) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (setCredential(QStringLiteral("claude"), QString::fromLatin1(claudeApiKeyKey), key))
         emit cloudApiKeysChanged();
 }
@@ -2042,6 +2818,11 @@ QString AppSettings::geminiApiKey() const {
 }
 
 void AppSettings::setGeminiApiKey(const QString& key) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (setCredential(QStringLiteral("gemini"), QString::fromLatin1(geminiApiKeyKey), key))
         emit cloudApiKeysChanged();
 }
@@ -2051,6 +2832,11 @@ QString AppSettings::deepseekApiKey() const {
 }
 
 void AppSettings::setDeepseekApiKey(const QString& key) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (setCredential(QStringLiteral("deepseek"), QString::fromLatin1(deepseekApiKeyKey), key))
         emit cloudApiKeysChanged();
 }
@@ -2060,6 +2846,11 @@ QString AppSettings::groqApiKey() const {
 }
 
 void AppSettings::setGroqApiKey(const QString& key) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (setCredential(QStringLiteral("groq"), QString::fromLatin1(groqApiKeyKey), key))
         emit cloudApiKeysChanged();
 }
@@ -2069,6 +2860,11 @@ QString AppSettings::mistralApiKey() const {
 }
 
 void AppSettings::setMistralApiKey(const QString& key) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (setCredential(QStringLiteral("mistral"), QString::fromLatin1(mistralApiKeyKey), key))
         emit cloudApiKeysChanged();
 }
@@ -2082,10 +2878,17 @@ bool AppSettings::proxyEnabled() const {
 }
 
 void AppSettings::setProxyEnabled(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (!store_)
         return;
-    store_->setValue(QString::fromLatin1(proxyEnabledKey),
-                     enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(proxyEnabledKey),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit proxySettingsChanged();
 }
 
@@ -2095,9 +2898,16 @@ QString AppSettings::proxyType() const {
 }
 
 void AppSettings::setProxyType(const QString& type) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (!store_ || (type != QLatin1String("http") && type != QLatin1String("socks5")))
         return;
-    store_->setValue(QString::fromLatin1(proxyTypeKey), type);
+    if (!persistValue(QString::fromLatin1(proxyTypeKey), type)) {
+        return;
+    }
     emit proxySettingsChanged();
 }
 
@@ -2109,11 +2919,18 @@ QString AppSettings::proxyHost() const {
 }
 
 void AppSettings::setProxyHost(const QString& host) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (!store_ || host.size() > 255 || host.contains(QLatin1String("://")) ||
         host.contains(QLatin1Char('@')) || host.contains(QLatin1Char('/')) ||
         host.contains(QLatin1Char('?')) || host.contains(QLatin1Char('#')))
         return;
-    store_->setValue(QString::fromLatin1(proxyHostKey), host);
+    if (!persistValue(QString::fromLatin1(proxyHostKey), host)) {
+        return;
+    }
     emit proxySettingsChanged();
 }
 
@@ -2127,9 +2944,16 @@ quint16 AppSettings::proxyPort() const {
 }
 
 void AppSettings::setProxyPort(quint16 port) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (!store_)
         return;
-    store_->setValue(QString::fromLatin1(proxyPortKey), QString::number(port));
+    if (!persistValue(QString::fromLatin1(proxyPortKey), QString::number(port))) {
+        return;
+    }
     emit proxySettingsChanged();
 }
 
@@ -2138,6 +2962,11 @@ QString AppSettings::proxyUser() const {
 }
 
 void AppSettings::setProxyUser(const QString& user) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (setCredential(QStringLiteral("proxy-user"), QString::fromLatin1(proxyUserKey), user))
         emit proxySettingsChanged();
 }
@@ -2147,6 +2976,11 @@ QString AppSettings::proxyPassword() const {
 }
 
 void AppSettings::setProxyPassword(const QString& password) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (setCredential(QStringLiteral("proxy-password"), QString::fromLatin1(proxyPasswordKey), password))
         emit proxySettingsChanged();
 }
@@ -2158,9 +2992,18 @@ QString AppSettings::networkMode() const {
 }
 
 void AppSettings::setNetworkMode(const QString& mode) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (!store_ || (mode != QLatin1String("Online") && mode != QLatin1String("Offline") &&
                     mode != QLatin1String("LocalOnly"))) return;
-    if (mode != networkMode()) store_->setValue(QString::fromLatin1(networkModeKey), mode);
+    if (mode != networkMode()) {
+        if (!persistValue(QString::fromLatin1(networkModeKey), mode)) {
+            return;
+        }
+    }
     applyNetworkPolicy();
     emit networkModeChanged();
 }
@@ -2172,11 +3015,18 @@ bool AppSettings::soundEffectsEnabled() const {
 }
 
 void AppSettings::setSoundEffectsEnabled(bool enabled) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return;
+    }
+
     if (enabled == soundEffectsEnabled() || !store_) {
         return;
     }
-    store_->setValue(QString::fromLatin1(soundEffectsEnabledKey),
-                     enabled ? QStringLiteral("true") : QStringLiteral("false"));
+    if (!persistValue(QString::fromLatin1(soundEffectsEnabledKey),
+                      enabled ? QStringLiteral("true") : QStringLiteral("false"))) {
+        return;
+    }
     emit soundEffectsEnabledChanged();
 }
 

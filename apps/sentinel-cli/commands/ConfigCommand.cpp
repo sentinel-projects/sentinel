@@ -59,6 +59,11 @@ int executeConfigCommand(const QStringList& args) {
             std::cerr << "Unknown configuration key: " << key.toStdString() << std::endl;
             return 1;
         }
+        if (!settings.storageErrorCode().isEmpty()) {
+            std::cerr << "Configuration write failed: " << settings.storageErrorCode().toStdString()
+                      << '\n';
+            return 1;
+        }
         std::cout << "Updated configuration: " << key.toStdString() << " = " << val.toStdString()
                   << std::endl;
         return 0;

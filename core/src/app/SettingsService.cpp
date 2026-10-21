@@ -173,6 +173,7 @@ QList<SettingSnapshot> SettingsService::snapshots() const {
 }
 
 SettingActionResult SettingsService::set(const QString& id, const QVariant& value) {
+    settings_.clearStorageWriteError();
     auto invalid = [&id](const QString& code) {
         return SettingActionResult{false, code, id, {}};
     };
@@ -329,7 +330,8 @@ SettingActionResult SettingsService::clearWorkspaceOverride(const QString& works
     root.insert(QStringLiteral("workspaces"), workspaces);
     settings_.setWorkspaceProfilesJson(
         QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Compact)));
-    return {true, {}, key, {}};
+    const auto error = settings_.storageErrorCode();
+    return {error.isEmpty(), error, key, {}};
 }
 
 QJsonObject SettingsService::providerState(const QString& providerId) const {
@@ -680,6 +682,9 @@ SettingActionResult SettingsService::clearCredential(const QString& logicalId) {
     else if (logicalId == QLatin1String("proxy-user")) settings_.setProxyUser({});
     else if (logicalId == QLatin1String("proxy-password")) settings_.setProxyPassword({});
     else return {false, QStringLiteral("SecretNotFound"), logicalId, {}};
+    if (!settings_.storageErrorCode().isEmpty()) {
+        return {false, settings_.storageErrorCode(), logicalId, {}};
+    }
     if (settings_.credentialState(logicalId) != QLatin1String("NotConfigured"))
         return {false, QStringLiteral("SecretStoreUnavailable"), logicalId, {}};
     return {true, {}, logicalId, {}};
@@ -697,6 +702,9 @@ SettingActionResult SettingsService::setProviderCredential(const QString& provid
     else if (providerId == QLatin1String("mistral")) settings_.setMistralApiKey(value);
     else if (providerId == QLatin1String("web-search")) settings_.setWebSearchApiKey(value);
     else return {false, QStringLiteral("UnknownProvider"), providerId, {}};
+    if (!settings_.storageErrorCode().isEmpty()) {
+        return {false, settings_.storageErrorCode(), providerId, {}};
+    }
     QString confirmed;
     if (providerId == QLatin1String("openai")) confirmed = settings_.openAiApiKey();
     else if (providerId == QLatin1String("claude")) confirmed = settings_.claudeApiKey();

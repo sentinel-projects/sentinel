@@ -193,6 +193,21 @@ QVariantMap DaemonDesktopSettings::clearProductPluginCredential(const QString& p
     return {{QStringLiteral("accepted"), result.accepted}, {QStringLiteral("code"), result.code}};
 }
 QJsonObject DaemonDesktopSettings::dispatch(const QString& name, const QJsonArray& args) {
+    if (name == "setProviderModelPreference") {
+        const auto provider = args.at(0).toString();
+        if (!controller_.modelService()->isKnownProvider(provider)) {
+            return {{"accepted", false}, {"code", "UnknownProvider"}};
+        }
+        settings_.clearStorageWriteError();
+        settings_.setSelectedModelForProvider(provider, args.at(1).toString());
+        const auto error = settings_.storageErrorCode();
+        return {{"accepted", error.isEmpty()}, {"code", error}};
+    }
+    if (name == "persistWorkspaceState") {
+        const bool accepted =
+            settings_.persistWorkspaceState(args.at(0).toString(), args.at(1).toString());
+        return {{"accepted", accepted}, {"code", settings_.storageErrorCode()}};
+    }
     if (name == "extensionsHubState") {
         const auto* service = controller_.extensionService();
         return service ? service->managementSnapshot()

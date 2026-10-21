@@ -888,14 +888,31 @@ void DaemonIpcServer::handleRequest(const QJsonObject& message, QLocalSocket* so
             error(socket, id, "runtime-busy");
             return;
         }
+        const bool settingsSelection =
+            component == "ggufLibraryFetcher" && payload.value("action") == "select";
+        if (settingsSelection && m_settings) {
+            m_settings->clearStorageWriteError();
+        }
         const auto accepted = m_modelHelpers->action(
             component, payload.value("action").toString(), payload.value("value").toString(),
             m_settings ? m_settings->ollamaEndpoint() : m_controller->ollamaEndpoint());
         if (accepted && component == "ggufLibraryFetcher" && payload.value("action") == "select" &&
             m_settings) {
+            if (!m_settings->storageErrorCode().isEmpty()) {
+                error(socket, id, m_settings->storageErrorCode());
+                return;
+            }
             const auto selected = m_controller->modelService()->selectedModel();
             m_settings->setSelectedRuntimeProvider(selected.providerId);
-            m_settings->setSelectedLocalModel(selected.modelId);
+            if (!m_settings->storageErrorCode().isEmpty()) {
+                error(socket, id, m_settings->storageErrorCode());
+                return;
+            }
+            m_settings->setSelectedModelForProvider(selected.providerId, selected.modelId);
+            if (!m_settings->storageErrorCode().isEmpty()) {
+                error(socket, id, m_settings->storageErrorCode());
+                return;
+            }
         }
         reply({{"accepted", accepted}});
         return;
@@ -926,6 +943,12 @@ void DaemonIpcServer::handleRequest(const QJsonObject& message, QLocalSocket* so
         if ((action == "importBegin" || action == "write" || action == "commit") &&
             (m_state == "running" || m_state == "approval")) {
             fail("RuntimeBusy");
+            return;
+        }
+        if (action == "persistWorkspaceState" &&
+            (m_loadingAttachments || m_controller->agentLoopActive() ||
+             m_controller->chatModeService()->busy())) {
+            error(socket, id, "runtime-busy");
             return;
         }
         DaemonDesktopSettings service(*m_settings, *m_controller);
@@ -1101,6 +1124,10 @@ void DaemonIpcServer::handleRequest(const QJsonObject& message, QLocalSocket* so
         const auto key = payload.value("key").toString();
         const bool accepted =
             desktop_contract::setting(m_settings, key, payload.value("value").toString());
+        if (!accepted && !m_settings->storageErrorCode().isEmpty()) {
+            error(socket, id, m_settings->storageErrorCode());
+            return;
+        }
         if (accepted) {
             m_controller->setLmStudioEndpoint(m_settings->lmStudioEndpoint());
             m_controller->setLlamaCppEndpoint(m_settings->llamaCppEndpoint());
@@ -1348,7 +1375,11 @@ void DaemonIpcServer::handleRequest(const QJsonObject& message, QLocalSocket* so
             error(socket, id, "workspace-create-rejected");
             return;
         }
-        m_settings->setWorkspaceCatalogJson(result.catalogJson);
+        if (!m_settings->persistWorkspaceState(result.catalogJson,
+                                               m_settings->selectedWorkspaceId())) {
+            error(socket, id, m_settings->storageErrorCode());
+            return;
+        }
         reply({{"workspace_id", result.selectedWorkspaceId}});
         return;
     }
@@ -1374,7 +1405,12 @@ void DaemonIpcServer::handleRequest(const QJsonObject& message, QLocalSocket* so
             return;
         }
         if (name == "workspace.select") {
+            m_settings->clearStorageWriteError();
             m_settings->setSelectedWorkspaceId(workspaceId);
+            if (!m_settings->storageErrorCode().isEmpty()) {
+                error(socket, id, m_settings->storageErrorCode());
+                return;
+            }
             reply({{"workspace_id", m_settings->selectedWorkspaceId()}});
         } else {
             const auto result =
@@ -1383,7 +1419,11 @@ void DaemonIpcServer::handleRequest(const QJsonObject& message, QLocalSocket* so
                 error(socket, id, "workspace-root-rejected");
                 return;
             }
-            m_settings->setWorkspaceCatalogJson(result.catalogJson);
+            if (!m_settings->persistWorkspaceState(result.catalogJson,
+                                                   m_settings->selectedWorkspaceId())) {
+                error(socket, id, m_settings->storageErrorCode());
+                return;
+            }
             reply({{"workspace_id", workspaceId},
                    {"root", service.selectedWorkspace(workspaceId, result.catalogJson).rootPath}});
         }

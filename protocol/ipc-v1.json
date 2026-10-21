@@ -5626,6 +5626,20 @@
         "string",
         "string"
       ]
+    },
+    "persistWorkspaceState": {
+      "query": false,
+      "arguments": [
+        "string",
+        "string"
+      ]
+    },
+    "setProviderModelPreference": {
+      "query": false,
+      "arguments": [
+        "string",
+        "string"
+      ]
     }
   },
   "optional_commands": {
