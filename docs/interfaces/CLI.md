@@ -39,7 +39,9 @@ The TUI resolves `SENTINEL_CORE_WARDEN_ASSETS` first, then executable-relative
 layout. It never uses a compiled developer home path. An invalid explicit override
 stays authoritative and selects text fallback. Copying only the binary is valid
 for text operation; graphical assets require the adjacent shared directory or an
-explicit asset root. `cargo install` / `install-dev.sh` installs the binary only;
-use an explicit asset root or the staged layout for graphics. No shell configuration
+explicit asset root. Plain `cargo install` installs only the binary; the development
+`install-dev.sh` helper additionally links checkout assets beside the selected
+installation root (see the CLI user guide). Use an explicit asset root or the staged
+layout for an independent graphical installation. No shell configuration
 is changed automatically. Use the absolute executable path and `--version` when
 checking for older PATH-shadowing copies.

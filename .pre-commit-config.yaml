@@ -27,7 +27,7 @@ repos:
     hooks:
       - id: qmllint
         name: QML Lint Check
-        entry: qmllint
+        entry: python3 tools/analysis/qml_lint.py
         language: system
         types: [qml]
         pass_filenames: true

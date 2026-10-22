@@ -29,9 +29,15 @@ cmake --build --preset release --target sentinel-desktop
 
 Optional checks:
 
-- `qmllint`
+- `python3 tools/analysis/qml_lint.py path/to/changed.qml` (also used by pre-commit)
 - `clang-format --dry-run --Werror`
 - `clang-tidy` after a project profile exists
+
+The QML helper requires `qmllint` on PATH and generated module metadata from
+`cmake --preset tests` and `cmake --build --preset tests --target sentinel-desktop`.
+Set `SENTINEL_QML_BUILD_DIR` (or pass `--build-dir`) for another build directory.
+It adds the source/generated import paths and fails on warnings in the selected
+files; a missing build is reported before invoking the linter.
 
 ## Pull Requests
 

@@ -9,12 +9,19 @@ From a source checkout with the repository's supported Rust toolchain:
 ```sh
 cargo build --release --workspace --manifest-path cli/Cargo.toml
 ./tools/terminal/install-dev.sh
-# Equivalent:
+# Binary-only Cargo alternative:
 cargo install --path cli/crates/sentinel-cli --locked
 command -v sentinel
 sentinel --version
 sentinel --help
 ```
+
+For a custom destination, use `./tools/terminal/install-dev.sh --root /path/to/root`.
+The helper selects `--root`, then `CARGO_INSTALL_ROOT`, then `CARGO_HOME`, then
+`$HOME/.cargo`. It passes that root explicitly to Cargo, so Cargo's configured
+`install.root` does not override it. Assets are linked into
+`ROOT/share/sentinel/core-warden`; keep the checkout available for that development
+link. Existing asset directories are preserved. Add `ROOT/bin` to PATH manually.
 
 Cargo installs `sentinel` under its install root's `bin` directory, normally `$HOME/.cargo/bin`. Put that directory on PATH manually if necessary. No shell configuration is edited. Reinstall after changing the checkout. Uninstall with `cargo uninstall sentinel-cli` (use the same `--root` as installation, if customized).
 
