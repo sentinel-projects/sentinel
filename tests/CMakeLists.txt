@@ -146,6 +146,7 @@ add_sentinel_core_test(test_memory_retrieval core/test_memory_retrieval.cpp)
 add_sentinel_core_test(test_memory_management core/test_memory_management.cpp)
 add_sentinel_core_test(test_scoped_memory core/test_scoped_memory.cpp)
 add_sentinel_core_test(test_sqlite_memory_store core/test_sqlite_memory_store.cpp)
+add_sentinel_core_test(test_todo_service core/test_todo_service.cpp)
 add_sentinel_core_test(test_in_memory_tool_registry core/test_in_memory_tool_registry.cpp)
 add_sentinel_core_test(test_mcp_tool_provider core/test_mcp_tool_provider.cpp)
 qt_add_executable(test_mcp_server helpers/test_mcp_server.cpp)
@@ -399,6 +400,13 @@ if(Qt6QuickTest_FOUND AND TARGET Qt6::QuickTest)
     set_tests_properties(test_gui_components PROPERTIES TIMEOUT 90 ENVIRONMENT
         "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QSG_RENDER_LOOP=basic;QT_SCALE_FACTOR=1;QT_FONT_DPI=96")
 endif()
+
+add_test(NAME test_package_signing_failure
+    COMMAND ${CMAKE_COMMAND}
+        -DHELPER=${PROJECT_SOURCE_DIR}/cmake/SentinelSignPackages.cmake
+        -DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/test_package_signing.cmake)
+set_tests_properties(test_package_signing_failure PROPERTIES TIMEOUT 30)
 
 # Canonical IPC models are checked in so normal C++ builds need no generator runtime.
 find_package(Python3 COMPONENTS Interpreter QUIET)

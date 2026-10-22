@@ -30,7 +30,6 @@ signals:
 
 private:
     QString generateId() const;
-    int m_nextIndex{1};
 
     QMap<QString, TodoItem> m_items;
 };
