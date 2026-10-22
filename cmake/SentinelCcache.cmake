@@ -1,21 +1,34 @@
-# cmake/SentinelCcache.cmake
-# Auto-detect ccache or sccache for build acceleration
-
+# Auto-detect a compiler cache without replacing explicit user launchers.
 option(SENTINEL_USE_CCACHE "Enable ccache/sccache build compiler launcher" ON)
 
+set(sentinel_cache_launcher "")
 if(SENTINEL_USE_CCACHE)
     find_program(CCACHE_PROGRAM ccache)
     find_program(SCCACHE_PROGRAM sccache)
-
     if(CCACHE_PROGRAM)
-        message(STATUS "Found ccache: ${CCACHE_PROGRAM}")
-        set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}" CACHE STRING "C compiler launcher" FORCE)
-        set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}" CACHE STRING "CXX compiler launcher" FORCE)
+        set(sentinel_cache_launcher "${CCACHE_PROGRAM}")
     elseif(SCCACHE_PROGRAM)
-        message(STATUS "Found sccache: ${SCCACHE_PROGRAM}")
-        set(CMAKE_C_COMPILER_LAUNCHER "${SCCACHE_PROGRAM}" CACHE STRING "C compiler launcher" FORCE)
-        set(CMAKE_CXX_COMPILER_LAUNCHER "${SCCACHE_PROGRAM}" CACHE STRING "CXX compiler launcher" FORCE)
-    else()
-        message(STATUS "Neither ccache nor sccache found. Proceeding without compiler cache.")
+        set(sentinel_cache_launcher "${SCCACHE_PROGRAM}")
     endif()
 endif()
+
+foreach(language C CXX)
+    set(launcher "CMAKE_${language}_COMPILER_LAUNCHER")
+    set(owner "SENTINEL_AUTO_${language}_COMPILER_LAUNCHER")
+    # An explicit replacement relinquishes our ownership, including an empty value.
+    if(DEFINED ${owner} AND NOT "${${launcher}}" STREQUAL "${${owner}}")
+        unset(${owner} CACHE)
+    endif()
+    if(sentinel_cache_launcher)
+        if(NOT DEFINED ${launcher} OR DEFINED ${owner})
+            set(${launcher} "${sentinel_cache_launcher}" CACHE STRING "${language} compiler launcher" FORCE)
+            set(${owner} "${sentinel_cache_launcher}" CACHE INTERNAL "Sentinel-owned compiler launcher" FORCE)
+        endif()
+    elseif(DEFINED ${owner})
+        unset(${launcher} CACHE)
+        unset(${launcher})
+        unset(${owner} CACHE)
+    elseif(NOT SENTINEL_USE_CCACHE AND DEFINED ${launcher} AND NOT "${${launcher}}" STREQUAL "")
+        message(STATUS "Preserving unowned ${launcher}; clear it explicitly to disable a user or legacy launcher.")
+    endif()
+endforeach()

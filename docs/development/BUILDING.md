@@ -24,6 +24,15 @@ as well, use `CCACHE_DISABLE=1 cmake --fresh --preset debug -DSENTINEL_USE_CCACH
 and `CCACHE_DISABLE=1 cmake --build --preset debug -j6`, or use the `no-ccache`
 preset for both commands.
 
+Explicit `CMAKE_C_COMPILER_LAUNCHER` and `CMAKE_CXX_COMPILER_LAUNCHER` values
+(including an empty value) take precedence over automatic detection. Sentinel
+records the launchers it assigns, updates them when switching cache tools, and
+removes only those assignments when disabled or unavailable. Build trees from
+before this ownership tracking cannot distinguish an old automatic assignment
+from a user override. To discard those legacy cached assignments explicitly,
+configure once with `-UCMAKE_C_COMPILER_LAUNCHER -UCMAKE_CXX_COMPILER_LAUNCHER`,
+adding `-DSENTINEL_USE_CCACHE=OFF` if automatic detection should stay disabled.
+
 Linguist's `unfinished` and `untranslated` counts describe incomplete translation
 catalogs; missing translations fall back to source text. They are not compiler
 errors. Unsigned/ad-hoc signing messages are expected for local macOS builds

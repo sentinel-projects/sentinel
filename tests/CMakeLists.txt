@@ -411,6 +411,9 @@ set_tests_properties(test_package_signing_failure PROPERTIES TIMEOUT 30)
 # Canonical IPC models are checked in so normal C++ builds need no generator runtime.
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME test_development_helpers
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/development/test_build_helpers.py)
+    set_tests_properties(test_development_helpers PROPERTIES TIMEOUT 60)
     add_test(NAME test_resource_benchmark_runner COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/performance/test_benchmark.py)
     set_tests_properties(test_resource_benchmark_runner PROPERTIES TIMEOUT 30)
     add_test(NAME test_verification_desktop_daemon COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/verification/test_desktop_daemon.py)
