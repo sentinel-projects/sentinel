@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # The formatting diff needs HEAD^ on push and the merge parents on PRs.
+          # The formatting helper fetches the exact event base if it is outside this shallow checkout.
           fetch-depth: 2
       - name: Reject personal paths in public files
         run: python3 tools/analysis/check_personal_paths.py
@@ -50,15 +50,8 @@ jobs:
       - name: Check C++ formatting
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          set -euo pipefail
-          base_ref="${BASE_SHA:-HEAD^}"
-          format_diff="$(git diff -U0 "$base_ref" HEAD -- \
-            apps core integrations plugins tests | clang-format-diff.py -p1)"
-          if [ -n "$format_diff" ]; then
-            printf '%s\n' "$format_diff"
-            exit 1
-          fi
+          BEFORE_SHA: ${{ github.event.before }}
+        run: bash tools/analysis/check_cpp_format.sh
       - name: Validate Linux desktop metadata
         run: |
           set -euo pipefail

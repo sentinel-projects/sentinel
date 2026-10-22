@@ -414,6 +414,11 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME test_development_helpers
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/development/test_build_helpers.py)
     set_tests_properties(test_development_helpers PROPERTIES TIMEOUT 60)
+    if(UNIX)
+        add_test(NAME test_ci_format_range
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/development/test_format_range.py)
+        set_tests_properties(test_ci_format_range PROPERTIES TIMEOUT 30)
+    endif()
     add_test(NAME test_resource_benchmark_runner COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/performance/test_benchmark.py)
     set_tests_properties(test_resource_benchmark_runner PROPERTIES TIMEOUT 30)
     add_test(NAME test_verification_desktop_daemon COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/verification/test_desktop_daemon.py)

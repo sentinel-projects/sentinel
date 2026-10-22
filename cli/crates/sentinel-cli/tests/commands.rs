@@ -324,3 +324,120 @@ fn queued_old_and_cross_client_terminals_cannot_finish_new_command() {
         );
     }
 }
+
+fn acknowledgement(args: &[&str], name: &str, payload: Value) -> std::process::Output {
+    let root = std::path::Path::new("/tmp").join(format!(
+        "s-ack-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let path = root.join("daemon.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    let name = name.to_owned();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        for operation in ["hello", name.as_str()] {
+            let mut line = String::new();
+            assert!(reader.read_line(&mut line).unwrap() > 0);
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["name"], operation);
+            let response = if operation == "hello" {
+                json!({"major":1,"minor":0,"daemon_version":"fixture","capabilities":[]})
+            } else {
+                payload.clone()
+            };
+            writeln!(
+                stream,
+                "{}",
+                json!({"version":{"major":1,"minor":0},"type":"response",
+                "id":request["id"],"name":operation,"payload":response})
+            )
+            .unwrap();
+        }
+        let mut extra = String::new();
+        assert_eq!(reader.read_line(&mut extra).unwrap(), 0);
+    });
+    let result = Command::new(env!("CARGO_BIN_EXE_sentinel"))
+        .arg("--socket")
+        .arg(&path)
+        .args(args)
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    result
+}
+
+#[test]
+fn mutation_acknowledgements_are_truthful_in_every_output_mode() {
+    for output in ["text", "json", "stream-json"] {
+        for (command, name) in [
+            (
+                vec!["provider", "endpoint", "ollama", "http://localhost:11434"],
+                "desktop.setting",
+            ),
+            (vec!["provider", "refresh"], "desktop.action"),
+        ] {
+            for accepted in [true, false] {
+                let mut args = vec!["--output", output];
+                args.extend(command.clone());
+                let payload = if name == "desktop.action" {
+                    json!({"accepted":accepted,"result":null})
+                } else {
+                    json!({"accepted":accepted})
+                };
+                let result = acknowledgement(&args, name, payload.clone());
+                assert_eq!(result.status.code(), Some(if accepted { 0 } else { 1 }));
+                if accepted {
+                    assert!(result.stderr.is_empty());
+                    if output == "json" {
+                        assert_eq!(
+                            serde_json::from_slice::<Value>(&result.stdout).unwrap(),
+                            payload
+                        );
+                    } else if output == "stream-json" {
+                        let row: Value = serde_json::from_slice(&result.stdout).unwrap();
+                        assert_eq!(row["type"], "result");
+                        assert_eq!(row["payload"], payload);
+                    }
+                } else {
+                    assert!(String::from_utf8_lossy(&result.stderr).contains("operation-rejected"));
+                    if output == "text" {
+                        assert!(result.stdout.is_empty());
+                    } else {
+                        let row: Value = serde_json::from_slice(&result.stdout).unwrap();
+                        assert_eq!(row["type"], "error");
+                        assert_eq!(row["error"]["code"], "operation-rejected");
+                        assert_eq!(row["exit_code"], 1);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn id_based_mutations_and_queries_do_not_require_accepted() {
+    for (command, name, payload) in [
+        (vec!["models"], "model.list", json!({"models":[]})),
+        (
+            vec!["workspace", "select", "coding"],
+            "workspace.select",
+            json!({"workspace_id":"coding"}),
+        ),
+    ] {
+        let mut args = vec!["--output", "json"];
+        args.extend(command);
+        let result = acknowledgement(&args, name, payload.clone());
+        assert!(result.status.success());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&result.stdout).unwrap(),
+            payload
+        );
+    }
+}
