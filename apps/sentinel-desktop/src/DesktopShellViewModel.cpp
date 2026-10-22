@@ -241,6 +241,11 @@ DesktopShellViewModel::DesktopShellViewModel(DesktopRuntimeClient& client,
             [this] { refreshDaemonErrorProjection(); });
     connect(&client, &DesktopRuntimeClient::changed, this,
             &DesktopShellViewModel::runtimeProjectionChanged);
+    connect(&client, &DesktopRuntimeClient::changed, this, [this] {
+        emit selectedCloudProviderChanged();
+        emit ollamaStatusChanged();
+        emit cloudApiKeysChanged();
+    });
     connect(&client, &DesktopRuntimeClient::memoryManagementCompleted, this,
             &DesktopShellViewModel::memoryManagementCompleted);
     connect(&client, &DesktopRuntimeClient::conversationDeleteCompleted, this,
@@ -1464,10 +1469,16 @@ void DesktopShellViewModel::setLlamaCppEndpoint(const QString& endpoint) {
 }
 
 QString DesktopShellViewModel::cloudApiEndpoint() const {
+    if (controller_.isRemote())
+        return controller_.remote()->settingsValue("cloudApiEndpoint", {});
     return settings_.cloudApiEndpoint();
 }
 
 void DesktopShellViewModel::setCloudApiEndpoint(const QString& endpoint) {
+    if (controller_.isRemote()) {
+        controller_.remote()->setSetting("cloudApiEndpoint", endpoint.trimmed());
+        return;
+    }
     if (settings_.cloudApiEndpoint() != endpoint) {
         settings_.setCloudApiEndpoint(endpoint);
     }
@@ -3844,10 +3855,16 @@ QStringList DesktopShellViewModel::availableModes() const {
 }
 
 QString DesktopShellViewModel::selectedCloudProvider() const {
+    if (controller_.isRemote())
+        return controller_.remote()->settingsValue("selectedCloudProvider", "openai");
     return settings_.selectedCloudProvider();
 }
 
 void DesktopShellViewModel::setSelectedCloudProvider(const QString& provider) {
+    if (controller_.isRemote()) {
+        controller_.remote()->setSetting("selectedCloudProvider", provider.trimmed().toLower());
+        return;
+    }
     settings_.setSelectedCloudProvider(provider);
     controller_.refreshOllamaStatus();
 }

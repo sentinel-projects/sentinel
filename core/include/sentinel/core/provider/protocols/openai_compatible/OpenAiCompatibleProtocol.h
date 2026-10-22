@@ -22,6 +22,8 @@ namespace sentinel::core::provider {
 // resolves to "/chat/completions"; every other endpoint resolves to
 // "/v1/chat/completions".
 QString openAiCompatibleChatCompletionsPath(const QUrl& endpoint);
+// Appends the model catalog path without duplicating an existing /v1 prefix.
+QUrl openAiCompatibleModelsUrl(const QUrl& endpoint);
 
 // Deterministic OpenAI-compatible chat body. Keys and values are written exactly
 // as supplied: callers resolve max_tokens (the local inference path clamps to at

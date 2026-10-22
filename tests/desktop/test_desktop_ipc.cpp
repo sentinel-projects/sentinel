@@ -25,6 +25,9 @@
 #include "sentinel/desktop/DesktopSettingsStore.h"
 #include "sentinel/desktop/QuickPanelController.h"
 #include "service/DaemonIpcServer.h"
+#ifndef Q_MOC_RUN
+#include "../support/ScriptedProviderTransport.h"
+#endif
 #include <QTimer>
 
 #include <QDir>
@@ -296,6 +299,63 @@ struct RuntimePeer : Peer {
 class DesktopIpcTest final : public QObject {
     Q_OBJECT
 private slots:
+    void cloudSettingsUseTheSameGatewayForDiscoveryAndRequests() {
+        using namespace sentinel::core;
+        sentinel::test::ScopedOnlineNetworkMode network;
+        QTemporaryDir profile;
+        AppSettings settings(std::make_unique<InMemorySettingsStore>(),
+                             inMemoryTestCredentialStore());
+        settings.setSelectedRuntimeProvider("cloud-api");
+        settings.setCloudApiEndpoint("https://gateway.example/custom/v1/");
+        settings.setOpenAiApiKey("fixture-original");
+        auto state = std::make_shared<sentinel::test::ScriptedTransportState>();
+        state->responder = [](const auto& request) {
+            return sentinel::test::ScriptedHttpResponse::body(
+                request.method == "GET"
+                    ? QByteArray(R"({"data":[{"id":"fixture-cloud"}]})")
+                    : QByteArray(R"({"choices":[{"message":{"content":"fixture response"}}]})"));
+        };
+        auto models = std::make_unique<ModelService>(&settings);
+        models->setProviderNetworkFactoryForTesting(
+            std::make_shared<sentinel::test::ScriptedNetworkFactory>(state));
+        auto* modelService = models.get();
+        ApplicationControllerBuilder builder;
+        auto controller = builder.withModelService(std::move(models))
+                              .withOllamaRuntimeClient(std::make_unique<MetadataClient>())
+                              .withMemoryStore(std::make_unique<InMemoryStore>())
+                              .build();
+        sentinel::daemon::DaemonIpcServer server(controller.get());
+        server.setSettings(&settings);
+        QVERIFY(server.startServer(profile.filePath("cloud.sock")));
+        DaemonClient transport(profile.filePath("cloud.sock"), 3000, 10);
+        sentinel::desktop::DesktopRuntimeClient runtime(transport);
+        QTRY_VERIFY(runtime.ready());
+        // The daemon must refresh after saving a key, without waiting for a timer
+        // or constructing an unrelated AppSettings from the user's default path.
+        runtime.settingsService("setProductProviderCredential", {"openai", "fixture-updated"},
+                                false);
+        QTRY_COMPARE(modelService->providerStatusSnapshot("cloud-api").catalog,
+                     ProviderCatalogState::Available);
+        QCOMPARE(settings.openAiApiKey(), QString("fixture-updated"));
+        QVERIFY(!state->requests.isEmpty());
+        const auto discovery = state->requests.last();
+        QCOMPARE(discovery.url, QUrl("https://gateway.example/custom/v1/models"));
+        QCOMPARE(discovery.headers.value("authorization"), QByteArray("Bearer fixture-updated"));
+        const auto binding = modelService->resolve("cloud-api", "fixture-cloud");
+        QVERIFY(binding.ok());
+        const auto response = binding.provider->sendMessage("synthetic cloud fixture");
+        QVERIFY(response.success);
+        QCOMPARE(response.message, QString("fixture response"));
+        QCOMPARE(state->requests.last().url,
+                 QUrl("https://gateway.example/custom/v1/chat/completions"));
+        QCOMPARE(state->requests.last().headers.value("authorization"),
+                 QByteArray("Bearer fixture-updated"));
+        runtime.setSetting("cloudApiEndpoint", "https://replacement.example/v1");
+        QTRY_COMPARE(settings.cloudApiEndpoint(), QString("https://replacement.example/v1"));
+        QTRY_COMPARE(modelService->providerStatusSnapshot("cloud-api").catalog,
+                     ProviderCatalogState::Available);
+        QCOMPARE(state->requests.last().url, QUrl("https://replacement.example/v1/models"));
+    }
     void settingsStorageAdmissionRefusalIsTruthfulOverIpc() {
         using namespace sentinel::core;
         using namespace std::chrono_literals;

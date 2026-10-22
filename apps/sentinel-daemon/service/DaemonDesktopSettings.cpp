@@ -177,6 +177,8 @@ QVariantMap DaemonDesktopSettings::setProductProviderCredential(const QString& p
                                                                 const QString& value) {
     const auto result =
         composedSettingsService(settings_, controller_).setProviderCredential(providerId, value);
+    if (result.accepted)
+        controller_.refreshModelDiscovery();
     return {{QStringLiteral("accepted"), result.accepted}, {QStringLiteral("code"), result.code}};
 }
 QVariantMap DaemonDesktopSettings::setProductPluginCredential(const QString& pluginId,

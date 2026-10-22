@@ -18,6 +18,14 @@ Item {
     property var voiceFileDialog: null
     property var soundManager: null
     property string capabilityError: ""
+    property var cloudConnectionState: ({})
+    Connections {
+        target: root.viewModel
+        function onRuntimeProjectionChanged() {
+            if (root.isCloudProvider && root.viewModel.daemonConnected)
+                root.cloudConnectionState = root.viewModel.providerSettingsState(root.currentProvider)
+        }
+    }
     readonly property int panelPadding: SentinelTheme.spaceLg
     readonly property var cloudProviderNames: ["OpenAI", "Claude", "Gemini", "DeepSeek", "Groq", "Mistral"]
     readonly property string currentProvider: root.viewModel.selectedRuntimeProvider
@@ -474,18 +482,39 @@ Item {
 
             SettingControlRow {
                 visible: (root.viewModel.selectedCloudProvider || "").toLowerCase() === "openai"
-                title: qsTr("OpenAI API Key")
-                subtitle: qsTr("Authentication key for GPT-4, GPT-4o, and OpenAI endpoints.")
+                title: root.currentProvider === "cloud-api" ? qsTr("Cloud API Key") : qsTr("OpenAI API Key")
+                subtitle: root.currentProvider === "cloud-api"
+                    ? qsTr("API key for the Cloud API Endpoint above, including OpenAI-compatible services.")
+                    : qsTr("Authentication key for OpenAI endpoints.")
                 accent: root.modeAccent
                 compact: root.compact
 
                 SentinelTextField {
                     anchors.fill: parent
                     echoMode: TextInput.Password
-                    placeholderText: "sk-..."
+                    placeholderText: qsTr("Paste API key")
                     text: root.viewModel.openAiApiKey
-                    onEditingFinished: root.viewModel.openAiApiKey = text
+                    onEditingFinished: {
+                        if (text.trim().length > 0) {
+                            root.viewModel.openAiApiKey = text.trim()
+                            text = ""
+                        }
+                    }
                 }
+            }
+
+            Label {
+                Layout.fillWidth: true
+                visible: root.isCloudProvider
+                wrapMode: Text.WordWrap
+                color: SentinelTheme.textMuted
+                text: root.cloudConnectionState.credentialPresent === true
+                    ? (root.viewModel.activeRuntimeReadinessState === "Available"
+                       ? qsTr("API key stored. Model catalog available.")
+                       : qsTr("API key stored. %1").arg(root.viewModel.activeRuntimeReadinessSummary
+                             || root.cloudConnectionState.discoveryDetail
+                             || qsTr("Connection has not been verified.")))
+                    : qsTr("No API key confirmed. Paste a key and press Tab to save it.")
             }
 
             SettingControlRow {

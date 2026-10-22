@@ -20,6 +20,14 @@ QString openAiCompatibleChatCompletionsPath(const QUrl& endpoint) {
                : QStringLiteral("/v1/chat/completions");
 }
 
+QUrl openAiCompatibleModelsUrl(const QUrl& endpoint) {
+    auto url = endpoint.adjusted(QUrl::StripTrailingSlash);
+    url.setPath(url.path() + (url.path().endsWith(QLatin1String("/v1"))
+                                  ? QStringLiteral("/models")
+                                  : QStringLiteral("/v1/models")));
+    return url;
+}
+
 QJsonObject buildOpenAiCompatibleChatBody(const QString& model, const QJsonArray& messages,
                                           int maxTokens, bool stream,
                                           std::optional<double> temperature) {

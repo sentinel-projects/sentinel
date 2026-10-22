@@ -168,6 +168,19 @@ bool isCloudProviderId(const QString& providerId) {
     return descriptor && descriptor->kind == ProviderKind::Cloud;
 }
 
+QString discoveryFailureSummary(const ProviderDiscoveryOutcome& outcome) {
+    if (outcome.httpStatus == 403)
+        return QStringLiteral("Provider rejected access (HTTP 403). Check account permissions "
+                              "and accept any required terms on the provider website.");
+    if (outcome.httpStatus == 401)
+        return QStringLiteral(
+            "Provider rejected the API key (HTTP 401). Check or replace the key.");
+    return QStringLiteral("Provider model discovery failed (%1%2).")
+        .arg(chatProviderErrorCategoryName(outcome.category),
+             outcome.httpStatus > 0 ? QStringLiteral(", HTTP %1").arg(outcome.httpStatus)
+                                    : QString{});
+}
+
 QString defaultProviderId() {
     return QStringLiteral("ollama");
 }
@@ -256,25 +269,27 @@ ModelService::ModelService(AppSettings* settings, QObject* parent)
     if (settings_) {
         selection_.providerId = normalizedProviderId(settings_->selectedRuntimeProvider());
         selection_.modelId = settings_->selectedModelForProvider(selection_.providerId).trimmed();
-        connect(settings_, &AppSettings::cloudApiKeysChanged, this, [this] {
+        auto invalidateCloud = [this] {
+            const auto sequence = ++providerHealthRegistry_->nextSequence;
             {
                 std::lock_guard lock(providerHealthRegistry_->mutex);
                 for (const auto& descriptor : ProviderRegistry::builtins().descriptors()) {
-                    if (descriptor.kind == ProviderKind::Cloud) {
-                        providerHealthRegistry_->catalogs.remove(descriptor.id);
-                    }
+                    if (descriptor.kind != ProviderKind::Cloud)
+                        continue;
+                    auto& catalog = providerHealthRegistry_->catalogs[descriptor.id];
+                    catalog = {};
+                    catalog.sequence = sequence;
+                    auto& entry = providerHealthRegistry_->entries[descriptor.id];
+                    entry = {};
+                    entry.sequence = sequence;
                 }
             }
             emit providerRegistryChanged();
-        });
-        connect(settings_, &AppSettings::selectedCloudProviderChanged, this, [this] {
-            {
-                std::lock_guard lock(providerHealthRegistry_->mutex);
-                providerHealthRegistry_->catalogs.remove(QStringLiteral("cloud-api"));
-            }
-            emit providerRegistryChanged();
             emit modelCapabilitiesChanged();
-        });
+        };
+        connect(settings_, &AppSettings::cloudApiKeysChanged, this, invalidateCloud);
+        connect(settings_, &AppSettings::selectedCloudProviderChanged, this, invalidateCloud);
+        connect(settings_, &AppSettings::cloudApiEndpointChanged, this, invalidateCloud);
     } else {
         selection_.providerId = defaultProviderId();
     }
@@ -692,9 +707,7 @@ ProviderCompletenessStatus ModelService::providerStatus(const QString& providerI
                     : catalog.outcome.category == ChatProviderErrorCategory::ConnectionFailed
                         ? ProviderCatalogState::EndpointUnavailable
                         : ProviderCatalogState::Failed;
-                status.safeDetail =
-                    QStringLiteral("Provider model discovery failed (%1).")
-                        .arg(chatProviderErrorCategoryName(catalog.outcome.category));
+                status.safeDetail = discoveryFailureSummary(catalog.outcome);
             }
         } else if (config.isCloud()) {
             status.catalog = ProviderCatalogState::ConfiguredModelOnly;
@@ -744,8 +757,7 @@ ProviderCompletenessStatus ModelService::providerStatusSnapshot(const QString& p
             : catalog.outcome.category == ChatProviderErrorCategory::AuthenticationRequired
                 ? ProviderCatalogState::AuthenticationRequired
                 : ProviderCatalogState::Failed;
-        status.safeDetail = QStringLiteral("Observed discovery failure (%1).")
-                                .arg(chatProviderErrorCategoryName(catalog.outcome.category));
+        status.safeDetail = discoveryFailureSummary(catalog.outcome);
     }
     return status;
 }
@@ -910,6 +922,11 @@ LMStudioConfig ModelService::providerConfig(const ModelBinding& binding) const {
             break;
         }
     }
+    // The custom gateway belongs to the Cloud facade. Named providers retain
+    // their own endpoint, so an Evren credential is never sent through fallback.
+    if (binding.providerId == QLatin1String("cloud-api") && cloudProv == QLatin1String("openai") &&
+        !liveSettings->cloudApiEndpoint().trimmed().isEmpty())
+        config.endpoint = QUrl(liveSettings->cloudApiEndpoint().trimmed());
     config.networkFactory = providerNetworkFactory_;
     return config;
 }

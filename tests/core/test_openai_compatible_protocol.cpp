@@ -193,6 +193,9 @@ void OpenAiCompatibleProtocolTest::chatPathGeneration_data() {
                                  << QStringLiteral("/chat/completions");
     QTest::newRow("groq-prefixed-v1")
         << QStringLiteral("https://api.groq.com/openai/v1") << QStringLiteral("/chat/completions");
+    QTest::newRow("custom-prefix-trailing-v1")
+        << QStringLiteral("https://gateway.example/custom/v1/")
+        << QStringLiteral("/chat/completions");
     QTest::newRow("mistral-v1") << QStringLiteral("https://api.mistral.ai/v1")
                                 << QStringLiteral("/chat/completions");
 }
@@ -202,6 +205,11 @@ void OpenAiCompatibleProtocolTest::chatPathGeneration() {
     QFETCH(QString, expected);
     QCOMPARE(sentinel::core::provider::openAiCompatibleChatCompletionsPath(QUrl(endpoint)),
              expected);
+    auto expectedUrl = QUrl(endpoint).adjusted(QUrl::StripTrailingSlash);
+    expectedUrl.setPath(expectedUrl.path() +
+                        expected.left(expected.size() - QString("chat/completions").size()) +
+                        "models");
+    QCOMPARE(sentinel::core::provider::openAiCompatibleModelsUrl(QUrl(endpoint)), expectedUrl);
 }
 
 void OpenAiCompatibleProtocolTest::requestBodyByteEquivalence_data() {

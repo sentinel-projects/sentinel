@@ -365,6 +365,7 @@ QJsonObject SettingsService::providerState(const QString& providerId) const {
             {QStringLiteral("known"), models_->isKnownProvider(providerId)},
             {QStringLiteral("health"), providerHealthName(status.health)},
             {QStringLiteral("catalog"), providerCatalogStateName(status.catalog)},
+            {QStringLiteral("discoveryDetail"), status.safeDetail},
             {QStringLiteral("local"), metadata.providerKind == ProviderKind::Local},
             {QStringLiteral("endpoint"), endpoint},
             {QStringLiteral("discoveredModels"), QJsonArray::fromStringList(status.modelIds)},
@@ -372,7 +373,8 @@ QJsonObject SettingsService::providerState(const QString& providerId) const {
             {QStringLiteral("maxOutputTokens"), caps.maxOutputTokens.value_or(0)},
             {QStringLiteral("credentialPresent"), credentialPresent},
             {QStringLiteral("credentialState"), settings_.credentialState(credentialProvider)},
-            {QStringLiteral("configuredModel"), selection.providerId == providerId ? selection.modelId : QString{}}};
+            {QStringLiteral("configuredModel"),
+             selection.providerId == providerId ? selection.modelId : QString{}}};
 }
 
 QJsonObject SettingsService::extensionState(const QString& extensionId) const {

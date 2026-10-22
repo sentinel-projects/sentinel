@@ -716,7 +716,24 @@ void DesktopRuntimeClient::onResponse(const QString& id, const QString& name,
         }
         m_loaded = true;
     } else if (name == "desktop.settings") {
-        m_settings = payload.value("values").toObject();
+        const auto next = payload.value("values").toObject();
+        if (next.value("selectedCloudProvider") != m_settings.value("selectedCloudProvider") ||
+            next.value("cloudApiEndpoint") != m_settings.value("cloudApiEndpoint")) {
+            for (const auto& key : m_settingsQueries.values()) {
+                if (key.startsWith("providerSettingsState[")) {
+                    m_settingsQueries.remove(key);
+                    m_settingsStates.remove(key);
+                }
+            }
+            for (auto it = m_requests.begin(); it != m_requests.end();) {
+                if (it->name == "desktop.settings_service" &&
+                    it->target.startsWith("providerSettingsState["))
+                    it = m_requests.erase(it);
+                else
+                    ++it;
+            }
+        }
+        m_settings = next;
         m_settingsLoaded = true;
     } else if (name == "desktop.setting") {
         if (!payload.value("accepted").toBool()) {

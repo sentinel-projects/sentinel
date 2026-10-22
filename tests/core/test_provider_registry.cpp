@@ -92,6 +92,65 @@ private slots:
         }
         QVERIFY(!registry.endpointDescriptor("unknown", "openai"));
     }
+    void customCloudEndpointAndCredentialChangesInvalidateDiscovery() {
+        AppSettings settings(std::make_unique<InMemorySettingsStore>(),
+                             inMemoryTestCredentialStore());
+        settings.setOpenAiApiKey("fixture-first");
+        ModelService service(&settings);
+        const auto oldConfig = service.providerConfig({"cloud-api", "fixture"});
+        const auto oldSequence = service.beginProviderHealthObservation();
+        service.acceptProviderDiscovery(
+            "cloud-api", {},
+            {false, ChatProviderErrorCategory::AuthenticationRequired, 401, "fixture"},
+            oldSequence);
+        service.reportProviderDiscovery("cloud-api", oldSequence, false,
+                                        ChatProviderErrorCategory::AuthenticationRequired);
+        settings.setCloudApiEndpoint("https://gateway.example/prefix/v1/");
+        const auto custom = service.providerConfig({"cloud-api", "fixture"});
+        QCOMPARE(custom.endpoint, QUrl("https://gateway.example/prefix/v1/"));
+        QCOMPARE(custom.apiKey, QString("fixture-first"));
+        QCOMPARE(service.providerConfig({"openai", "fixture"}).endpoint,
+                 QUrl("https://api.openai.com"));
+        QCOMPARE(oldConfig.endpoint, QUrl("https://api.openai.com"));
+        // A response from the previous address must not restore its catalog/health.
+        service.acceptProviderDiscovery("cloud-api", {{"old-model", {}, 0}},
+                                        {true, ChatProviderErrorCategory::None, 200, "fixture"},
+                                        oldSequence);
+        service.reportProviderDiscovery("cloud-api", oldSequence, true,
+                                        ChatProviderErrorCategory::None);
+        QVERIFY(service.providerDiscoveredModels("cloud-api").isEmpty());
+        QCOMPARE(service.providerHealth("cloud-api"), ProviderHealth::Unknown);
+        const auto newSequence = service.beginProviderHealthObservation();
+        service.acceptProviderDiscovery("cloud-api", {{"new-model", {}, 0}},
+                                        {true, ChatProviderErrorCategory::None, 200, "fixture"},
+                                        newSequence);
+        QCOMPARE(service.providerStatus("cloud-api").catalog, ProviderCatalogState::Available);
+        settings.setOpenAiApiKey("fixture-replacement");
+        QCOMPARE(service.providerConfig({"cloud-api", "fixture"}).apiKey,
+                 QString("fixture-replacement"));
+        QCOMPARE(custom.apiKey, QString("fixture-first"));
+        QVERIFY(service.providerDiscoveredModels("cloud-api").isEmpty());
+        settings.setCloudApiEndpoint("http://remote.example/v1");
+        QVERIFY(!service.providerConfig({"cloud-api", "fixture"}).isAllowedEndpoint());
+        settings.setSelectedCloudProvider("gemini");
+        QCOMPARE(service.providerConfig({"cloud-api", "fixture"}).endpoint,
+                 QUrl("https://generativelanguage.googleapis.com"));
+    }
+    void accessDeniedDoesNotClaimTheKeyIsMissing() {
+        AppSettings settings(std::make_unique<InMemorySettingsStore>(),
+                             inMemoryTestCredentialStore());
+        settings.setOpenAiApiKey("fixture-key");
+        ModelService service(&settings);
+        service.acceptProviderDiscovery(
+            "cloud-api", {},
+            {false, ChatProviderErrorCategory::AuthenticationRequired, 403, "fixture"},
+            service.beginProviderHealthObservation());
+        const auto detail = service.providerStatusSnapshot("cloud-api").safeDetail;
+        QVERIFY(detail.contains("HTTP 403"));
+        QVERIFY(detail.contains("terms"));
+        QVERIFY(!detail.contains("fixture-key"));
+        QCOMPARE(service.providerStatus("cloud-api").safeDetail, detail);
+    }
     void characterizesExistingRegistration() {
         AppSettings settings(std::make_unique<InMemorySettingsStore>(),
                              inMemoryTestCredentialStore());

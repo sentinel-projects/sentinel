@@ -24,6 +24,7 @@
 #include "sentinel/core/model/StaticModelRouter.h"
 #include "sentinel/core/model/StaticProviderCatalog.h"
 #include "sentinel/core/provider/ProviderRegistry.h"
+#include "sentinel/core/provider/protocols/openai_compatible/OpenAiCompatibleProtocol.h"
 #include "sentinel/core/runtime/AlarmStore.h"
 #include "sentinel/core/runtime/LocalRuntime.h"
 #include "sentinel/core/runtime/NullToolExecutor.h"
@@ -10378,8 +10379,12 @@ void ApplicationController::pollOllama() {
     const auto provider = selectedRuntimeProvider();
     const auto lmStudioEndpointSnapshot = lmStudioEndpoint_;
     const auto llamaCppEndpointSnapshot = llamaCppEndpoint_;
+    // Resolve settings on their owner thread; discovery and generation share
+    // the same endpoint/credential source, including portable profiles.
+    const auto providerConfig = modelService_->providerConfig({provider, {}});
     ollamaCheckThread_ = QThread::create([this, token, generation, healthSequence, provider,
-                                         lmStudioEndpointSnapshot, llamaCppEndpointSnapshot]() {
+                                          lmStudioEndpointSnapshot, llamaCppEndpointSnapshot,
+                                          providerConfig]() {
         OllamaHealthCheckResult health;
         OllamaModelDiscoveryResult ollamaDiscovery;
         QList<OllamaModelSummary> lmStudioModels;
@@ -10390,7 +10395,8 @@ void ApplicationController::pollOllama() {
 
         if (ollamaRuntimeClient_) {
             health = ollamaRuntimeClient_->healthCheck(token);
-            if (!token->load()) ollamaDiscovery = ollamaRuntimeClient_->discoverModels(token);
+            if (!token->load())
+                ollamaDiscovery = ollamaRuntimeClient_->discoverModels(token);
         } else {
             health = NullOllamaRuntimeClient{}.healthCheck();
             ollamaDiscovery = NullOllamaRuntimeClient{}.discoverModels(token);
@@ -10419,49 +10425,20 @@ void ApplicationController::pollOllama() {
                    strategy == ProviderDiscovery::OpenAiCloudModels ||
                    strategy == ProviderDiscovery::AnthropicModels ||
                    strategy == ProviderDiscovery::GeminiModels) {
-            const QString settingsPath =
-                QDir(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation))
-                    .filePath(QStringLiteral("settings.json"));
-            AppSettings settings(std::make_unique<JsonSettingsStore>(settingsPath));
-            settings.disablePersistence();
-            const QString cloudProv = settings.selectedCloudProvider().toLower().trimmed();
-
-            const auto cloudStrategy = registry.discoveryStrategy(provider, cloudProv);
-            const auto* cloudRegistration = registry.endpointDescriptor(provider, cloudProv);
-            const bool isGemini = cloudStrategy == ProviderDiscovery::GeminiModels;
-            const bool isClaude = cloudStrategy == ProviderDiscovery::AnthropicModels;
-            const auto cloudEndpoint =
-                cloudRegistration ? cloudRegistration->endpoint : ProviderEndpoint::SelectedCloud;
-            const bool openAiCatalog = cloudStrategy == ProviderDiscovery::OpenAiCloudModels;
-            const bool isDeepSeek = openAiCatalog && cloudEndpoint == ProviderEndpoint::DeepSeek;
-            const bool isGroq = openAiCatalog && cloudEndpoint == ProviderEndpoint::Groq;
-            const bool isMistral = openAiCatalog && cloudEndpoint == ProviderEndpoint::Mistral;
-            const bool isOpenAi = openAiCatalog && cloudEndpoint == ProviderEndpoint::OpenAi;
-
-            if (isGemini) {
-                cloudModels = fetchGeminiCloudModels(settings.geminiApiKey(), 4000, nullptr, token,
-                                                     &selectedOutcome);
-            } else if (isClaude) {
-                cloudModels = fetchAnthropicCloudModels(settings.claudeApiKey(), 4000, nullptr,
-                                                        token, &selectedOutcome);
-            } else if (isDeepSeek) {
-                cloudModels = fetchOpenAiCloudModels(
-                    QUrl(QStringLiteral("https://api.deepseek.com/v1/models")),
-                    settings.deepseekApiKey(), 4000, nullptr, token, &selectedOutcome);
-            } else if (isGroq) {
-                cloudModels = fetchOpenAiCloudModels(
-                    QUrl(QStringLiteral("https://api.groq.com/openai/v1/models")),
-                    settings.groqApiKey(), 4000, nullptr, token, &selectedOutcome);
-            } else if (isMistral) {
+            const auto host = providerConfig.endpoint.host().toLower();
+            if (host == QLatin1String("generativelanguage.googleapis.com")) {
                 cloudModels =
-                    fetchOpenAiCloudModels(QUrl(QStringLiteral("https://api.mistral.ai/v1/models")),
-                                           settings.mistralApiKey(), 4000, nullptr,
-                                           token, &selectedOutcome);
-            } else if (isOpenAi) {
+                    fetchGeminiCloudModels(providerConfig.apiKey, 4000, nullptr, token,
+                                           &selectedOutcome, providerConfig.networkFactory);
+            } else if (host == QLatin1String("api.anthropic.com")) {
                 cloudModels =
-                    fetchOpenAiCloudModels(QUrl(QStringLiteral("https://api.openai.com/v1/models")),
-                                           settings.openAiApiKey(), 4000, nullptr,
-                                           token, &selectedOutcome);
+                    fetchAnthropicCloudModels(providerConfig.apiKey, 4000, nullptr, token,
+                                              &selectedOutcome, providerConfig.networkFactory);
+            } else {
+                cloudModels = fetchOpenAiCloudModels(
+                    provider::openAiCompatibleModelsUrl(providerConfig.endpoint),
+                    providerConfig.apiKey, 4000, nullptr, token, &selectedOutcome,
+                    providerConfig.networkFactory);
             }
         }
 
