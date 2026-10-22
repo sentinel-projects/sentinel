@@ -9,6 +9,9 @@
 
 #include <QCommandLineParser>
 #include <QTimer>
+#ifdef Q_OS_MACOS
+#include <QSslSocket>
+#endif
 #include <csignal>
 
 namespace {
@@ -22,6 +25,16 @@ void requestShutdown(int) {
 
 int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
+#ifdef Q_OS_MACOS
+    // Select the native TLS implementation before workers open any sockets.
+    // Homebrew's OpenSSL backend can load a different libcrypto major at runtime.
+    // Certificate and hostname verification remain enabled by Qt.
+    if (QSslSocket::availableBackends().contains(QStringLiteral("securetransport")) &&
+        !QSslSocket::setActiveBackend(QStringLiteral("securetransport"))) {
+        qCritical() << "Could not initialize the macOS native TLS backend.";
+        return 1;
+    }
+#endif
     QCoreApplication::setApplicationName(sentinel::core::AppMetadata::displayName() +
                                          QStringLiteral(" Daemon"));
     QCoreApplication::setOrganizationName(sentinel::core::AppMetadata::organizationName());

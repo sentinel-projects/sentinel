@@ -3,6 +3,7 @@
 #include "sentinel/core/agent/ObservationPolicy.h"
 #include "sentinel/core/agent/ClaimGroundingResolver.h"
 #include "sentinel/core/context/ContextBudgetManager.h"
+#include "sentinel/core/platform/UserDirectories.h"
 
 #include "sentinel/core/interfaces/IChatProvider.h"
 #include "sentinel/core/security/ExternalDirectoryGate.h"
@@ -246,10 +247,11 @@ ObservationIntent ObservationIntentPolicy::classify(const QString& goal,
         }
     // AgentLoop appends trusted workspace context after recent conversation. Keep
     // that suffix even when the conversation exceeds the classifier's budget.
+    // Reserve space for authoritative user-directory metadata before older prose.
     const auto marker = QStringLiteral("\nACTIVE WORKSPACE ROOT: ");
     const auto rootOffset = conversationContext.lastIndexOf(marker);
-    const auto context = rootOffset < 0 ? conversationContext.left(1500)
-                                        : conversationContext.left(qMin(rootOffset, 1000)) +
+    const auto context = rootOffset < 0 ? conversationContext.left(850)
+                                        : conversationContext.left(qMin(rootOffset, 250)) +
                                               conversationContext.mid(rootOffset).left(600);
     QStringList availableToolIds;
     for (const auto& tool : tools) {
@@ -263,13 +265,19 @@ ObservationIntent ObservationIntentPolicy::classify(const QString& goal,
             "\"recursive\":false,\"tool\":\"\"}]}. At most 8 entries. Domains: %1. "
             "Require evidence for current external state; [] for general knowledge, writing, "
             "hypotheticals or reasoning from visible conversation. Older history needs history. "
-            "purpose is inspect or operate. Reading/explaining/comparing file CONTENT uses "
+            "purpose is inspect or operate. Negated actions are prohibitions, not requirements: "
+            "do not create/modify a file must never generate an operate requirement. "
+            "Reading/explaining/comparing file CONTENT uses "
             "operation:none, never exists. Only existence questions use exists with full target "
             "path. "
             "Text checks use contains; search uses search_matches. Hidden-file questions use "
             "hidden_entries; named-file search/absence uses path_pattern. For workspace-wide "
             "search use the ACTIVE WORKSPACE ROOT and recursive:true. query is exact text/pattern. "
             "Resolve relative files against that root; never guess cwd/home. "
+            "For named user folders (including localized names such as masaüstü), use the "
+            "exact absolute directory from KNOWN USER DIRECTORIES: %5. Append the requested "
+            "filename to that directory in every filesystem requirement; never invent /Desktop. "
+            "These paths are metadata, not permission grants. "
             "Separate every requested action and final verification. For an explicit requested "
             "tool such as git-diff, set tool to that registered ID; do not substitute a file read "
             "or git-status for a requested diff. For generic file changes leave tool empty; "
@@ -279,7 +287,9 @@ ObservationIntent ObservationIntentPolicy::classify(const QString& goal,
             "command, not an empty string. Otherwise tool may be empty. Available tools: %4. "
             "CONTEXT: %2\nUSER GOAL: %3")
             .arg(capabilities.join(QLatin1Char(',')), context, goal,
-                 availableToolIds.join(QLatin1Char(',')));
+                 availableToolIds.join(QLatin1Char(',')),
+                 QString::fromUtf8(
+                     QJsonDocument(standardUserDirectories()).toJson(QJsonDocument::Compact)));
     const auto traceId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     QElapsedTimer elapsed;
     elapsed.start();
@@ -629,18 +639,23 @@ EvidenceGateResult EvidencePolicy::evaluate(const ObservationIntent& intent,
             continue;
         }
         if (mode == GroundingMode::Verified) {
-            result.repair = QStringLiteral("Verified answer lacks fresh %1 evidence for %2. "
-                                           "Use an appropriate tool.")
+            result.repair = QStringLiteral("Verified answer lacks fresh %1 evidence for %2 "
+                                           "(purpose=%3, tool=%4). Use an appropriate tool.")
                                 .arg(observationDomainName(requirement.domain),
                                      requirement.resourceHint.isEmpty()
                                          ? QStringLiteral("the requested resource")
-                                         : requirement.resourceHint);
+                                         : requirement.resourceHint,
+                                     requirement.purpose == ObservationPurpose::Operate
+                                         ? QStringLiteral("operate")
+                                         : QStringLiteral("inspect"),
+                                     requirement.toolId);
             return result;
         }
         if (!latest) {
-            result.repair = QStringLiteral("No observation attempt exists for required %1 "
-                                           "evidence. Use an appropriate tool.")
-                                .arg(observationDomainName(requirement.domain));
+            result.repair =
+                QStringLiteral("No observation attempt exists for required %1 "
+                               "evidence at %2. Use an appropriate tool.")
+                    .arg(observationDomainName(requirement.domain), requirement.resourceHint);
             return result;
         }
         result.grounding.evidenceCallIds.append(latest->toolCallId);

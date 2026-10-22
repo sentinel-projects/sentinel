@@ -143,6 +143,7 @@ struct LocalInferenceStreamResult {
     QString endpoint;
     QString accumulatedText;
     bool cancelled = false;
+    bool outputLimitReached = false;
     int malformedChunkCount = 0;
     qint64 latencyMs = -1;
     qint64 firstTokenLatencyMs = -1;

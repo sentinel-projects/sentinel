@@ -8,6 +8,7 @@
 #include "sentinel/core/agent/ObservationPolicy.h"
 #include "sentinel/core/interfaces/IChatProvider.h"
 #include "sentinel/core/model/ModelService.h"
+#include "sentinel/core/platform/UserDirectories.h"
 #include "sentinel/core/runtime/BuiltInToolProvider.h"
 #include "sentinel/core/runtime/IFileSystemService.h"
 #include <QDir>
@@ -57,6 +58,27 @@ class ObservationPolicyTest final : public QObject {
     Q_OBJECT
 
 private slots:
+    void localizedDesktopClassificationUsesObservedStandardDirectory() {
+        FixedReplyProvider provider;
+        const auto target =
+            QDir(standardUserDirectories().value("desktop").toString()).filePath("example.txt");
+        provider.reply = QString::fromUtf8(
+            QJsonDocument(
+                QJsonObject{{"requirements", QJsonArray{QJsonObject{{"domain", "filesystem"},
+                                                                    {"resource", target},
+                                                                    {"purpose", "inspect"},
+                                                                    {"operation", "none"}}}}})
+                .toJson());
+        ObservationIntentPolicy policy(&provider);
+        const auto intent = policy.classify("Masaüstündeki example.txt dosyasını oku", {},
+                                            BuiltInToolProvider::descriptors());
+        QVERIFY(!intent.indeterminate);
+        QCOMPARE(intent.requirements.size(), 1);
+        QCOMPARE(intent.requirements.first().resourceHint, target);
+        QVERIFY(provider.prompt.contains(QString::fromUtf8(
+            QJsonDocument(standardUserDirectories()).toJson(QJsonDocument::Compact))));
+        QVERIFY(provider.prompt.contains("metadata, not permission grants"));
+    }
     void insufficientBoundCapacityNeverDispatchesClassification() {
         FixedReplyProvider provider;
         provider.reply = R"({"requirements":[]})";

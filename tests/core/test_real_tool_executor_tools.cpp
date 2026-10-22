@@ -10,6 +10,7 @@
 #include <QScopeGuard>
 #include <QStandardPaths>
 
+#include "sentinel/core/agent/ClaimGroundingResolver.h"
 #include "sentinel/core/chat/SQLiteChatHistoryStore.h"
 #include "sentinel/core/memory/InMemoryStore.h"
 #include "sentinel/core/runtime/AlarmStore.h"
@@ -433,6 +434,22 @@ private slots:
         QCOMPARE(result.structuredObservation->kind, StructuredObservationKind::FileSystemFact);
         QCOMPARE(result.structuredObservation->data.value(QStringLiteral("size")).toInt(), 5);
         QVERIFY(result.structuredObservation->data.value(QStringLiteral("regularFile")).toBool());
+        ObservationRequirement claim;
+        claim.claimId = "stat-file";
+        claim.claimType = ClaimType::FileExists;
+        claim.resourceHint = file.fileName();
+        EvidenceRecord evidence;
+        evidence.toolCallId = "stat-tool";
+        evidence.outcome = EvidenceOutcome::Verified;
+        evidence.structuredObservation = result.structuredObservation;
+        QCOMPARE(ClaimGroundingResolver::resolve(claim, {evidence}, {claim.claimId, true}).verdict,
+                 ClaimVerdict::Supported);
+        auto incomplete = std::make_shared<StructuredObservation>(*result.structuredObservation);
+        incomplete->data.remove("regularFile");
+        evidence.structuredObservation = incomplete;
+        QCOMPARE(ClaimGroundingResolver::resolve(claim, {evidence}, {claim.claimId, false}).verdict,
+                 ClaimVerdict::Unknown);
+
         const auto directory = inspect(QStringLiteral("."));
         QCOMPARE(directory.status, ToolExecutionStatus::Succeeded);
         QVERIFY(directory.structuredObservation->data.value(QStringLiteral("directory")).toBool());
@@ -904,6 +921,12 @@ private slots:
         QVERIFY(result.summary.contains(QStringLiteral("OS:")));
         QVERIFY(result.summary.contains(QStringLiteral("CPU architecture:")));
         QVERIFY(result.summary.contains(QStringLiteral("Hostname:")));
+        QVERIFY(result.structuredObservation);
+        const auto paths = result.structuredObservation->data.value("knownDirectories").toObject();
+        QCOMPARE(paths.value("desktop").toString(),
+                 QStandardPaths::writableLocation(QStandardPaths::DesktopLocation));
+        QCOMPARE(paths.value("home").toString(), QDir::homePath());
+        QVERIFY(result.summary.contains("knownDirectories"));
     }
 
     void processListReportsProcessLines() {
