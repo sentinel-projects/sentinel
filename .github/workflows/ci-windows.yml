@@ -29,7 +29,7 @@ jobs:
         shell: pwsh
         run: choco install ninja --no-progress --yes
       - name: Set up MSVC x64 environment
-        uses: ilammy/msvc-dev-cmd@7defe9254715b088f12dddd9942945a3d75cdad5 # v1.9.0
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: x64
       - name: Install Qt
@@ -68,7 +68,7 @@ jobs:
         shell: pwsh
         run: choco install ninja --no-progress --yes
       - name: Set up MSVC ARM64 environment
-        uses: ilammy/msvc-dev-cmd@7defe9254715b088f12dddd9942945a3d75cdad5 # v1.9.0
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: amd64_arm64
       - name: Install Qt
