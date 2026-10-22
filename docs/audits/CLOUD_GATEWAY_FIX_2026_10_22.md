@@ -15,6 +15,8 @@ Endpoint, selected cloud provider, and credential changes invalidate cloud catal
 - QML lint, changed-line C++ formatting, personal-path scan and diff whitespace checks.
 - Real Desktop Settings → Models & Providers flow inspected through native accessibility. Stored-key feedback and ready state were observed; secret contents were never displayed. The disposable navigation smoke passed at compact and wide window sizes.
 
+The PR also exposed an existing Fedora metadata CI bootstrap omission: the job invoked a Python validator without installing `python3`. Its validation-tool dependencies now include Python. Actionlint and the packaging consistency validator pass locally; remote Fedora execution remains a separate CI result.
+
 ## Live Evren evidence and limits
 
 The configured endpoint was `https://evren-llmapi.ssyz.org.tr/v1`. Initial direct requests using both documented authentication headers returned HTTP 403 with `terms_not_accepted`. The human user read and accepted the provider's terms in Evren; Sentinel did not accept them automatically. After that action both methods returned HTTP 200 and 16 catalog entries. Sentinel's own daemon then reported an available catalog with the same 16 model IDs.

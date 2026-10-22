@@ -46,7 +46,7 @@ jobs:
         run: |
           set -euxo pipefail
           dnf -y install --setopt=install_weak_deps=False \
-            rpm-build desktop-file-utils appstream systemd
+            python3 rpm-build desktop-file-utils appstream systemd
       - name: Validate packaging metadata consistency
         run: python3 tools/packaging/check_packaging_consistency.py
       - name: Validate desktop entry
