@@ -7,6 +7,9 @@ string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" SENTINEL_PROJECT_VERSION "${SENTI
 if(NOT SENTINEL_PROJECT_VERSION)
     message(FATAL_ERROR "SENTINEL_APP_VERSION must begin with major.minor.patch.")
 endif()
+# Debian and RPM order pre-releases before the final release with '~'. Keep the
+# user-visible version (with '-rc.N') for file names and application metadata.
+string(REPLACE "-" "~" SENTINEL_PACKAGE_VERSION "${SENTINEL_APP_VERSION}")
 set(SENTINEL_BUILD_NUMBER "0")
 if(SENTINEL_APP_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+-[A-Za-z]+\\.([0-9]+)$")
     set(SENTINEL_BUILD_NUMBER "${CMAKE_MATCH_1}")
