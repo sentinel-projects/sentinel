@@ -318,7 +318,21 @@ fn run(cli: Cli) -> Result<(), Error> {
         _ => None,
     };
     if let Some((name, payload)) = request {
-        emit(client.request(name, payload)?, output, name);
+        let response = client.request(name, payload)?;
+        let operation: sentinel_ipc::contract::ResponsePayload =
+            serde_json::from_value(json!({"name":name,"payload":&response}))
+                .map_err(|error| Error::Protocol(error.to_string()))?;
+        if matches!(
+            operation,
+            sentinel_ipc::contract::ResponsePayload::DesktopSetting { accepted: false }
+                | sentinel_ipc::contract::ResponsePayload::DesktopAction {
+                    accepted: false,
+                    ..
+                }
+        ) {
+            return Err(Error::Remote("operation-rejected".into()));
+        }
+        emit(response, output, name);
         return Ok(());
     }
     if matches!(command, Commands::Doctor) {
