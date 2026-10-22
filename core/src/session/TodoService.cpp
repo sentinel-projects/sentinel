@@ -34,7 +34,9 @@ void TodoService::updateItem(const QString& id, const QString& status, const QSt
 
 void TodoService::addItem(const QString& content, const QString& priority) {
     TodoItem item;
-    item.id = QString::number(m_nextIndex++);
+    do {
+        item.id = generateId();
+    } while (m_items.contains(item.id));
     item.content = content;
     item.priority = priority;
     item.status = "pending";
@@ -70,7 +72,7 @@ QString TodoService::formattedText() const {
 }
 
 QString TodoService::generateId() const {
-    return QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+    return QUuid::createUuid().toString(QUuid::WithoutBraces);
 }
 
 } // namespace sentinel::core
