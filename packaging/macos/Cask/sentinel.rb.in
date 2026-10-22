@@ -1,14 +1,14 @@
 cask "sentinel" do
-  version "1.0.0"
-  sha256 :no_check
+  version "__VERSION__"
+  sha256 "__SHA256__"
 
-  url "https://github.com/sopwit/sentinel/releases/download/v#{version}/Sentinel-macOS-#{version}.dmg"
+  url "https://github.com/sentinel-projects/sentinel/releases/download/v#{version}/Sentinel-macOS.dmg"
   name "Sentinel"
   desc "Local-first AI desktop assistant"
   homepage "https://sentinel.dev"
 
   livecheck do
-    url "https://github.com/sopwit/sentinel/releases.atom"
+    url :url
     strategy :github_latest
   end
 
@@ -17,11 +17,8 @@ cask "sentinel" do
 
   app "Sentinel.app"
 
-  uninstall quit:      "dev.sentinel.Sentinel",
-            script:    {
-              executable: "#{appdir}/Sentinel.app/Contents/Resources/uninstall.sh",
-              must_succeed: false,
-            }
+  uninstall quit:  "dev.sentinel.Sentinel",
+            pkill: "sentinel-daemon"
 
   zap trash: [
     "~/Library/Application Support/Sopwit/Sentinel",

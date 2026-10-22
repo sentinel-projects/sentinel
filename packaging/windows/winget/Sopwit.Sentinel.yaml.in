@@ -1,14 +1,14 @@
-# Windows Package Manager (Winget) Manifest
-# Package: Sentinel
+# Generated from this template by tools/packaging/render_release_manifests.py.
+# Do not edit the generated release manifest by hand.
 PackageIdentifier: Sopwit.Sentinel
-PackageVersion: 1.0.0
+PackageVersion: __VERSION__
 PackageName: Sentinel
 Publisher: Sopwit
 PublisherUrl: https://sentinel.dev
 PublisherSupportUrl: https://sentinel.dev/support
 Author: Sopwit / Sentinel Maintainers
 License: GPL-3.0-or-later
-LicenseUrl: https://github.com/sentinel/sentinel/blob/main/LICENSE
+LicenseUrl: https://github.com/sentinel-projects/sentinel/blob/main/LICENSE
 Copyright: © 2026 Sopwit. All rights reserved.
 ShortDescription: Local-first AI desktop assistant optimized for speed, security, and privacy.
 Description: |
@@ -26,13 +26,13 @@ Tags:
 Installers:
   - Architecture: x64
     InstallerType: nullsoft
-    InstallerUrl: https://github.com/sentinel/sentinel/releases/download/v1.0.0/Sentinel-Windows-1.0.0-x64.exe
-    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    InstallerUrl: https://github.com/sentinel-projects/sentinel/releases/download/__TAG__/Sentinel-Windows-x64.exe
+    InstallerSha256: __EXE_SHA256__
     Scope: user
   - Architecture: x64
     InstallerType: wix
-    InstallerUrl: https://github.com/sentinel/sentinel/releases/download/v1.0.0/Sentinel-Windows-1.0.0-x64.msi
-    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    InstallerUrl: https://github.com/sentinel-projects/sentinel/releases/download/__TAG__/Sentinel-Windows-x64.msi
+    InstallerSha256: __MSI_SHA256__
     Scope: machine
 ManifestType: singleton
 ManifestVersion: 1.6.0
