@@ -37,6 +37,7 @@ void qml_register_types_Sentinel_Warden();
 #include <QIcon>
 #include <QNetworkProxy>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QQmlContext>
 #include <QQuickWindow>
 #include <QSettings>
@@ -54,6 +55,15 @@ QString discoverDaemonBinary() {
     if (QFileInfo::exists(sibling)) {
         return sibling;
     }
+#ifdef Q_OS_MACOS
+    // Release bundles install the daemon under Contents/Helpers so a
+    // drag-to-Applications install keeps the helper with the app.
+    const QString helper =
+        QDir(appDir).absoluteFilePath(QStringLiteral("../Helpers/sentinel-daemon"));
+    if (QFileInfo(helper).isExecutable()) {
+        return helper;
+    }
+#endif
 #ifdef Q_OS_WIN
     QString siblingExe = appDir + QStringLiteral("/sentinel-daemon.exe");
     if (QFileInfo::exists(siblingExe)) {
@@ -97,8 +107,21 @@ void ApplicationBootstrapper::ensureBackgroundDaemon() {
     if (!endpoint.isEmpty()) {
         arguments << QStringLiteral("--socket") << endpoint;
     }
+#ifdef Q_OS_MACOS
+    // The helper lives in Contents/Helpers, so Qt's bundle-relative plugin
+    // search does not find Contents/PlugIns on its own.
+    const QString plugins =
+        QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(QStringLiteral("../PlugIns"));
+    if (QFileInfo(plugins).isDir()) {
+        auto environment = QProcessEnvironment::systemEnvironment();
+        environment.insert(QStringLiteral("QT_PLUGIN_PATH"), plugins);
+        m_daemonProcess->setProcessEnvironment(environment);
+    }
+#endif
+    m_daemonProcess->setProgram(daemonBinary);
+    m_daemonProcess->setArguments(arguments);
     // The background service outlives the UI and is protected by its own socket lock.
-    if (!m_daemonProcess->startDetached(daemonBinary, arguments)) {
+    if (!m_daemonProcess->startDetached()) {
         qWarning() << "Cannot start sentinel-daemon";
     }
 }

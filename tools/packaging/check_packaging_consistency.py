@@ -75,6 +75,22 @@ def check(root: Path) -> list[str]:
     desktop_cmake = read(root, "apps/sentinel-desktop/CMakeLists.txt")
     if "DESTINATION ${CMAKE_INSTALL_PREFIX}/lib/systemd/user" in desktop_cmake:
         errors.append("User unit destination must respect the staged install prefix")
+    daemon_cmake = read(root, "apps/sentinel-daemon/CMakeLists.txt")
+    if 'set(SENTINEL_DAEMON_INSTALL_DIR "sentinel-desktop.app/Contents/Helpers")' not in daemon_cmake:
+        errors.append("macOS daemon must install inside the app bundle Helpers directory")
+    bootstrap = read(root, "apps/sentinel-desktop/bootstrap/ApplicationBootstrapper.cpp")
+    if '"../Helpers/sentinel-daemon"' not in bootstrap:
+        errors.append("Desktop daemon discovery must check Contents/Helpers")
+    uninstall = read(root, "packaging/macos/uninstall.sh")
+    if 'pkill -x "sentinel-daemon"' not in uninstall:
+        errors.append("macOS uninstaller must stop the bundled daemon")
+    release = read(root, ".github/workflows/release.yml")
+    if "packaging/macos/bundle/sentinel.entitlements" not in release:
+        errors.append("release workflow must sign with the checked-in macOS entitlements")
+    if 'test -x "$app/Contents/Helpers/sentinel-daemon"' not in release:
+        errors.append("release workflow must verify the bundled macOS daemon")
+    if "fix_macos_helper_rpath.py" not in release:
+        errors.append("release workflow must rewrite the bundled helper's Qt rpaths")
     rust_version = re.search(r'^version\s*=\s*"([^"]+)"', read(root, "cli/Cargo.toml"), re.MULTILINE)
     if not rust_version or rust_version.group(1) != canonical:
         errors.append("cli/Cargo.toml: workspace version differs from the canonical version")
