@@ -81,9 +81,9 @@ Item {
     function inferencePresetIndex() {
         var bestIndex = 0
         var bestDistance = 999
-        for (var i = 0; i < root.inferencePresetModel.length; ++i) {
-            var preset = root.inferencePresetModel[i]
-            var distance = Math.abs(root.viewModel.localInferenceTemperature - preset.temp)
+        for (let i = 0; i < root.inferencePresetModel.length; ++i) {
+            const preset = root.inferencePresetModel[i]
+            const distance = Math.abs(root.viewModel.localInferenceTemperature - preset.temp)
                          + Math.abs(root.viewModel.localInferenceTopP - preset.topP)
             if (distance < bestDistance) {
                 bestDistance = distance
@@ -151,7 +151,7 @@ Item {
                     onActivated: (index) => {
                         var ids = root.viewModel.selectableRuntimeProviderIds
                         if (index >= 0 && index < ids.length) {
-                            var providerId = ids[index]
+                            const providerId = ids[index]
                             root.viewModel.selectedRuntimeProvider = providerId
                         }
                     }
@@ -466,7 +466,7 @@ Item {
                         // Settings stores lowercase ids; the display list is
                         // capitalized, so compare case-insensitively.
                         var stored = (root.viewModel.selectedCloudProvider || "").toLowerCase()
-                        for (var i = 0; i < root.cloudProviderNames.length; ++i) {
+                        for (let i = 0; i < root.cloudProviderNames.length; ++i) {
                             if (root.cloudProviderNames[i].toLowerCase() === stored)
                                 return i
                         }
