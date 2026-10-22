@@ -28,6 +28,8 @@ jobs:
         run: python3 tools/analysis/check_personal_paths.py
       - name: Validate packaging metadata consistency
         run: python3 tools/packaging/check_packaging_consistency.py
+      - name: Test packaging contracts
+        run: python3 tests/packaging/test_packaging.py
       - name: Install build and validation tools
         run: |
           set -euo pipefail

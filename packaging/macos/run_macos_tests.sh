@@ -45,7 +45,7 @@ echo "  ✅ Silent uninstaller script verified."
 
 # 6. Verify Homebrew Cask & AppleScript SDEF
 echo "[6/6] Verifying Homebrew Cask Formula & AppleScript SDEF..."
-test -f "packaging/macos/Cask/sentinel.rb"
+test -f "packaging/macos/Cask/sentinel.rb.in"
 test -f "packaging/macos/bundle/Sentinel.sdef"
 echo "  ✅ Homebrew Cask formula and AppleScript dictionary verified."
 

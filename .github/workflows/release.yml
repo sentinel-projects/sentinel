@@ -253,6 +253,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: "*-release"
@@ -271,6 +274,25 @@ jobs:
             cp -- "$file" "final-artifacts/$name"
           done
           (cd final-artifacts && cat SHA256SUMS-*.txt > SHA256SUMS.txt)
+      - name: Render and validate package-manager manifests
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          python3 tools/packaging/render_release_manifests.py \
+            --tag "$RELEASE_TAG" \
+            --dmg final-artifacts/Sentinel-macOS.dmg \
+            --exe final-artifacts/Sentinel-Windows-x64.exe \
+            --msi final-artifacts/Sentinel-Windows-x64.msi \
+            --output-dir final-artifacts
+          python3 tools/packaging/validate_release_manifests.py \
+            --tag "$RELEASE_TAG" \
+            --cask final-artifacts/sentinel.rb \
+            --winget final-artifacts/Sopwit.Sentinel.yaml \
+            --dmg final-artifacts/Sentinel-macOS.dmg \
+            --exe final-artifacts/Sentinel-Windows-x64.exe \
+            --msi final-artifacts/Sentinel-Windows-x64.msi
+          (cd final-artifacts && sha256sum sentinel.rb Sopwit.Sentinel.yaml >> SHA256SUMS.txt)
       - name: Create release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
