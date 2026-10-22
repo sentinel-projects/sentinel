@@ -24,6 +24,7 @@
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include "../support/ShortSocketPath.h"
 #include <QTest>
 #include <QUuid>
 #include <atomic>
@@ -35,6 +36,7 @@
 #endif
 
 using namespace sentinel;
+using sentinel::test::shortSocketDirTemplate;
 using desktop::DaemonClient;
 namespace {
 constexpr int deadlineMs = 5000;
@@ -162,7 +164,7 @@ public:
     }
 };
 struct Fixture {
-    QTemporaryDir directory{QDir::tempPath() + QStringLiteral("/sentinel-ipc-XXXXXX")};
+    QTemporaryDir directory{shortSocketDirTemplate("sentinel-ipc")};
     core::AppSettings settings{std::make_unique<core::InMemorySettingsStore>(),
                                core::inMemoryTestCredentialStore()};
     test::DeterministicModelServiceFixture models{test::DeterministicChatReply::Final, &settings};

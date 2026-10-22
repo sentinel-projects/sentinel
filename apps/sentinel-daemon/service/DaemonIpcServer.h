@@ -34,6 +34,9 @@ public:
     ~DaemonIpcServer() override;
     static QString defaultSocketPath();
     bool startServer(const QString& serverName = {});
+    // Typed diagnostic for the most recent startServer failure. Contains sizes
+    // and platform limits, never the configured path itself.
+    QString lastServerError() const { return m_lastServerError; }
     void stopServer();
     void requestShutdown();
     void setController(core::ApplicationController* controller);
@@ -64,6 +67,7 @@ private:
     QByteArray m_voicePcm;
     bool m_voiceCaptureReserved = false;
     quint64 m_voiceSttRevision = 0;
+    QString m_lastServerError;
     struct BackupTransfer {
         QString id;
         QByteArray bytes;

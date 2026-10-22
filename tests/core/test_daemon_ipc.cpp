@@ -22,6 +22,7 @@
 #include <QSqlQuery>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include "../support/ShortSocketPath.h"
 #include <QTest>
 #include <QUuid>
 #ifdef Q_OS_UNIX
@@ -32,6 +33,7 @@
 #include <unistd.h>
 #endif
 using namespace sentinel;
+using sentinel::test::shortSocketDirTemplate;
 namespace {
 QJsonObject message(const QString& name, const QJsonObject& payload = {}, int major = 1) {
     return {{"version", QJsonObject{{"major", major}, {"minor", 0}}},
@@ -142,7 +144,7 @@ public:
     }
 };
 struct Harness {
-    QTemporaryDir directory{QDir::tempPath() + "/sentinel-ipc-XXXXXX"};
+    QTemporaryDir directory{shortSocketDirTemplate("sentinel-ipc")};
     test::DeterministicModelServiceFixture models;
     std::unique_ptr<core::ApplicationController> controller;
     std::unique_ptr<daemon::DaemonIpcServer> server;
@@ -511,7 +513,7 @@ private slots:
                                         greeting.fileName())
                      .status,
                  core::ToolExecutionStatus::Blocked);
-        QTemporaryDir outside;
+        QTemporaryDir outside{shortSocketDirTemplate("profile")};
         QVERIFY(outside.isValid());
         QCOMPARE(
             runtime->inspectWorkspace(sid.toString(), h.directory.path(), "glob", outside.path())
@@ -1514,6 +1516,18 @@ private slots:
         s.disconnectFromServer();
 #else
         QSKIP("Peer authorization is a Unix platform contract.");
+#endif
+    }
+    void rejectsSocketPathBeyondPlatformLimit() {
+#ifdef Q_OS_UNIX
+        Harness h;
+        const QString name(200, QLatin1Char('x'));
+        const auto path = h.directory.filePath(name + QStringLiteral(".sock"));
+        QVERIFY(!h.server->startServer(path));
+        QVERIFY2(h.server->lastServerError().contains(QStringLiteral("platform limit")),
+                 qPrintable(h.server->lastServerError()));
+#else
+        QSKIP("sockaddr_un path limits are a Unix platform contract.");
 #endif
     }
 };
