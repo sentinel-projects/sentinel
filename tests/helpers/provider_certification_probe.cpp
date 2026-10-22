@@ -8,8 +8,10 @@
 #include "sentinel/core/app/ApplicationController.h"
 #include "sentinel/core/app/ApplicationControllerBuilder.h"
 #include "sentinel/core/mcp/McpService.h"
+#include "sentinel/core/memory/InMemorySettingsStore.h"
 #include "sentinel/core/model/ModelService.h"
 #include "sentinel/core/network/NetworkPolicyService.h"
+#include "sentinel/core/provider/protocols/openai_compatible/OpenAiCompatibleProtocol.h"
 #include "sentinel/core/runtime/BuiltInToolProvider.h"
 #include "sentinel/core/runtime/RealToolExecutor.h"
 #include "sentinel/core/security/StaticApprovalPolicy.h"
@@ -87,7 +89,14 @@ int main(int argc, char** argv) {
         skillPreferences = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) +
                            "/skill_preferences.json";
     }
-    AppSettings settings(nullptr);
+    const bool fileRoundtrip = args.size() > 4 && args[4] == "file-roundtrip";
+    const auto fixtureFile = QDir(certificationRoot).filePath("agent-roundtrip.txt");
+    if (fileRoundtrip && QFile::exists(fixtureFile)) {
+        report(
+            {{"configuration_error", "file-roundtrip refuses to overwrite an existing fixture"}});
+        return 2;
+    }
+    AppSettings settings(std::make_unique<InMemorySettingsStore>());
     auto ownedModels = std::make_unique<ModelService>(&settings);
     auto& models = *ownedModels;
     const auto provider = args[1];
@@ -101,6 +110,17 @@ int main(int argc, char** argv) {
     } else if (provider == "gemini") {
         report({{"credential_present", !settings.geminiApiKey().isEmpty()}});
         catalog = fetchGeminiCloudModels(settings.geminiApiKey(), 15000, nullptr, {}, &discovery);
+    } else if (provider == "cloud-api") {
+        const QUrl endpoint(qEnvironmentVariable("SENTINEL_CERTIFICATION_CLOUD_ENDPOINT"));
+        if (endpoint.scheme() != "https" || !LMStudioConfig::isSecureTransportEndpoint(endpoint) ||
+            endpoint.hasQuery() || endpoint.hasFragment()) {
+            report({{"configuration_error", "An explicit clean HTTPS cloud endpoint is required"}});
+            return 2;
+        }
+        settings.setCloudApiEndpoint(endpoint.toString());
+        const auto config = models.providerConfig({provider, model});
+        catalog = fetchOpenAiCloudModels(provider::openAiCompatibleModelsUrl(config.endpoint),
+                                         config.apiKey, 15000, nullptr, {}, &discovery);
     } else
         return 2;
     models.acceptProviderDiscovery(provider, catalog, discovery,
@@ -279,8 +299,22 @@ int main(int argc, char** argv) {
                 properties.insert("command", command);
                 descriptor.inputSchema.insert("properties", properties);
             }
+    if (fileRoundtrip) {
+        for (auto& descriptor : descriptors) {
+            if (descriptor.id != "write-file" && descriptor.id != "read-file" &&
+                descriptor.id != "stat-path")
+                continue;
+            auto properties = descriptor.inputSchema.value("properties").toObject();
+            auto path = properties.value("path").toObject();
+            path.insert("enum", QJsonArray{fixtureFile});
+            properties.insert("path", path);
+            descriptor.inputSchema.insert("properties", properties);
+        }
+    }
     LlmAgentRuntime planner(descriptors, resolved.provider.get());
     planner.bindModel(resolved.binding, resolved.provider);
+    if (fileRoundtrip)
+        planner.setStreamObserver([](const QString&) {});
     RealToolExecutor executor;
     std::shared_ptr<McpService> mcp;
     if (args.size() > 4 && args[4] == "mcp") {
@@ -334,6 +368,8 @@ int main(int argc, char** argv) {
     options.workspaceName = "Sentinel";
     // Limit this diagnostic to the user's read-only certification operations.
     options.availableToolIds = {"list-directory"};
+    if (fileRoundtrip)
+        options.availableToolIds = {"write-file", "read-file", "stat-path"};
     if (pluginProbe)
         options.availableToolIds = pluginTools;
     if (mcp)
@@ -409,7 +445,14 @@ int main(int argc, char** argv) {
         session = runtime.createSession();
         runtime.configureSession(session, options);
     }
-    runtime.start(session, args[3]);
+    const auto goal =
+        fileRoundtrip
+            ? QStringLiteral(
+                  "Create the file %1 with exactly SENTINEL_FILE_OK as its complete content. "
+                  "Then read it back and report the verified result. Do not touch any other file.")
+                  .arg(fixtureFile)
+            : args[3];
+    runtime.start(session, goal);
     loop.exec();
     if (cancellationProbe) {
         const auto previous = runtime.sessionState(cancelledSession).phase;
@@ -439,6 +482,14 @@ int main(int argc, char** argv) {
     }
     if (skillProbe && QFile::exists(skillPreferences))
         QFile::remove(skillPreferences);
+    if (fileRoundtrip) {
+        QFile file(fixtureFile);
+        const bool verified =
+            file.open(QIODevice::ReadOnly) && file.readAll() == "SENTINEL_FILE_OK";
+        report({{"fixture_content_verified", verified}});
+        if (!verified)
+            return 1;
+    }
     if (!proseFinalOk)
         return 1;
     return runtime.sessionState(session).phase == AgentLoopPhase::Completed ? 0 : 1;

@@ -448,6 +448,7 @@ LocalInferenceStreamResult NullLocalInferenceStreamClient::startStream(
         {},
         {},
         false,
+        false,
         0,
         {},
         {},
@@ -1354,9 +1355,8 @@ LocalInferenceResponse LMStudioLocalInferenceClient::infer(const LocalInferenceR
             QMap<QByteArray, QByteArray> headers;
             headers.insert("x-api-key", config_.apiKey.toUtf8());
             headers.insert("anthropic-version", "2023-06-01");
-            const auto reply = postJson(
-                provider::anthropicMessagesUrl(), body, timeoutMs,
-                headers, request.options.cancellationToken, config_.networkFactory);
+            const auto reply = postJson(provider::anthropicMessagesUrl(), body, timeoutMs, headers,
+                                        request.options.cancellationToken, config_.networkFactory);
             recordRequestMetadata(response, reply);
             if (!reply.ok) {
                 response.status = LocalInferenceStatus::Error;
@@ -1478,11 +1478,37 @@ LocalInferenceResponse LMStudioLocalInferenceClient::infer(const LocalInferenceR
                 trace(3, QStringLiteral("Generation"), QStringLiteral("Error"), response.summary));
             return response;
         }
+        const auto choices = reply.document.object().value("choices").toArray();
+        const auto choice = choices.isEmpty() ? QJsonObject{} : choices.first().toObject();
+        const auto finishReason = choice.value("finish_reason").toString();
+        response.diagnostics.insert("finish_reason",
+                                    finishReason == "stop" || finishReason == "length"
+                                        ? finishReason
+                                        : QStringLiteral("unknown_or_other"));
+        const auto usage = reply.document.object().value("usage").toObject();
+        for (const auto& key :
+             {QStringLiteral("prompt_tokens"), QStringLiteral("completion_tokens"),
+              QStringLiteral("total_tokens")})
+            if (usage.value(key).isDouble())
+                response.diagnostics.insert(key, usage.value(key));
+        if (finishReason == QLatin1String("length")) {
+            response.diagnostics.insert("output_limit_reached", true);
+            response.status = LocalInferenceStatus::Error;
+            response.error = LocalInferenceError::InvalidResponse;
+            response.providerErrorCategory =
+                static_cast<int>(ChatProviderErrorCategory::RequestRejected);
+            response.summary = QStringLiteral(
+                "Provider output limit reached before a complete answer; no success was accepted.");
+            return response;
+        }
         provider::OpenAiCompatibleChatTextError textError =
             provider::OpenAiCompatibleChatTextError::None;
         const auto text =
             provider::parseOpenAiCompatibleChatText(reply.document.object(), &textError);
         if (!text) {
+            response.diagnostics.insert("empty_visible_content",
+                                        textError ==
+                                            provider::OpenAiCompatibleChatTextError::MissingText);
             response.status = LocalInferenceStatus::Error;
             response.error = LocalInferenceError::InvalidResponse;
             response.summary =
@@ -1746,8 +1772,7 @@ LocalInferenceStreamResult LMStudioLocalInferenceStreamClient::startStream(
         body = provider::buildAnthropicMessagesBody(result.model, messagesArr, 2048, true);
     } else if (isGemini) {
         const QString modelId = result.model;
-        networkRequest.setUrl(
-            provider::geminiStreamGenerateContentUrl(modelId, config_.apiKey));
+        networkRequest.setUrl(provider::geminiStreamGenerateContentUrl(modelId, config_.apiKey));
 
         QJsonObject partObj;
         partObj.insert(QStringLiteral("text"), request.prompt.trimmed());
@@ -1761,8 +1786,9 @@ LocalInferenceStreamResult LMStudioLocalInferenceStreamClient::startStream(
         QJsonArray contentsArr;
         contentsArr.append(contentObj);
 
-        body = provider::buildGeminiGenerateContentBody(
-            contentsArr, request.options.maxTokens, request.options.temperature, request.options.topP);
+        body = provider::buildGeminiGenerateContentBody(contentsArr, request.options.maxTokens,
+                                                        request.options.temperature,
+                                                        request.options.topP);
     } else {
         networkRequest.setUrl(
             endpointUrl(provider::openAiCompatibleChatCompletionsPath(config_.endpoint)));
@@ -1795,6 +1821,7 @@ LocalInferenceStreamResult LMStudioLocalInferenceStreamClient::startStream(
     int sequence = 0;
     bool done = false;
     bool streamError = false;
+    bool outputLimitReached = false;
     QElapsedTimer elapsed;
     elapsed.start();
 
@@ -1854,6 +1881,7 @@ LocalInferenceStreamResult LMStudioLocalInferenceStreamClient::startStream(
                 const auto delta = choice.value(QStringLiteral("delta")).toObject();
                 text = delta.value(QStringLiteral("content")).toString();
                 const auto finishReason = choice.value(QStringLiteral("finish_reason")).toString();
+                outputLimitReached |= finishReason == QLatin1String("length");
                 if (!finishReason.isEmpty()) {
                     isFinal = true;
                     done = true;
@@ -2001,6 +2029,16 @@ LocalInferenceStreamResult LMStudioLocalInferenceStreamClient::startStream(
         return result;
     }
 
+    if (outputLimitReached) {
+        result.outputLimitReached = true;
+        result.status = LocalInferenceStreamStatus::Error;
+        result.lifecycle = ChatRequestLifecycle::Failed;
+        result.error = LocalInferenceError::InvalidResponse;
+        result.providerErrorCategory = static_cast<int>(ChatProviderErrorCategory::RequestRejected);
+        result.summary = QStringLiteral("Provider output limit reached before a complete streaming "
+                                        "answer; no success was accepted.");
+        return result;
+    }
     if (streamError || !done || result.accumulatedText.trimmed().isEmpty()) {
         result.status = LocalInferenceStreamStatus::Error;
         result.lifecycle = ChatRequestLifecycle::Failed;

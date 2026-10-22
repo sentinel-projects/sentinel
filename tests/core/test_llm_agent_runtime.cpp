@@ -25,6 +25,18 @@ public:
     QString name() const override {
         return QStringLiteral("FakeChatProvider");
     }
+    bool supportsStreaming() const override {
+        return bounded;
+    }
+    bool supportsBoundedStreaming() const override {
+        return bounded;
+    }
+    ChatProviderReply sendMessageStreaming(const QString& message,
+                                           const std::function<void(const QString&)>&,
+                                           const std::shared_ptr<std::atomic_bool>&,
+                                           const ChatRequestOptions& options) override {
+        return sendRequest(message, options);
+    }
     ChatProviderStatus status() const override {
         return ChatProviderStatus::Ready;
     }
@@ -43,6 +55,8 @@ public:
         prompts.append(message);
         requestOptions.append(options);
         if (!options.structuredOutput && !options.nativeToolCalling) {
+            if (!scriptedPlainResults.isEmpty())
+                return scriptedPlainResults.takeFirst();
             if (failNext) {
                 failNext = false;
                 return {false, {}, QStringLiteral("provider offline")};
@@ -59,9 +73,11 @@ public:
     QStringList prompts;
     QString scriptedReply;
     QStringList scriptedPlainReplies;
+    QList<ChatProviderReply> scriptedPlainResults;
     QList<ChatProviderReply> scriptedRequests;
     QList<ChatRequestOptions> requestOptions;
     bool failNext = false;
+    bool bounded = false;
 };
 
 AgentStepRecord sampleRecord() {
@@ -81,6 +97,99 @@ class LlmAgentRuntimeTest final : public QObject {
     Q_OBJECT
 
 private slots:
+    void truncatedPlannerAnswerGetsOneBudgetAdmittedRetry() {
+        for (bool recover : {false, true}) {
+            FakeChatProvider provider;
+            ChatProviderReply truncated;
+            truncated.category = ChatProviderErrorCategory::RequestRejected;
+            truncated.httpStatus = 200;
+            truncated.diagnostics.insert("output_limit_reached", true);
+            ChatProviderReply success{
+                true, "{\"action\":\"final\",\"grounding\":\"context\",\"answer\":\"hello\"}", {}};
+            provider.scriptedPlainResults = {truncated, recover ? success : truncated};
+            LlmAgentRuntime runtime({}, &provider);
+            runtime.setObservationIntent({});
+            const auto result = runtime.nextStep("hello", {});
+            QCOMPARE(provider.requestOptions.size(), 2);
+            QCOMPARE(provider.requestOptions.first().maxOutputTokens, 2048);
+            QCOMPARE(provider.requestOptions.last().maxOutputTokens, 4096);
+            QCOMPARE(result.kind, recover ? AgentStepDecision::Kind::FinalAnswer
+                                          : AgentStepDecision::Kind::GiveUp);
+        }
+    }
+    void outputLimitDoesNotRetryPastModelCap() {
+        auto provider = std::make_shared<FakeChatProvider>();
+        ChatProviderReply truncated;
+        truncated.category = ChatProviderErrorCategory::RequestRejected;
+        truncated.httpStatus = 200;
+        truncated.diagnostics.insert("output_limit_reached", true);
+        provider->scriptedPlainResults = {truncated};
+        LlmAgentRuntime runtime({}, provider.get());
+        ModelBinding binding;
+        binding.providerId = "fixture";
+        binding.modelId = "capped";
+        binding.capabilities.maxOutputTokens = 2048;
+        runtime.bindModel(binding, provider);
+        runtime.setObservationIntent({});
+        const auto result = runtime.nextStep("hello", {});
+        QCOMPARE(result.kind, AgentStepDecision::Kind::GiveUp);
+        QCOMPARE(provider->requestOptions.size(), 1);
+    }
+    void emptyCloudPlannerAnswerGetsOnlyOneBoundedRepair() {
+        for (bool recover : {false, true}) {
+            FakeChatProvider provider;
+            ChatProviderReply empty;
+            empty.category = ChatProviderErrorCategory::MalformedResponse;
+            empty.httpStatus = 200;
+            empty.diagnostics.insert("empty_visible_content", true);
+            empty.errorMessage = "No visible content";
+            ChatProviderReply success{
+                true, "{\"action\":\"final\",\"grounding\":\"context\",\"answer\":\"hello\"}", {}};
+            provider.scriptedPlainResults = {empty, recover ? success : empty};
+            LlmAgentRuntime runtime({}, &provider);
+            runtime.setObservationIntent({});
+            const auto result = runtime.nextStep("hello", {});
+            QCOMPARE(provider.prompts.size(), 2);
+            if (recover)
+                QVERIFY2(result.kind == AgentStepDecision::Kind::FinalAnswer,
+                         qPrintable(result.reason));
+            QCOMPARE(result.kind, recover ? AgentStepDecision::Kind::FinalAnswer
+                                          : AgentStepDecision::Kind::GiveUp);
+            QVERIFY(provider.prompts.last().contains("no visible answer"));
+            QVERIFY(provider.prompts.first().contains("knownDirectories"));
+            QVERIFY(provider.prompts.first().contains("exact required ID"));
+            QVERIFY(provider.prompts.first().contains("\"assertion\":true"));
+            QVERIFY(provider.prompts.first().contains("Copy every required ID"));
+            QVERIFY(provider.requestOptions.last().deadlineMs > 0);
+            QVERIFY(provider.requestOptions.last().maxOutputTokens <= 2048);
+        }
+    }
+    void emptyStreamingPlannerAnswerRepairsThroughBoundedPlainRequest() {
+        auto provider = std::make_shared<FakeChatProvider>();
+        provider->bounded = true;
+        ChatProviderReply empty;
+        empty.category = ChatProviderErrorCategory::MalformedResponse;
+        empty.httpStatus = 200;
+        empty.diagnostics.insert("empty_visible_content", true);
+        ChatProviderReply success{
+            true, "{\"action\":\"final\",\"grounding\":\"context\",\"answer\":\"hello\"}", {}};
+        provider->scriptedPlainResults = {empty, success};
+        LlmAgentRuntime runtime({}, provider.get());
+        ModelBinding binding;
+        binding.providerId = "fixture";
+        binding.modelId = "fixed";
+        binding.capabilities.streaming = CapabilitySupport::Supported;
+        runtime.bindModel(binding, provider);
+        runtime.setObservationIntent({});
+        runtime.setStreamObserver([](const QString&) {});
+        const auto result = runtime.nextStep("hello", {});
+        QVERIFY2(result.kind == AgentStepDecision::Kind::FinalAnswer, qPrintable(result.reason));
+        QCOMPARE(provider->requestOptions.size(), 2);
+        QVERIFY(provider->requestOptions.first().requireBoundedStreaming);
+        QVERIFY(!provider->requestOptions.last().requireBoundedStreaming);
+        QCOMPARE(provider->requestOptions.last().deadlineMs, 120000);
+        QVERIFY(provider->requestOptions.last().maxOutputTokens <= 2048);
+    }
     void budgetRefusesBeforeProviderAndNeverReturnsSuccess() {
         auto provider = std::make_shared<FakeChatProvider>();
         provider->scriptedReply =

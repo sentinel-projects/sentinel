@@ -12,6 +12,7 @@
 #include "sentinel/core/security/ExternalDirectoryGate.h"
 #include "sentinel/core/security/PathGuard.h"
 
+#include "sentinel/core/platform/UserDirectories.h"
 #include <QClipboard>
 #include <QDateTime>
 #include <QDir>
@@ -2366,10 +2367,14 @@ RealToolExecutor::executeClipboardWrite(const PlannedToolInvocation& invocation,
 
 ToolExecutionResult RealToolExecutor::executeSystemInfo(const PlannedToolInvocation& invocation,
                                                         QString& currentWorkingDirectory) const {
-    const QString fullReport = systemInfoReport();
+    const auto knownDirectories = standardUserDirectories();
+    const QString fullReport =
+        systemInfoReport() + QStringLiteral("\nknownDirectories: ") +
+        QString::fromUtf8(QJsonDocument(knownDirectories).toJson(QJsonDocument::Compact));
     const bool truncated = fullReport.size() > 4096;
     const QString report = fullReport.left(4096);
-    const QJsonObject data{{QStringLiteral("report"), report},
+    const QJsonObject data{{QStringLiteral("knownDirectories"), knownDirectories},
+                           {QStringLiteral("report"), report},
                            {QStringLiteral("complete"), !truncated},
                            {QStringLiteral("truncated"), truncated},
                            {QStringLiteral("partialEvidence"), truncated}};

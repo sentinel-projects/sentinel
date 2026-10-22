@@ -708,8 +708,14 @@ private:
             result.retrySummary);
         reply.lifecycle = result.lifecycle;
         reply.requestId = result.requestId;
+        reply.diagnostics.insert("output_limit_reached", result.outputLimitReached);
         reply.diagnostics.insert(QStringLiteral("deadline_ms"), result.timeoutMs);
         reply.diagnostics.insert(QStringLiteral("bounded_streaming"), requireBoundedStreaming);
+        reply.diagnostics.insert(
+            QStringLiteral("empty_visible_content"),
+            result.httpStatus == 200 && result.error == LocalInferenceError::InvalidResponse &&
+                result.accumulatedText.trimmed().isEmpty() &&
+                reply.category == ChatProviderErrorCategory::MalformedResponse);
         return reply;
     }
 

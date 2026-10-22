@@ -472,8 +472,11 @@ QList<ToolDescriptor> BuiltInToolProvider::descriptors() {
         ToolDescriptor{
             QStringLiteral("system-info"),
             QStringLiteral("System Info"),
-            QStringLiteral("Reports the operating system, kernel, CPU architecture, hostname, "
-                           "user, total RAM, and root volume usage. Read-only."),
+            QStringLiteral(
+                "Reports the operating system, kernel, CPU architecture, hostname, "
+                "user, total RAM, root volume usage, and knownDirectories (home, desktop, "
+                "documents, downloads) resolved by the operating system. Directory metadata "
+                "does not grant filesystem access. Read-only."),
             ToolRiskLevel::Low,
             ToolExecutionMode::Local,
             {}},

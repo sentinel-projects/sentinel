@@ -75,12 +75,14 @@ std::optional<bool> observed(const ObservationRequirement& claim,
     if (existence) {
         if (observation.kind == StructuredObservationKind::FileSystemFact &&
             path(data.value(QStringLiteral("path")).toString()) == target) {
-            if (claim.claimType == ClaimType::PathExists)
-                return data.value(QStringLiteral("exists")).toBool();
-            if (claim.claimType == ClaimType::FileExists)
-                return data.value(QStringLiteral("file")).toBool();
-            if (claim.claimType == ClaimType::DirectoryExists)
-                return data.value(QStringLiteral("directory")).toBool();
+            const auto key = claim.claimType == ClaimType::PathExists ? QStringLiteral("exists")
+                             : claim.claimType == ClaimType::FileExists
+                                 ? QStringLiteral("regularFile")
+                                 : QStringLiteral("directory");
+            const auto value = data.value(key);
+            // Missing or malformed metadata cannot prove absence. Match stat-path's
+            // regularFile contract rather than treating an absent "file" as false.
+            return value.isBool() ? std::optional<bool>{value.toBool()} : std::nullopt;
         }
         if (observation.kind == StructuredObservationKind::FileSystemFailure &&
             path(observation.failureResource) == target) {

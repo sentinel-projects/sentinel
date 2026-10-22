@@ -9,6 +9,7 @@
 #endif
 #include "sentinel/core/interfaces/IChatProvider.h"
 #include "sentinel/core/network/NetworkPolicyService.h"
+#include "sentinel/core/provider/SelectedEndpointChatProvider.h"
 #include "sentinel/core/runtime/LocalInference.h"
 
 #include <QElapsedTimer>
@@ -48,6 +49,8 @@ private slots:
     void cloudEndpointWithoutKeyIsBlocked();
     void cloudOpenAiCompatibleRequestCarriesBearerKey();
     void completedReasoningOnlyIsInvalid();
+    void cloudEmptyAndTruncatedAnswers_data();
+    void cloudEmptyAndTruncatedAnswers();
     void zeroTimeoutCancelsOutstandingRequest();
     void mockGenerationContract_data();
     void mockGenerationContract();
@@ -358,6 +361,76 @@ void LocalInferenceTest::cloudOpenAiCompatibleRequestCarriesBearerKey() {
     QCOMPARE(state->requests.first().headers.value("authorization"),
              QByteArray("Bearer test-key-123"));
     QCOMPARE(state->requests.first().url.path(), QStringLiteral("/v1/chat/completions"));
+}
+
+void LocalInferenceTest::cloudEmptyAndTruncatedAnswers_data() {
+    QTest::addColumn<QString>("finishReason");
+    QTest::newRow("empty-visible-content") << QStringLiteral("stop");
+    QTest::newRow("output-limit") << QStringLiteral("length");
+}
+void LocalInferenceTest::cloudEmptyAndTruncatedAnswers() {
+    QFETCH(QString, finishReason);
+    auto state = std::make_shared<sentinel::test::ScriptedTransportState>();
+    state->responder = [&](const auto&) {
+        const QJsonObject body{
+            {"choices",
+             QJsonArray{QJsonObject{
+                 {"finish_reason", finishReason},
+                 {"message", QJsonObject{{"content", ""},
+                                         {"reasoning_content", "private reasoning fixture"}}}}}},
+            {"usage", QJsonObject{{"completion_tokens", 2048}}}};
+        return sentinel::test::ScriptedHttpResponse::body(QJsonDocument(body).toJson());
+    };
+    LMStudioConfig config;
+    config.endpoint = QUrl("https://fixture.invalid/v1");
+    config.apiKey = "fixture-key";
+    config.networkFactory = std::make_shared<sentinel::test::ScriptedNetworkFactory>(state);
+    sentinel::test::ScopedOnlineNetworkMode online;
+    LocalInferenceRequest request;
+    request.prompt = "synthetic planner request";
+    request.options.model = "fixture";
+    request.options.maxTokens = 2048;
+    const auto response = LMStudioLocalInferenceClient(config, 1000).infer(request);
+    QCOMPARE(response.status, LocalInferenceStatus::Error);
+    QVERIFY(response.text.isEmpty());
+    QCOMPARE(response.httpStatus, 200);
+    QCOMPARE(response.diagnostics.value("finish_reason").toString(), finishReason);
+    QCOMPARE(response.diagnostics.value("completion_tokens").toInt(), 2048);
+    QCOMPARE(response.diagnostics.value("output_limit_reached").toBool(), finishReason == "length");
+    QVERIFY(!QJsonDocument(response.diagnostics).toJson().contains("private reasoning fixture"));
+    if (finishReason == "length") {
+        QCOMPARE(response.providerErrorCategory,
+                 static_cast<int>(sentinel::core::ChatProviderErrorCategory::RequestRejected));
+        QVERIFY(response.summary.contains("output limit"));
+    } else
+        QVERIFY(response.diagnostics.value("empty_visible_content").toBool());
+    QCOMPARE(state->requests.size(), 1);
+    state->responder = [&](const auto&) {
+        const QJsonObject chunk{
+            {"choices",
+             QJsonArray{QJsonObject{
+                 {"finish_reason", finishReason},
+                 {"delta", QJsonObject{{"content", finishReason == "length" ? "partial" : ""},
+                                       {"reasoning_content", "private reasoning fixture"}}}}}}};
+        return sentinel::test::ScriptedHttpResponse::streaming(
+            {"data: " + QJsonDocument(chunk).toJson(QJsonDocument::Compact) + "\n\n",
+             "data: [DONE]\n\n"});
+    };
+    sentinel::core::ModelBinding binding{"cloud-api", "fixture"};
+    binding.capabilities.streaming = sentinel::core::CapabilitySupport::Supported;
+    const auto provider = makeSelectedEndpointChatProvider(binding, config, 1000);
+    sentinel::core::ChatRequestOptions options;
+    options.deadlineMs = 1000;
+    options.requireBoundedStreaming = true;
+    const auto streamed =
+        provider->sendMessageStreaming("synthetic planner", [](const auto&) {}, {}, options);
+    QVERIFY(!streamed.success);
+    QCOMPARE(streamed.category, finishReason == "length"
+                                    ? sentinel::core::ChatProviderErrorCategory::RequestRejected
+                                    : sentinel::core::ChatProviderErrorCategory::MalformedResponse);
+    QCOMPARE(streamed.diagnostics.value("empty_visible_content").toBool(), finishReason == "stop");
+    QCOMPARE(streamed.diagnostics.value("output_limit_reached").toBool(), finishReason == "length");
+    QVERIFY(!QJsonDocument(streamed.diagnostics).toJson().contains("private reasoning fixture"));
 }
 
 void LocalInferenceTest::completedReasoningOnlyIsInvalid() {
