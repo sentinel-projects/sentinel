@@ -946,7 +946,12 @@ void DesktopRuntimeClient::onEvent(const QString& name, const QJsonObject& paylo
         m_sequence = sequence;
     }
     if (name == "agent.activity") {
-        m_values["latestAgentActivitySummary"] = payload.value("activity").toString();
+        if (payload.contains("completion_status")) {
+            m_values["agentCompletionStatus"] = payload.value("completion_status").toString();
+            m_values["latestAgentActivitySummary"] = payload.value("completion_status").toString();
+        } else {
+            m_values["latestAgentActivitySummary"] = payload.value("activity").toString();
+        }
     } else if (name == "output.delta") {
         if (!active(m_state)) {
             return;
@@ -967,6 +972,7 @@ void DesktopRuntimeClient::onEvent(const QString& name, const QJsonObject& paylo
         }
         m_state = payload.value("state").toString();
         m_output = payload.value("text").toString();
+        m_values["agentCompletionStatus"] = payload.value("completion_status").toString();
         if (name == "run.failed") {
             m_values["chatErrorCategory"] = payload.value("detail").toString();
             const auto detail = payload.value("detail").toString();
@@ -975,6 +981,9 @@ void DesktopRuntimeClient::onEvent(const QString& name, const QJsonObject& paylo
                     ? tr("The selected provider is unavailable. Check that its server is running "
                          "and its endpoint is correct in Settings.")
                     : detail;
+            if (m_kind == "agent" && !payload.value("completion_status").toString().isEmpty())
+                m_values["chatSendLifecycleSummary"] =
+                    payload.value("completion_status").toString() + ": " + detail;
         }
         m_approval = {};
         m_approvalResponsePending = false;
