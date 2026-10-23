@@ -430,6 +430,7 @@ private slots:
                 result.append(tool.id);
             return result;
         };
+        QVERIFY(ids().contains(QStringLiteral("system-info")));
         QVERIFY(ids().contains(QStringLiteral("read-file")));
         QVERIFY(ids().contains(QStringLiteral("git-diff")));
         QVERIFY(!ids().contains(QStringLiteral("write-file")));
@@ -437,6 +438,7 @@ private slots:
         QVERIFY(!ids().contains(QStringLiteral("web-search")));
         intent.requirements.first().purpose = ObservationPurpose::Operate;
         runtime.setObservationIntent(intent);
+        QVERIFY(ids().contains(QStringLiteral("system-info")));
         QVERIFY(ids().contains(QStringLiteral("edit-file")));
         QVERIFY(ids().contains(QStringLiteral("run-command")));
         QVERIFY(ids().contains(QStringLiteral("todo-write")));
@@ -1028,6 +1030,10 @@ private slots:
         record.observation = QStringLiteral("hello audit");
         const auto answer = runtime.nextStep(QStringLiteral("Read audit.txt"), {record});
         QCOMPARE(provider->requestOptions.size(), 3);
+        QVERIFY(provider->prompts.last().contains(
+            QStringLiteral("Plain prose is not a valid final/giveup decision after tool use.")));
+        QVERIFY(provider->prompts.last().contains(
+            QStringLiteral("{\"action\":\"giveup\",\"reason\":\"specific blocker\"}")));
         if (!recover) {
             QCOMPARE(answer.kind, AgentStepDecision::Kind::GiveUp);
             QCOMPARE(answer.failure, AgentStepFailure::CompletionIndeterminate);
@@ -1036,6 +1042,31 @@ private slots:
         QCOMPARE(answer.kind, AgentStepDecision::Kind::FinalAnswer);
         QCOMPARE(answer.answer, final.message);
         QVERIFY(!answer.answer.contains(QStringLiteral("observed_text")));
+    }
+
+    void malformedNativeBlockerPreservesDenialContext() {
+        auto provider = std::make_shared<FakeChatProvider>();
+        ChatProviderReply prose{
+            true, QStringLiteral("The requested path is outside the workspace."), {}};
+        provider->scriptedRequests = {prose, prose};
+        LlmAgentRuntime runtime(BuiltInToolProvider::descriptors(), provider.get());
+        ModelBinding binding;
+        binding.capabilities.contextWindow = 131072;
+        binding.capabilities.provenance.contextWindow = ModelMetadataSource::ProgrammaticMetadata;
+        binding.capabilities.nativeToolCalling = CapabilitySupport::Supported;
+        runtime.bindModel(binding, provider);
+        auto denied = sampleRecord();
+        denied.statusText = QStringLiteral("Blocked");
+        denied.succeeded = false;
+        denied.failureCategory = ToolFailureCategory::SecurityDenied;
+        const auto result =
+            runtime.nextStep(QStringLiteral("Create the requested folder"), {denied});
+        QCOMPARE(provider->prompts.size(), 2);
+        QCOMPARE(result.kind, AgentStepDecision::Kind::GiveUp);
+        QCOMPARE(result.failure, AgentStepFailure::CompletionIndeterminate);
+        QVERIFY(result.answer.isEmpty());
+        QVERIFY(result.reason.contains(QStringLiteral("no final/giveup decision was accepted")));
+        QVERIFY(result.reason.contains(QStringLiteral("active workspace scope")));
     }
 
     void incompleteHiddenScopeKeepsCanonicalRepresentation() {
