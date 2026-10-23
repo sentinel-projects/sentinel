@@ -10,7 +10,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ratatui = "0.30"
 crossterm = "0.29"
-ratatui-image = { version = "=8.0.2", default-features = false }
+ratatui-image = { version = "=11.1.0", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(unix)'.dependencies]
