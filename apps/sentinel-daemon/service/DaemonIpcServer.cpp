@@ -33,6 +33,7 @@
 #ifdef Q_OS_UNIX
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <unistd.h>
 #endif
 namespace sentinel::daemon {
@@ -376,87 +377,111 @@ void DaemonIpcServer::setController(core::ApplicationController* controller) {
     }
 }
 bool DaemonIpcServer::startServer(const QString& requested) {
-    if (m_shuttingDown || m_server.isListening()) {
+    m_lastServerError.clear();
+    auto fail = [this](const QString& reason) {
+        m_lastServerError = reason;
         return false;
+    };
+    if (m_shuttingDown || m_server.isListening()) {
+        return fail(QStringLiteral("The IPC server is already listening or shutting down."));
     }
     m_path = requested.isEmpty() ? defaultSocketPath() : requested;
     if (!QFileInfo(m_path).isAbsolute()) {
         m_path = QDir::tempPath() + "/" + m_path;
     }
+#ifdef Q_OS_UNIX
+    // QLocalServer ultimately copies the path into sockaddr_un::sun_path. The
+    // limit differs by platform (104 bytes on macOS, 108 on Linux), and a path
+    // that is too long otherwise fails with the opaque "Name error".
+    const int pathLimit = static_cast<int>(sizeof(sockaddr_un::sun_path)) - 1;
+    const int pathLength = m_path.toUtf8().size();
+    if (pathLength > pathLimit) {
+        qWarning().noquote() << "Daemon IPC socket path exceeds the platform limit"
+                             << pathLength << pathLimit;
+        return fail(QStringLiteral("Socket path is %1 bytes; the platform limit is %2 bytes.")
+                        .arg(pathLength)
+                        .arg(pathLimit));
+    }
+#endif
     const auto directory = QFileInfo(m_path).absolutePath();
     if (requested.isEmpty()) {
         const auto root = QFileInfo(directory).absolutePath();
         if (!QDir().mkpath(root)) {
-            return false;
+            return fail(QStringLiteral("The socket root directory could not be created."));
         }
 #ifdef Q_OS_UNIX
         struct stat rootInfo {};
         if (::lstat(root.toLocal8Bit().constData(), &rootInfo) != 0 || !S_ISDIR(rootInfo.st_mode) ||
             rootInfo.st_uid != ::getuid()) {
-            return false;
+            return fail(QStringLiteral("The socket root directory is not owned by this user."));
         }
         if (::chmod(root.toLocal8Bit().constData(), 0700) != 0) {
-            return false;
+            return fail(QStringLiteral("The socket root directory permissions could not be set."));
         }
 #endif
         if (!QDir().mkpath(directory)) {
-            return false;
+            return fail(QStringLiteral("The socket directory could not be created."));
         }
     }
 #ifdef Q_OS_UNIX
     struct stat directoryInfo {};
     if (::lstat(directory.toLocal8Bit().constData(), &directoryInfo) != 0 ||
         !S_ISDIR(directoryInfo.st_mode) || directoryInfo.st_uid != ::getuid()) {
-        return false;
+        return fail(QStringLiteral("The socket directory is not owned by this user."));
     }
     if (requested.isEmpty() && ::chmod(directory.toLocal8Bit().constData(), 0700) != 0) {
-        return false;
+        return fail(QStringLiteral("The socket directory permissions could not be set."));
     }
     if (!requested.isEmpty() && (directoryInfo.st_mode & 0077U) != 0) {
-        return false;
+        return fail(
+            QStringLiteral("The socket directory must not grant group or other access."));
     }
 #endif
     m_lock = std::make_unique<QLockFile>(m_path + ".lock");
     m_lock->setStaleLockTime(0);
     if (!m_lock->tryLock()) {
         qWarning("Daemon socket already owned");
-        return false;
+        return fail(QStringLiteral("The socket is already owned by another process."));
     }
     if (QFileInfo::exists(m_path)) {
 #ifdef Q_OS_WIN
         // Named pipes do not occupy filesystem nodes. Never treat an existing
         // filesystem entry as a stale pipe endpoint or remove it.
         m_lock.reset();
-        return false;
+        return fail(QStringLiteral("The named-pipe endpoint already exists."));
 #endif
 #ifdef Q_OS_UNIX
         struct stat info {};
         if (::lstat(m_path.toLocal8Bit().constData(), &info) != 0 || !S_ISSOCK(info.st_mode) ||
             info.st_uid != ::getuid()) {
             m_lock.reset();
-            return false;
+            return fail(QStringLiteral("The socket path is not a socket owned by this user."));
         }
 #endif
         QLocalSocket probe;
         probe.connectToServer(m_path);
         if (probe.waitForConnected(100)) {
             m_lock.reset();
-            return false;
+            return fail(QStringLiteral("Another daemon is already listening on this socket."));
         }
         if (probe.error() != QLocalSocket::ConnectionRefusedError &&
             probe.error() != QLocalSocket::ServerNotFoundError) {
             m_lock.reset();
-            return false;
+            return fail(QStringLiteral("The existing socket could not be probed safely."));
         }
         if (!QLocalServer::removeServer(m_path)) {
             m_lock.reset();
-            return false;
+            return fail(QStringLiteral("The stale socket could not be removed."));
         }
     }
     m_server.setSocketOptions(QLocalServer::UserAccessOption);
     if (!m_server.listen(m_path)) {
+        const auto length = m_path.toUtf8().size();
+        qWarning().noquote() << "Daemon IPC listen failed" << m_server.errorString() << length;
         m_lock.reset();
-        return false;
+        return fail(QStringLiteral("Local socket listen failed: %1 (path length %2 bytes).")
+                        .arg(m_server.errorString())
+                        .arg(length));
     }
     m_generation = uuid();
     m_eventSequence = 0;

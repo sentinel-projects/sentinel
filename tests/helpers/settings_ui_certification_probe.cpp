@@ -36,12 +36,15 @@ void qml_register_types_Sentinel_Warden();
 #include <QQuickWindow>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include "../support/ShortSocketPath.h"
 #include <QTest>
 #include <QTimer>
 #include <QTranslator>
 #include <QUuid>
 #include <cmath>
 #include <cstdio>
+
+using sentinel::test::shortSocketDirTemplate;
 
 // Deterministic catalog data only; the harness does not simulate provider success.
 class CatalogUiFixture final : public QObject {
@@ -143,7 +146,7 @@ int main(int argc, char** argv) {
     const bool accessibilitySmoke =
         argc == 2 && QString::fromLocal8Bit(argv[1]) == "--accessibility-smoke";
     Phase1Diagnostic diagnostic(phase1Smoke);
-    QTemporaryDir temporaryProfile;
+    QTemporaryDir temporaryProfile{shortSocketDirTemplate("profile")};
     if (argc != 2 ||
         (!daemonE2e && !shellSmoke && !extensionsSmoke && !phase1Smoke && !focusSmoke &&
          !navigationSmoke && !chatSmoke && !modelsSmoke && !settingsSmoke && !traySmoke &&

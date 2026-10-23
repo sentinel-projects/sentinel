@@ -20,12 +20,14 @@
 #include <QSqlQuery>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include "../support/ShortSocketPath.h"
 #include <QTest>
 #include <QUuid>
 #include <algorithm>
 #include <atomic>
 
 using namespace sentinel;
+using sentinel::test::shortSocketDirTemplate;
 using desktop::DaemonClient;
 namespace {
 constexpr int deadlineMs = 5000;
@@ -136,7 +138,7 @@ private:
     std::shared_ptr<Script> state_;
 };
 struct Fixture {
-    QTemporaryDir directory{QDir::tempPath() + "/qb-XXXXXX"};
+    QTemporaryDir directory{shortSocketDirTemplate("qb")};
     core::AppSettings settings{std::make_unique<core::InMemorySettingsStore>(),
                                core::inMemoryTestCredentialStore()};
     std::shared_ptr<Script> script = std::make_shared<Script>();

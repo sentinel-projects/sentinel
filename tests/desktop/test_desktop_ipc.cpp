@@ -39,10 +39,12 @@
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include "../support/ShortSocketPath.h"
 #include <QTest>
 #include <QUuid>
 
 using sentinel::desktop::DaemonClient;
+using sentinel::test::shortSocketDirTemplate;
 namespace {
 class CountingCredentials final : public sentinel::core::ICredentialBackend {
 public:
@@ -145,7 +147,7 @@ public:
     }
 };
 struct Peer {
-    QTemporaryDir directory{QDir::tempPath() + "/sd-XXXXXX"};
+    QTemporaryDir directory{shortSocketDirTemplate("sd")};
     QLocalServer server;
     QLocalSocket* socket = nullptr;
     QString path;
@@ -359,7 +361,7 @@ private slots:
     void settingsStorageAdmissionRefusalIsTruthfulOverIpc() {
         using namespace sentinel::core;
         using namespace std::chrono_literals;
-        QTemporaryDir profile;
+        QTemporaryDir profile{shortSocketDirTemplate("profile")};
         QVERIFY(profile.isValid());
         const auto path = profile.filePath("settings.json");
         auto admission = std::make_shared<StorageAdmission>();
@@ -416,7 +418,7 @@ private slots:
     }
     void largeMemoryArchiveUsesNativeDesktopBoundary() {
         using namespace sentinel::core;
-        QTemporaryDir directory{QDir::tempPath() + "/ma-XXXXXX"};
+        QTemporaryDir directory{shortSocketDirTemplate("ma")};
         QVERIFY(directory.isValid());
         sentinel::test::DeterministicModelServiceFixture fixture;
         auto memory = std::make_unique<SQLiteMemoryStore>(directory.filePath("memory.db"));
@@ -493,7 +495,7 @@ private slots:
         QVERIFY(!QFile::exists(cancelled.toLocalFile()));
     }
     void scopedMemoryManagementUsesRealDesktopAction() {
-        QTemporaryDir directory{QDir::tempPath() + "/mm-XXXXXX"};
+        QTemporaryDir directory{shortSocketDirTemplate("mm")};
         QVERIFY(directory.isValid());
         sentinel::test::DeterministicModelServiceFixture fixture;
         sentinel::core::ApplicationControllerBuilder builder;
@@ -757,7 +759,7 @@ private slots:
     void extensionsDesktopMcpRealProcessDisconnectAndRecovery() {
         sentinel::core::AppSettings settings(std::make_unique<sentinel::core::InMemorySettingsStore>(),
                                              sentinel::core::inMemoryTestCredentialStore());
-        QTemporaryDir directory{QDir::tempPath() + "/em-XXXXXX"};
+        QTemporaryDir directory{shortSocketDirTemplate("em")};
         sentinel::test::DeterministicModelServiceFixture models;
         sentinel::core::ApplicationControllerBuilder builder;
         auto controller = builder.withModelService(models.takeModelService())
@@ -807,7 +809,7 @@ private slots:
     void extensionsLiveInventoryAndSafeSkillDeactivation() {
         sentinel::core::AppSettings settings(std::make_unique<sentinel::core::InMemorySettingsStore>(),
                                              sentinel::core::inMemoryTestCredentialStore());
-        QTemporaryDir directory{QDir::tempPath() + "/ex-XXXXXX"};
+        QTemporaryDir directory{shortSocketDirTemplate("ex")};
         sentinel::test::DeterministicModelServiceFixture models;
         sentinel::core::ApplicationControllerBuilder builder;
         auto controller = builder.withModelService(models.takeModelService())
@@ -903,7 +905,7 @@ private slots:
     void extensionsReadExistingSettingsWithoutExecuting() {
         sentinel::core::AppSettings settings(std::make_unique<sentinel::core::InMemorySettingsStore>(),
                                              sentinel::core::inMemoryTestCredentialStore());
-        QTemporaryDir directory{QDir::tempPath() + "/ext-XXXXXX"};
+        QTemporaryDir directory{shortSocketDirTemplate("ext")};
         QVERIFY(QFile::setPermissions(directory.path(), QFileDevice::ReadOwner |
                                      QFileDevice::WriteOwner | QFileDevice::ExeOwner));
         sentinel::test::DeterministicModelServiceFixture models;
@@ -1007,7 +1009,7 @@ private slots:
     }
 
     void deletingConversationsRefreshesHistoryAndRebindsActiveSession() {
-        QTemporaryDir directory{QDir::tempPath() + "/delete-XXXXXX"};
+        QTemporaryDir directory{shortSocketDirTemplate("delete")};
         sentinel::test::DeterministicModelServiceFixture models;
         sentinel::core::ApplicationControllerBuilder builder;
         auto controller = builder.withModelService(models.takeModelService())
@@ -1046,7 +1048,7 @@ private slots:
         QVERIFY(!deletions.last().at(2).toString().isEmpty());
     }
     void onboardingProgressPersistsWithoutDaemon() {
-        QTemporaryDir directory;
+        QTemporaryDir directory{shortSocketDirTemplate("profile")};
         QVERIFY(directory.isValid());
         DaemonClient client(directory.filePath("absent.sock"), 1000, 1000);
         sentinel::desktop::DesktopRuntimeClient runtime(client);
@@ -1149,7 +1151,7 @@ private slots:
         QVERIFY(!peer.socket->canReadLine());
     }
     void unavailable() {
-        QTemporaryDir directory{QDir::tempPath() + "/sd-XXXXXX"};
+        QTemporaryDir directory{shortSocketDirTemplate("sd")};
         DaemonClient client(directory.filePath("absent.sock"), 1000, 1000);
         QTRY_COMPARE(client.connectionState(), DaemonClient::ConnectionState::Unavailable);
         QSignalSpy errors(&client, &DaemonClient::requestFailed);
@@ -1281,7 +1283,7 @@ private slots:
         }
     }
     void daemonInspectorReadsDurableHistoryAndDetails() {
-        QTemporaryDir directory{QDir::tempPath() + "/ah-XXXXXX"};
+        QTemporaryDir directory{shortSocketDirTemplate("ah")};
         QVERIFY(QFile::setPermissions(directory.path(), QFileDevice::ReadOwner |
                                                             QFileDevice::WriteOwner |
                                                             QFileDevice::ExeOwner));
@@ -1405,7 +1407,7 @@ private slots:
     }
     void modelRowsUseAuthoritativeInstallation() {
         QFETCH(bool, missing);
-        QTemporaryDir directory;
+        QTemporaryDir directory{shortSocketDirTemplate("profile")};
         sentinel::test::DeterministicModelServiceFixture models;
         sentinel::core::ApplicationControllerBuilder builder;
         auto controller = builder.withModelService(models.takeModelService())
@@ -1582,7 +1584,7 @@ private slots:
         QVERIFY(!helper.action("ggufLibraryFetcher", "download", "unknown-artifact", {}));
     }
     void providerExecutionFailureNeverProjectsSuccess() {
-        QTemporaryDir directory{QDir::tempPath() + "/pf-XXXXXX"};
+        QTemporaryDir directory{shortSocketDirTemplate("pf")};
         sentinel::test::DeterministicModelServiceFixture models(
             sentinel::test::DeterministicChatReply::Failure);
         sentinel::core::ApplicationControllerBuilder builder;
@@ -1608,7 +1610,7 @@ private slots:
         QTRY_COMPARE(adapter.messages().last().status, sentinel::core::ChatMessageStatus::Completed);
     }
     void rejectedSendRemainsVisibleAcrossPollingAndRecovers() {
-        QTemporaryDir directory{QDir::tempPath() + "/se-XXXXXX"};
+        QTemporaryDir directory{shortSocketDirTemplate("se")};
         QVERIFY(QFile::setPermissions(directory.path(), QFileDevice::ReadOwner |
                                          QFileDevice::WriteOwner | QFileDevice::ExeOwner));
         sentinel::test::DeterministicModelServiceFixture models;
@@ -1655,7 +1657,7 @@ private slots:
         QFETCH(bool, manualRename);
         QFETCH(bool, shutdownStorage);
         auto storageAuthority = std::make_shared<sentinel::core::StorageAdmission>();
-        QTemporaryDir directory{QDir::tempPath() + "/st-XXXXXX"};
+        QTemporaryDir directory{shortSocketDirTemplate("st")};
         QVERIFY(directory.isValid());
         QVERIFY(QFile::setPermissions(directory.path(), QFileDevice::ReadOwner |
                                          QFileDevice::WriteOwner | QFileDevice::ExeOwner));
@@ -1829,7 +1831,7 @@ private slots:
         QVERIFY(adapter.messages().isEmpty());
     }
     void voicePcmLeaseBoundsPrivacyAndConfigurationChange() {
-        QTemporaryDir directory{QDir::tempPath() + "/sv-XXXXXX"};
+        QTemporaryDir directory{shortSocketDirTemplate("sv")};
         QVERIFY(QFile::setPermissions(directory.path(), QFileDevice::ReadOwner |
                                                             QFileDevice::WriteOwner |
                                                             QFileDevice::ExeOwner));
@@ -1926,7 +1928,7 @@ private slots:
         QVERIFY(!controller->audioSession()->privacy().retainRawRecordings);
     }
     void quickPanelConnectionAndLinkProjection() {
-        QTemporaryDir directory;
+        QTemporaryDir directory{shortSocketDirTemplate("profile")};
         DaemonClient transport(directory.filePath("absent.sock"), 500, 1000);
         sentinel::desktop::DesktopRuntimeClient adapter(transport);
         sentinel::desktop::QuickPanelController panel(adapter);
@@ -1952,7 +1954,7 @@ private slots:
                  QString("abc-123"));
     }
     void presentationAdapterNoFallback() {
-        QTemporaryDir directory{QDir::tempPath() + "/sd-XXXXXX"};
+        QTemporaryDir directory{shortSocketDirTemplate("sd")};
         DaemonClient transport(directory.filePath("absent.sock"), 500, 1000);
         sentinel::desktop::DesktopRuntimeClient adapter(transport);
         sentinel::desktop::DesktopControllerBridge bridge({nullptr, &adapter});
@@ -1965,7 +1967,7 @@ private slots:
         QVERIFY(!bridge.localChatSendAvailable());
     }
     void presentationAdapterChatSessionsCancelRecover() {
-        QTemporaryDir directory{QDir::tempPath() + "/sd-XXXXXX"};
+        QTemporaryDir directory{shortSocketDirTemplate("sd")};
         sentinel::core::AppSettings settings(
             std::make_unique<sentinel::core::InMemorySettingsStore>(),
             sentinel::core::inMemoryTestCredentialStore());
@@ -2059,7 +2061,7 @@ private slots:
     }
     void presentationAdapterAgentApproval() {
         QFETCH(QString, action);
-        QTemporaryDir directory{QDir::tempPath() + "/sd-XXXXXX"};
+        QTemporaryDir directory{shortSocketDirTemplate("sd")};
         sentinel::core::AppSettings settings(
             std::make_unique<sentinel::core::InMemorySettingsStore>(),
             sentinel::core::inMemoryTestCredentialStore());
@@ -2169,7 +2171,7 @@ private slots:
         QTRY_VERIFY(!bridge.agentLoopActive());
     }
     void backupTransferIntegrityAndIsolation() {
-        QTemporaryDir directory{QDir::tempPath() + "/sd-XXXXXX"};
+        QTemporaryDir directory{shortSocketDirTemplate("sd")};
         sentinel::core::AppSettings settings(std::make_unique<sentinel::core::InMemorySettingsStore>(), sentinel::core::inMemoryTestCredentialStore());
         sentinel::test::DeterministicModelServiceFixture models(sentinel::test::DeterministicChatReply::Final, &settings);
         sentinel::core::ApplicationControllerBuilder builder;
@@ -2266,7 +2268,7 @@ private slots:
         QTRY_COMPARE(runtime.settingsValue("responseProfileInstructions", {}), QString("Use short technical explanations."));
     }
     void daemonSettingsRejectMalformedAndUnknownActions() {
-        QTemporaryDir directory{QDir::tempPath() + "/sd-XXXXXX"};
+        QTemporaryDir directory{shortSocketDirTemplate("sd")};
         sentinel::core::AppSettings settings(
             std::make_unique<sentinel::core::InMemorySettingsStore>(),
             sentinel::core::inMemoryTestCredentialStore());
@@ -2310,7 +2312,7 @@ private slots:
         QCOMPARE(settings.defaultPermissionPolicyState(), QString("Ask Every Time"));
     }
     void realChatCancelAndRecover() {
-        QTemporaryDir directory{QDir::tempPath() + "/sd-XXXXXX"};
+        QTemporaryDir directory{shortSocketDirTemplate("sd")};
         sentinel::test::DeterministicModelServiceFixture models(
             sentinel::test::DeterministicChatReply::Delayed);
         models.state->delayMs = 500;
@@ -2382,7 +2384,7 @@ private slots:
     }
     void realAgentApproval() {
         QFETCH(QString, action);
-        QTemporaryDir directory{QDir::tempPath() + "/sd-XXXXXX"};
+        QTemporaryDir directory{shortSocketDirTemplate("sd")};
         sentinel::test::DeterministicModelServiceFixture models;
         sentinel::core::ApplicationControllerBuilder builder;
         auto controller =
@@ -2488,7 +2490,7 @@ private slots:
         server.stopServer();
     }
     void realDaemonServiceChatAndMultiClient() {
-        QTemporaryDir directory{QDir::tempPath() + "/sd-XXXXXX"};
+        QTemporaryDir directory{shortSocketDirTemplate("sd")};
         sentinel::test::DeterministicModelServiceFixture models(
             sentinel::test::DeterministicChatReply::Streaming);
         sentinel::core::ApplicationControllerBuilder builder;
