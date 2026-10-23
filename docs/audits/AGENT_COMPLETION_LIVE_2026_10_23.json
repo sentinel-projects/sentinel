@@ -1,0 +1,109 @@
+{
+  "provider": "llama-cpp-server",
+  "model": "sentinel-nemotron",
+  "cases": [
+    {
+      "case": "inspect",
+      "terminal": "run.completed",
+      "completionStatus": "Completed",
+      "terminalReason": "Completed",
+      "detail": "",
+      "independentTest": null,
+      "unrelatedPreserved": null
+    },
+    {
+      "case": "fix-and-test",
+      "terminal": "run.failed",
+      "completionStatus": "Completion Indeterminate",
+      "terminalReason": "ObservationIndeterminate",
+      "detail": "Observation classification failed: the model did not return a valid classification result, so no step was planned or executed. Invalid output is never treated as a decision. Retry, or select a model that can return structured output. Classifier requirements exceed the eight-entry limit.",
+      "independentTest": {
+        "returncode": 1,
+        "stdout": "",
+        "stderr": "Traceback (most recent call last):\n  File \"<verifier>/test_calc.py\", line 2, in <module>\n    assert add(2, 3) == 5\n           ^^^^^^^^^^^^^^\nAssertionError\n",
+        "source_ast_verified": true,
+        "code_matches_expected": false
+      },
+      "unrelatedPreserved": true
+    },
+    {
+      "stage": "before_native_fix",
+      "case": "write-readback",
+      "terminal": "run.completed",
+      "completionStatus": "Completed",
+      "terminalReason": "Completed",
+      "detail": "",
+      "mutationObserved": false,
+      "independentTest": {
+        "returncode": 1,
+        "stdout": "",
+        "stderr": "Traceback (most recent call last):\n  File \"<verifier>/test_calc.py\", line 2, in <module>\n    assert add(2, 3) == 5\n           ^^^^^^^^^^^^^^\nAssertionError\n",
+        "source_ast_verified": true,
+        "code_matches_expected": false
+      },
+      "changesWithinAllowedSet": true,
+      "unrelatedPreserved": true,
+      "testPreserved": true
+    },
+    {
+      "stage": "explicit_final_only",
+      "case": "write-readback",
+      "terminal": "run.completed",
+      "completionStatus": "Completed",
+      "terminalReason": "Completed",
+      "detail": "",
+      "mutationObserved": false,
+      "independentTest": {
+        "returncode": 1,
+        "stdout": "",
+        "stderr": "Traceback (most recent call last):\n  File \"<verifier>/test_calc.py\", line 2, in <module>\n    assert add(2, 3) == 5\n           ^^^^^^^^^^^^^^\nAssertionError\n",
+        "source_ast_verified": true,
+        "code_matches_expected": false
+      },
+      "changesWithinAllowedSet": true,
+      "unrelatedPreserved": true,
+      "testPreserved": true
+    },
+    {
+      "stage": "final_proof_obligation",
+      "case": "write-readback",
+      "terminal": "run.failed",
+      "completionStatus": "Completion Indeterminate",
+      "terminalReason": "ContextBudgetExhausted",
+      "detail": "Context budget refused: required instructions, execution evidence or continuation cannot fit safely; no request was sent, no step was executed and no final success was accepted. Effective context 8192 tokens, required content 9776 tokens, output reserve 1638 tokens, estimated request 9776 tokens. Reduce the task size, or select a model whose configured context window is large enough.",
+      "mutationObserved": false,
+      "independentTest": {
+        "returncode": 1,
+        "stdout": "",
+        "stderr": "Traceback (most recent call last):\n  File \"<verifier>/test_calc.py\", line 2, in <module>\n    assert add(2, 3) == 5\n           ^^^^^^^^^^^^^^\nAssertionError\n",
+        "source_ast_verified": true,
+        "code_matches_expected": false
+      },
+      "changesWithinAllowedSet": true,
+      "unrelatedPreserved": true,
+      "testPreserved": true
+    },
+    {
+      "stage": "final_restricted_tool_acceptance",
+      "case": "file-roundtrip",
+      "provider": "llama-cpp-server",
+      "model": "sentinel-nemotron",
+      "availableTools": [
+        "write-file",
+        "read-file",
+        "stat-path"
+      ],
+      "terminal": "Completed",
+      "acceptedFinal": true,
+      "executedTools": [
+        "write-file",
+        "read-file"
+      ],
+      "steps": 2,
+      "fixtureContentVerified": true,
+      "byteCount": 16,
+      "sha256": "8eb1310601479839f05988d54482cf28183ff1b693a229239d02a490fd9f2a1e",
+      "scope": "Real AgentRuntime/provider/gateway/filesystem; separate from the full Desktop/daemon tool-set acceptance"
+    }
+  ]
+}
