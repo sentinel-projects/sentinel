@@ -100,11 +100,13 @@ public:
     QString summary = QStringLiteral("observation-from-tool");
     ToolExecutionStatus status = ToolExecutionStatus::Succeeded;
     ToolFailureCategory failureCategory = ToolFailureCategory::None;
+    SandboxExecutionResult sandbox;
 
     ToolExecutionResult execute(const ToolExecutionRequest& request) const override {
         requests.append(request);
         ToolExecutionResult result{status, summary};
         result.failureCategory = failureCategory;
+        result.sandbox = sandbox;
         return result;
     }
 };
@@ -734,6 +736,48 @@ private slots:
         QCOMPARE(executor.requests.size(), 1);
         QCOMPARE(state.steps.first().statusText, QStringLiteral("Succeeded"));
         QVERIFY(state.steps.first().succeeded);
+    }
+
+    void repeatedSecurityDenialPreservesBlocker_data() {
+        QTest::addColumn<bool>("async");
+        QTest::newRow("sync") << false;
+        QTest::newRow("async") << true;
+    }
+
+    void repeatedSecurityDenialPreservesBlocker() {
+        QFETCH(bool, async);
+        ScriptedPlanner planner;
+        const auto call = toolDecision(QStringLiteral("run-command"));
+        planner.decisions = {call, call};
+        RecordingExecutor executor;
+        executor.status = ToolExecutionStatus::Failed;
+        executor.failureCategory = ToolFailureCategory::SecurityDenied;
+        executor.sandbox.failureCategory = QStringLiteral("WorkingDirectoryTooBroad");
+        StaticApprovalPolicy approval;
+        auto sandbox = permissiveSandbox();
+        AgentLoop loop(planner, executor, approval, sandbox,
+                       QStringList{QStringLiteral("run-command")});
+        AgentLoopState state;
+        bool finished = false;
+        if (async) {
+            loop.runAsync(QStringLiteral("Run command"), QStringLiteral("denied-repeat"), this,
+                          [&](const AgentLoopState& result) {
+                              state = result;
+                              finished = true;
+                          });
+            QTRY_VERIFY(finished);
+        } else {
+            state = loop.run(QStringLiteral("Run command"));
+        }
+        QCOMPARE(state.phase, AgentLoopPhase::Stuck);
+        QCOMPARE(state.terminalReason, AgentTerminalReason::SecurityDenied);
+        QVERIFY(state.abortReason.contains(QStringLiteral("WorkingDirectoryTooBroad")));
+        QCOMPARE(executor.requests.size(), 1);
+        QVERIFY(state.finalAnswer.isEmpty());
+        QVERIFY(state.abortReason.contains(QStringLiteral("sandbox restrictions")));
+        QCOMPARE(agentCompletionStatusName(agentLoopPhaseName(state.phase),
+                                           agentTerminalReasonName(state.terminalReason)),
+                 QStringLiteral("Blocked"));
     }
 
     void repeatedReadGetsOnePlanningRepairWithoutReexecution_data() {

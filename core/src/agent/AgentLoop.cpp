@@ -585,6 +585,26 @@ bool repeatsFailedCycle(const AgentLoopState& state, const ToolInvocationPlan& p
            first == key(plan.invocations.first().toolId, plan.invocations.first().arguments);
 }
 
+void stopRepeatedCall(AgentLoopState& state) {
+    state.phase = AgentLoopPhase::Stuck;
+    const auto& last = state.steps.last();
+    if (!last.succeeded && last.failureCategory == ToolFailureCategory::SecurityDenied) {
+        state.terminalReason = AgentTerminalReason::SecurityDenied;
+        state.abortReason =
+            QStringLiteral(
+                "Repeated tool call was not executed: the previous %1 attempt was blocked by "
+                "security policy%2. Approval does not override sandbox restrictions.")
+                .arg(last.toolId, last.sandbox.failureCategory.isEmpty()
+                                      ? QString{}
+                                      : QStringLiteral(" (%1)").arg(last.sandbox.failureCategory));
+        return;
+    }
+    state.terminalReason = last.succeeded ? AgentTerminalReason::CompletionIndeterminate
+                                          : AgentTerminalReason::ToolFailure;
+    state.abortReason = QStringLiteral("Agent repeated the same tool call without a "
+                                       "changed argument or intervening observation.");
+}
+
 bool repairRepeatedObservation(AgentLoopState& state, const ToolInvocationPlan& plan,
                                IAgentStepPlanner& planner) {
     if (plan.invocations.size() != 1 || state.steps.isEmpty())
@@ -1149,12 +1169,7 @@ void AgentLoop::advanceAsync() {
             scheduleAsyncAdvance();
             return;
         }
-        asyncState_.phase = AgentLoopPhase::Stuck;
-        asyncState_.terminalReason = asyncState_.steps.last().succeeded
-                                         ? AgentTerminalReason::CompletionIndeterminate
-                                         : AgentTerminalReason::ToolFailure;
-        asyncState_.abortReason = QStringLiteral("Agent repeated the same tool call without a "
-                                                 "changed argument or intervening observation.");
+        stopRepeatedCall(asyncState_);
         completeAsync();
         return;
     }
@@ -1633,12 +1648,7 @@ AgentLoopState AgentLoop::advance(AgentLoopState state) {
             if (repairRepeatedObservation(state, plan, planner_)) {
                 continue;
             }
-            state.phase = AgentLoopPhase::Stuck;
-            state.terminalReason = state.steps.last().succeeded
-                                       ? AgentTerminalReason::CompletionIndeterminate
-                                       : AgentTerminalReason::ToolFailure;
-            state.abortReason = QStringLiteral("Agent repeated the same tool call without a "
-                                               "changed argument or intervening observation.");
+            stopRepeatedCall(state);
             return state;
         }
         doomDetector_.recordAction(state.sessionId, decisionActionKey(decision));
