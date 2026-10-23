@@ -13,4 +13,4 @@ crossterm.workspace = true
 sentinel-mascot = { path = "../sentinel-mascot" }
 
 [target.'cfg(unix)'.dependencies]
-signal-hook = "0.3"
+signal-hook = "0.4"
