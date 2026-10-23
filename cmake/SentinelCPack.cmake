@@ -3,7 +3,11 @@
 
 set(CPACK_PACKAGE_NAME "sentinel-desktop")
 set(CPACK_PACKAGE_VENDOR "Sopwit")
-set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+# CPack's numeric package version feeds generators whose metadata must remain
+# numeric (notably WiX/MSI). Pre-release identity is applied per ecosystem
+# below and in CPACK_PACKAGE_FILE_NAME.
+set(CPACK_PACKAGE_VERSION "${SENTINEL_PROJECT_VERSION}")
+set(CPACK_PACKAGE_FILE_NAME "sentinel-desktop-${SENTINEL_APP_VERSION}-${CMAKE_SYSTEM_NAME}")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Local-first AI desktop assistant")
 set(CPACK_PACKAGE_CONTACT "sopwith.osdev@gmail.com")
 
@@ -17,8 +21,8 @@ if(WIN32)
     set(CPACK_CREATE_DESKTOP_LINKS "sentinel-desktop")
 
     # NSIS (EXE) Settings
-    set(CPACK_NSIS_DISPLAY_NAME "Sentinel")
-    set(CPACK_NSIS_PACKAGE_NAME "Sentinel")
+    set(CPACK_NSIS_DISPLAY_NAME "Sentinel ${SENTINEL_APP_VERSION}")
+    set(CPACK_NSIS_PACKAGE_NAME "Sentinel ${SENTINEL_APP_VERSION}")
     set(CPACK_NSIS_HELP_LINK "https://sentinel.dev")
     set(CPACK_NSIS_URL_INFO_ABOUT "https://sentinel.dev")
     set(CPACK_NSIS_CONTACT "sopwith.osdev@gmail.com")
@@ -47,12 +51,19 @@ if(WIN32)
     set(CPACK_WIX_PROPERTY_ARPHELPLINK "https://sentinel.dev")
     set(CPACK_WIX_PROPERTY_ARPURLINFOABOUT "https://sentinel.dev")
     set(CPACK_WIX_PROPERTY_ARPCONTACT "sopwith.osdev@gmail.com")
+    # MSI ProductVersion must be numeric; keep the pre-release identity visible
+    # in Add/Remove Programs without changing the upgrade code.
+    set(CPACK_WIX_PROPERTY_ARPCOMMENTS "Sentinel ${SENTINEL_APP_VERSION}")
 
 elseif(UNIX AND NOT APPLE)
     set(CPACK_GENERATOR "DEB;RPM;TGZ")
     set(CPACK_DEBIAN_PACKAGE_DEPENDS "libc6, libgl1, libqt6core6, libqt6gui6, libqt6qml6, libqt6quick6, libqt6widgets6, libqt6network6, libqt6sql6, libqt6sql6-sqlite, libqt6multimedia6")
     set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Sentinel Team <sopwith.osdev@gmail.com>")
-    string(REPLACE "-" "~" CPACK_RPM_PACKAGE_VERSION "${SENTINEL_APP_VERSION}")
+    # Debian and RPM place the pre-release before the final release with '~'.
+    set(CPACK_DEBIAN_PACKAGE_VERSION "${SENTINEL_PACKAGE_VERSION}")
+    set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+    set(CPACK_RPM_PACKAGE_VERSION "${SENTINEL_PACKAGE_VERSION}")
+    set(CPACK_RPM_FILE_NAME RPM-DEFAULT)
     set(CPACK_RPM_PACKAGE_REQUIRES "qt6-qtbase >= 6.5.0, qt6-qtbase-gui >= 6.5.0, (qt6-qtwayland >= 6.5.0 or qt6-qtbase-gui >= 6.11.0), qt6-qtdeclarative >= 6.5.0, qt6-qtmultimedia >= 6.5.0, hicolor-icon-theme")
     set(CPACK_RPM_PACKAGE_RECOMMENDS "libnotify, xdg-utils, libsecret, avahi-tools, bubblewrap, xdg-desktop-portal")
     set(CPACK_RPM_PACKAGE_LICENSE "GPL-3.0-or-later")
@@ -64,7 +75,7 @@ elseif(UNIX AND NOT APPLE)
 
 elseif(APPLE)
     set(CPACK_GENERATOR "DragNDrop")
-    set(CPACK_DMG_VOLUME_NAME "Sentinel")
+    set(CPACK_DMG_VOLUME_NAME "Sentinel ${SENTINEL_APP_VERSION}")
     set(CPACK_DMG_FORMAT "UDBZ")
     set(CPACK_BUNDLE_NAME "Sentinel")
     if(EXISTS "${CMAKE_CURRENT_BINARY_DIR}/apps/sentinel-desktop/sentinel-desktop.app/Contents/Info.plist")

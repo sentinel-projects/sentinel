@@ -95,8 +95,25 @@ def check(root: Path) -> list[str]:
     if not rust_version or rust_version.group(1) != canonical:
         errors.append("cli/Cargo.toml: workspace version differs from the canonical version")
     cpack = read(root, "cmake/SentinelCPack.cmake")
-    if 'string(REPLACE "-" "~" CPACK_RPM_PACKAGE_VERSION "${SENTINEL_APP_VERSION}")' not in cpack:
-        errors.append("CPack RPM must derive the pre-release version from SENTINEL_APP_VERSION")
+    if 'string(REPLACE "-" "~" SENTINEL_PACKAGE_VERSION "${SENTINEL_APP_VERSION}")' not in cmake:
+        errors.append("CMakeLists.txt: distro package version must derive from SENTINEL_APP_VERSION")
+    cpack_contract = (
+        'set(CPACK_PACKAGE_VERSION "${SENTINEL_PROJECT_VERSION}")',
+        'set(CPACK_PACKAGE_FILE_NAME "sentinel-desktop-${SENTINEL_APP_VERSION}-${CMAKE_SYSTEM_NAME}")',
+        'set(CPACK_DEBIAN_PACKAGE_VERSION "${SENTINEL_PACKAGE_VERSION}")',
+        'set(CPACK_RPM_PACKAGE_VERSION "${SENTINEL_PACKAGE_VERSION}")',
+        'set(CPACK_DMG_VOLUME_NAME "Sentinel ${SENTINEL_APP_VERSION}")',
+        'set(CPACK_NSIS_PACKAGE_NAME "Sentinel ${SENTINEL_APP_VERSION}")',
+    )
+    for required in cpack_contract:
+        if required not in cpack:
+            errors.append(f"cmake/SentinelCPack.cmake: missing version contract {required}")
+
+    plist = read(root, "packaging/macos/bundle/Info.plist.in")
+    if "<string>@SENTINEL_PROJECT_VERSION@</string>" not in plist:
+        errors.append("macOS Info.plist: CFBundleShortVersionString must stay numeric")
+    if "<string>@SENTINEL_PROJECT_VERSION@.@SENTINEL_BUILD_NUMBER@</string>" not in plist:
+        errors.append("macOS Info.plist: CFBundleVersion must include the build number")
 
     for spec in RPM_SPECS:
         text = read(root, spec)
