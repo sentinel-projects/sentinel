@@ -1673,7 +1673,7 @@ fetchLlamaCppModels(const QUrl& modelsUrl, int timeoutMs,
                     ProviderDiscoveryOutcome* outcome) {
     auto models =
         fetchOpenAiCompatibleModels(modelsUrl, timeoutMs, {}, nullptr, cancellationToken, outcome);
-    if (models.isEmpty() || (cancellationToken && cancellationToken->load()))
+    if (models.size() != 1 || (cancellationToken && cancellationToken->load()))
         return models;
     auto propsUrl = modelsUrl;
     auto path = propsUrl.path();
@@ -1699,8 +1699,6 @@ fetchLlamaCppModels(const QUrl& modelsUrl, int timeoutMs,
             break;
         }
     }
-    if (target < 0 && models.size() == 1 && alias.isEmpty())
-        target = 0;
     if (target < 0)
         return models;
     const auto caps = props.value(QStringLiteral("chat_template_caps")).toObject();
@@ -1714,7 +1712,8 @@ fetchLlamaCppModels(const QUrl& modelsUrl, int timeoutMs,
                              .toObject()
                              .value(QStringLiteral("n_ctx"))
                              .toDouble();
-    if (context > 0 && context <= std::numeric_limits<int>::max() && context == std::floor(context)) {
+    if (context > 0 && context <= std::numeric_limits<int>::max() &&
+        context == std::floor(context)) {
         models[target].capabilities.contextWindow = static_cast<int>(context);
         // The server reported the capacity it is running with, so this is the
         // authoritative value for admission rather than a published maximum.

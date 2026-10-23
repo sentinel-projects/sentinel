@@ -188,8 +188,7 @@ bool LMStudioNativeCatalogAdapter::acceptResponse(const QByteArray& response) {
             // The server reported the capacity its loaded instances run with, so
             // this value is authoritative for token admission.
             discovered.capabilities.contextCapacity = ContextCapacityKind::ServerConfigured;
-            discovered.capabilities.provenance.contextWindow =
-                ModelMetadataSource::RuntimeReported;
+            discovered.capabilities.provenance.contextWindow = ModelMetadataSource::RuntimeReported;
             discovered.capabilities.provenance.contextCapacity =
                 ModelMetadataSource::RuntimeReported;
         }

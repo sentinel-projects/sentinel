@@ -433,22 +433,21 @@ ObservationIntent ObservationIntentPolicy::classify(const QString& goal,
                              ? ObservationClassificationFailure::Cancelled
                          : truncatedReply ? ObservationClassificationFailure::OutputTruncated
                                           : ObservationClassificationFailure::ProviderFailure;
-        intent.error = truncatedReply
-                           ? QStringLiteral(
-                                 "Classifier output was truncated at the provider output limit; "
+        intent.error =
+            truncatedReply
+                ? QStringLiteral("Classifier output was truncated at the provider output limit; "
                                  "no complete classification JSON was produced. Increase the "
                                  "model output limit or disable reasoning for this model.")
-                           : reply.errorMessage;
+                : reply.errorMessage;
         return intent;
     }
     const auto candidate = strictJsonObject(reply.message);
     if (candidate.isEmpty()) {
-        intent.error = truncatedReply
-                           ? QStringLiteral(
-                                 "Classifier output was truncated at the provider output limit; "
+        intent.error =
+            truncatedReply
+                ? QStringLiteral("Classifier output was truncated at the provider output limit; "
                                  "no complete classification JSON was produced.")
-                           : QStringLiteral(
-                                 "Classifier response is not a standalone JSON object. A reply "
+                : QStringLiteral("Classifier response is not a standalone JSON object. A reply "
                                  "that adds prose or reasoning around the JSON is not a completed "
                                  "classification.");
         intent.failure = truncatedReply ? ObservationClassificationFailure::OutputTruncated

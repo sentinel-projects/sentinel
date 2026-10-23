@@ -126,8 +126,7 @@ QJsonObject ollamaOptionFields(ReasoningControl reasoning, int maxOutputTokens,
 // openai-compatible-local. `chat_template_kwargs` is llama.cpp's documented
 // template switch; `reasoning_effort` is LM Studio's. Hosted OpenAI,
 // Anthropic and Gemini endpoints never receive either field.
-QJsonObject openAiCompatibleReasoningFields(ReasoningControl reasoning,
-                                            ProviderEndpoint endpoint);
+QJsonObject openAiCompatibleReasoningFields(ReasoningControl reasoning, ProviderEndpoint endpoint);
 
 // Convenience: the typed truncation diagnostic key written to
 // ChatProviderReply::diagnostics whenever a provider stopped at its output

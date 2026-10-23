@@ -396,8 +396,8 @@ bool DaemonIpcServer::startServer(const QString& requested) {
     const int pathLimit = static_cast<int>(sizeof(sockaddr_un::sun_path)) - 1;
     const int pathLength = m_path.toUtf8().size();
     if (pathLength > pathLimit) {
-        qWarning().noquote() << "Daemon IPC socket path exceeds the platform limit"
-                             << pathLength << pathLimit;
+        qWarning().noquote() << "Daemon IPC socket path exceeds the platform limit" << pathLength
+                             << pathLimit;
         return fail(QStringLiteral("Socket path is %1 bytes; the platform limit is %2 bytes.")
                         .arg(pathLength)
                         .arg(pathLimit));
@@ -433,8 +433,7 @@ bool DaemonIpcServer::startServer(const QString& requested) {
         return fail(QStringLiteral("The socket directory permissions could not be set."));
     }
     if (!requested.isEmpty() && (directoryInfo.st_mode & 0077U) != 0) {
-        return fail(
-            QStringLiteral("The socket directory must not grant group or other access."));
+        return fail(QStringLiteral("The socket directory must not grant group or other access."));
     }
 #endif
     m_lock = std::make_unique<QLockFile>(m_path + ".lock");

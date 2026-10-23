@@ -38,24 +38,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|e| e.to_string())?;
             let mut protocol = picker.new_resize_protocol(img);
             let resize = Resize::Scale(Some(image::imageops::FilterType::Triangle));
-            let desired = protocol.size_for(resize.clone(), area);
+            let desired = protocol.size_for(resize.clone(), area.into());
             protocol.resize_encode(&resize, desired);
             Ok(protocol)
         })();
         let _ = tx.send(result);
     });
     let mut protocol = rx.recv_timeout(Duration::from_secs(5))??;
-    let ratatui_image::protocol::StatefulProtocolType::Kitty(kitty) = protocol.protocol_type()
-    else {
+    let ratatui_image::protocol::StatefulProtocolType::Kitty(_) = protocol.protocol_type() else {
         return Err("A/B requires confirmed Kitty".into());
     };
-    let id = kitty.unique_id;
+    let mut probe = ratatui::buffer::Buffer::empty(area);
+    protocol.render(area, &mut probe);
+    let header = probe[(area.x, area.y)]
+        .symbol()
+        .split_once("\x1b_G")
+        .ok_or("Kitty header")?
+        .1
+        .split(';')
+        .next()
+        .ok_or("Kitty fields")?;
+    let id: u32 = header
+        .split(',')
+        .find_map(|field| field.strip_prefix("i=")?.parse().ok())
+        .ok_or("Kitty image ID")?;
     if std::env::args().any(|arg| arg == "--direct") {
-        let mut buffer = ratatui::buffer::Buffer::empty(area);
-        protocol.render(area, &mut buffer);
+        let buffer = probe;
         let upload = buffer[(area.x, area.y)]
             .symbol()
-            .split_once("\x1b[s")
+            .split_once('\u{10EEEE}')
             .ok_or("upload boundary")?
             .0
             .replace("a=T,U=1,", "a=t,");
@@ -72,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
         out.flush()?;
     } else {
-        terminal.draw(|f| protocol.render(area, f.buffer_mut()))?;
+        terminal.draw(|f| f.buffer_mut().merge(&probe))?;
     }
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(5) {

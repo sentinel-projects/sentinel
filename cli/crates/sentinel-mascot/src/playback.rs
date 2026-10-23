@@ -222,19 +222,20 @@ impl Loader {
                         let resize = Resize::Scale(Some(image::imageops::FilterType::Triangle));
                         let rect = protocol.size_for(
                             resize.clone(),
-                            Rect::new(0, 0, request.key.width, request.key.height),
+                            Rect::new(0, 0, request.key.width, request.key.height).into(),
                         );
                         protocol.resize_encode(&resize, rect);
                         if let Some(Err(e)) = protocol.last_encoding_result() {
                             return Err(e.to_string());
                         }
-                        if let StatefulProtocolType::Kitty(kitty) = protocol.protocol_type() {
-                            let id = kitty.unique_id;
-                            let mut buffer = ratatui::buffer::Buffer::empty(rect);
-                            protocol.render(rect, &mut buffer);
+                        if let StatefulProtocolType::Kitty(_) = protocol.protocol_type() {
+                            let mut buffer = ratatui::buffer::Buffer::empty(rect.into());
+                            protocol.render(rect.into(), &mut buffer);
                             let symbol = buffer[(0, 0)].symbol();
+                            let id =
+                                kitty_image_id(symbol).ok_or("Missing upstream Kitty image ID")?;
                             let upload = symbol
-                                .split_once("\x1b[s")
+                                .split_once('\u{10EEEE}')
                                 .ok_or("Missing upstream Kitty upload boundary")?
                                 .0
                                 .replace("a=T,U=1,", "a=t,");
@@ -244,7 +245,7 @@ impl Loader {
                             frames.push(CachedFrame::Kitty(DirectFrame {
                                 upload,
                                 id,
-                                rect,
+                                rect: rect.into(),
                                 uploaded: false,
                             }));
                         } else {
@@ -384,7 +385,10 @@ impl Player {
         }
     }
     pub fn cell_size(&self) -> Option<(u16, u16)> {
-        self.capabilities.picker.as_ref().map(Picker::font_size)
+        self.capabilities.picker.as_ref().map(|picker| {
+            let size = picker.font_size();
+            (size.width, size.height)
+        })
     }
     pub fn is_loading(&self) -> bool {
         self.loading
@@ -542,7 +546,7 @@ impl Player {
             let resize = Resize::Scale(Some(image::imageops::FilterType::Triangle));
             let desired = match &cache.frames[index] {
                 CachedFrame::Kitty(d) => d.rect,
-                CachedFrame::Upstream(p) => p.size_for(resize, area),
+                CachedFrame::Upstream(p) => p.size_for(resize, area.into()).into(),
             };
             let centered = Rect::new(
                 area.x + area.width.saturating_sub(desired.width) / 2,
@@ -634,15 +638,21 @@ impl Drop for Player {
         self.hide();
     }
 }
+// Read the ID from the protocol's own encoded upload rather than depending
+// on private ratatui-image fields. Cleanup remains scoped to owned images.
+fn kitty_image_id(symbol: &str) -> Option<u32> {
+    let header = symbol.split_once("\x1b_G")?.1.split(';').next()?;
+    header
+        .split(',')
+        .find_map(|field| field.strip_prefix("i=")?.parse().ok())
+}
 fn delete_images(frames: &[CachedFrame], out: &mut impl Write) -> io::Result<()> {
     let mut any = false;
     for frame in frames {
         let id = match frame {
             CachedFrame::Kitty(frame) => Some(frame.id),
-            CachedFrame::Upstream(protocol) => match protocol.protocol_type() {
-                StatefulProtocolType::Kitty(kitty) => Some(kitty.unique_id),
-                _ => None,
-            },
+            // Kitty frames are always converted to DirectFrame at load time.
+            CachedFrame::Upstream(_) => None,
         };
         if let Some(id) = id {
             write!(out, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
@@ -855,15 +865,17 @@ mod cleanup_tests {
 
     #[test]
     fn shutdown_frees_only_owned_kitty_ids() {
-        let mut picker = Picker::from_fontsize((8, 16));
-        picker.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
-        let protocol = picker.new_resize_protocol(image::DynamicImage::new_rgba8(96, 96));
-        let StatefulProtocolType::Kitty(kitty) = protocol.protocol_type() else {
-            panic!("kitty");
-        };
-        let expected = format!("\x1b_Ga=d,d=I,i={},q=2\x1b\\", kitty.unique_id);
+        let upload = "\x1b_Ga=t,i=1234,q=2;payload\x1b\\";
+        let id = kitty_image_id(upload).expect("encoded Kitty ID");
+        let expected = "\x1b_Ga=d,d=I,i=1234,q=2\x1b\\";
+        let frame = CachedFrame::Kitty(DirectFrame {
+            upload: upload.into(),
+            id,
+            rect: Rect::new(0, 0, 12, 6),
+            uploaded: true,
+        });
         let mut bytes = Vec::new();
-        delete_images(&[CachedFrame::Upstream(protocol)], &mut bytes).unwrap();
+        delete_images(&[frame], &mut bytes).unwrap();
         assert_eq!(bytes, expected.as_bytes());
         assert!(!String::from_utf8(bytes).unwrap().contains("d=A"));
     }

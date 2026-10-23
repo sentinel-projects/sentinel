@@ -3,6 +3,7 @@ void qml_register_types_Sentinel_Warden();
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Opt-in UI harness: production QML and viewmodel, disposable disk stores,
 // explicitly injected in-memory credential backend. No provider success is faked.
+#include "../support/ShortSocketPath.h"
 #include "DesktopDaemonFixture.h"
 #include "DesktopDaemonInteraction.h"
 #include "sentinel/core/app/AppSettings.h"
@@ -36,7 +37,6 @@ void qml_register_types_Sentinel_Warden();
 #include <QQuickWindow>
 #include <QStandardPaths>
 #include <QTemporaryDir>
-#include "../support/ShortSocketPath.h"
 #include <QTest>
 #include <QTimer>
 #include <QTranslator>

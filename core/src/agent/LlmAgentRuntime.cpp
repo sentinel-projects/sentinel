@@ -390,9 +390,8 @@ AgentStepDecision LlmAgentRuntime::nextStep(const QString& goal,
         }
         QList<ContextBudgetItem> budgetItems;
         for (const auto& item : requestContext.items) {
-            const bool criticalObservation =
-                item.kind == AgentContextKind::Observation &&
-                criticalEvidenceSources.contains(item.source);
+            const bool criticalObservation = item.kind == AgentContextKind::Observation &&
+                                             criticalEvidenceSources.contains(item.source);
             const bool required =
                 item.kind == AgentContextKind::Goal || item.kind == AgentContextKind::Requirement ||
                 item.kind == AgentContextKind::Workspace || item.kind == AgentContextKind::Fact ||
@@ -405,9 +404,10 @@ AgentStepDecision LlmAgentRuntime::nextStep(const QString& goal,
             // Historical tool output is the first thing compacted when space is
             // tight; it is still offered to the budget so it is kept whenever it
             // fits.
-            const auto priority = (item.kind == AgentContextKind::Observation && !criticalObservation)
-                                      ? AgentContextPriority::Low
-                                      : item.priority;
+            const auto priority =
+                (item.kind == AgentContextKind::Observation && !criticalObservation)
+                    ? AgentContextPriority::Low
+                    : item.priority;
             budgetItems.append({item.content, kind, 100 - static_cast<int>(priority), required});
         }
         const auto budget = ContextBudgetManager{}.assemble(
@@ -1286,10 +1286,9 @@ QString LlmAgentRuntime::buildPlannerPrompt(const QString& goal,
                 .accepted) {
             continue;
         }
-        pendingActions.append(QJsonObject{{QStringLiteral("domain"),
-                                           observationDomainName(requirement.domain)},
-                                          {QStringLiteral("resource"),
-                                           requirement.resourceHint}});
+        pendingActions.append(
+            QJsonObject{{QStringLiteral("domain"), observationDomainName(requirement.domain)},
+                        {QStringLiteral("resource"), requirement.resourceHint}});
     }
     if (!pendingActions.isEmpty())
         prompt +=

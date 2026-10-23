@@ -87,9 +87,10 @@ NormalizedResponseOutcome normalizeOpenAiOutcome(const QJsonObject& body) {
     const auto usage = body.value(QStringLiteral("usage")).toObject();
     outcome.promptTokens = nonNegativeInt(usage.value(QStringLiteral("prompt_tokens")));
     outcome.outputTokens = nonNegativeInt(usage.value(QStringLiteral("completion_tokens")));
-    outcome.reasoningTokens = nonNegativeInt(usage.value(QStringLiteral("completion_tokens_details"))
-                                                 .toObject()
-                                                 .value(QStringLiteral("reasoning_tokens")));
+    outcome.reasoningTokens =
+        nonNegativeInt(usage.value(QStringLiteral("completion_tokens_details"))
+                           .toObject()
+                           .value(QStringLiteral("reasoning_tokens")));
     // A provider that stops at the output limit truncates the answer whether or
     // not it says so in prose. Only an explicit stop reason clears this.
     outcome.truncated = outcome.finishReason == FinishReason::Length;
@@ -135,9 +136,9 @@ void applyOutcomeToDiagnostics(const NormalizedResponseOutcome& outcome, QJsonOb
 
 void applyOutcomeToReply(const NormalizedResponseOutcome& outcome, ChatProviderReply& reply) {
     applyOutcomeToDiagnostics(outcome, reply.diagnostics);
-    reply.completion = outcome.truncated ? ResponseCompletion::Truncated
-                        : outcome.hasVisibleText ? ResponseCompletion::Complete
-                                                 : ResponseCompletion::Empty;
+    reply.completion = outcome.truncated        ? ResponseCompletion::Truncated
+                       : outcome.hasVisibleText ? ResponseCompletion::Complete
+                                                : ResponseCompletion::Empty;
 }
 
 QString reasoningControlName(ReasoningControl control) {
@@ -245,8 +246,7 @@ QJsonObject ollamaOptionFields(ReasoningControl reasoning, int maxOutputTokens,
     return options;
 }
 
-QJsonObject openAiCompatibleReasoningFields(ReasoningControl reasoning,
-                                            ProviderEndpoint endpoint) {
+QJsonObject openAiCompatibleReasoningFields(ReasoningControl reasoning, ProviderEndpoint endpoint) {
     QJsonObject body;
     if (reasoning == ReasoningControl::Default)
         return body;
@@ -262,8 +262,8 @@ QJsonObject openAiCompatibleReasoningFields(ReasoningControl reasoning,
     case ProviderEndpoint::LmStudio:
         // LM Studio's OpenAI-compatible server accepts reasoning_effort and
         // passes chat_template_kwargs through to its llama.cpp backend.
-        body.insert(QStringLiteral("reasoning_effort"),
-                    reasoning == ReasoningControl::Disabled ? QStringLiteral("none")
+        body.insert(QStringLiteral("reasoning_effort"), reasoning == ReasoningControl::Disabled
+                                                            ? QStringLiteral("none")
                                                             : QStringLiteral("low"));
         break;
     default:

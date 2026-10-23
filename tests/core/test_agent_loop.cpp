@@ -11,10 +11,10 @@
 #include "sentinel/core/runtime/IToolExecutor.h"
 #include "sentinel/core/runtime/InMemoryToolRegistry.h"
 #include "sentinel/core/runtime/RealToolExecutor.h"
-#include <algorithm>
 #include "sentinel/core/security/StaticApprovalPolicy.h"
 #include "sentinel/core/security/StaticSandboxPolicy.h"
 #include <QFile>
+#include <algorithm>
 
 #include <QFileInfo>
 #include <QJsonArray>
@@ -780,8 +780,8 @@ private slots:
         // First call fails with NotFound; the model repeats it unchanged. The
         // repeat is never re-executed; one repair teaches that the failed result
         // is already the answer. A second repeat still stops fail-closed.
-        planner.decisions = {stat, stat, recover ? finalDecision(QStringLiteral("path is absent"))
-                                                 : stat};
+        planner.decisions = {stat, stat,
+                             recover ? finalDecision(QStringLiteral("path is absent")) : stat};
         planner.repeatLast = true;
         RecordingExecutor executor;
         executor.status = ToolExecutionStatus::Failed;
@@ -793,9 +793,8 @@ private slots:
         AgentLoopState state;
         bool finished = false;
         if (async) {
-            loop.runAsync(QStringLiteral("Inspect missing file"),
-                          QStringLiteral("failed-repeat"), this,
-                          [&](const AgentLoopState& result) {
+            loop.runAsync(QStringLiteral("Inspect missing file"), QStringLiteral("failed-repeat"),
+                          this, [&](const AgentLoopState& result) {
                               state = result;
                               finished = true;
                           });

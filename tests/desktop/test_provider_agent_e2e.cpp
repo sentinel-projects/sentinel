@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "../support/ShortSocketPath.h"
 #include "sentinel/core/agent/AgentRuntime.h"
 #include "sentinel/core/agent/NullAgentRuntime.h"
 #include "sentinel/core/app/ApplicationControllerBuilder.h"
@@ -20,15 +21,14 @@
 #include <QSqlQuery>
 #include <QStandardPaths>
 #include <QTemporaryDir>
-#include "../support/ShortSocketPath.h"
 #include <QTest>
 #include <QUuid>
 #include <algorithm>
 #include <atomic>
 
 using namespace sentinel;
-using sentinel::test::shortSocketDirTemplate;
 using desktop::DaemonClient;
+using sentinel::test::shortSocketDirTemplate;
 namespace {
 constexpr int deadlineMs = 5000;
 const auto original = QByteArrayLiteral("original fixture bytes\n");

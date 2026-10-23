@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "../support/DeterministicChatFixture.h"
+#include "../support/ShortSocketPath.h"
 #include "sentinel/core/agent/AgentRuntime.h"
 #include "sentinel/core/agent/IAgentStepPlanner.h"
 #include "sentinel/core/agent/NullAgentRuntime.h"
@@ -24,7 +25,6 @@
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
-#include "../support/ShortSocketPath.h"
 #include <QTest>
 #include <QUuid>
 #include <atomic>
@@ -36,8 +36,8 @@
 #endif
 
 using namespace sentinel;
-using sentinel::test::shortSocketDirTemplate;
 using desktop::DaemonClient;
+using sentinel::test::shortSocketDirTemplate;
 namespace {
 constexpr int deadlineMs = 5000;
 const QByteArray original = "synthetic original\n";

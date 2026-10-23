@@ -102,10 +102,11 @@ ChatProviderReply OllamaChatProvider::sendRequest(const QString& message,
                                 options.deadlineMs, options.maxOutputTokens, options.reasoning);
 }
 
-ChatProviderReply OllamaChatProvider::sendMessageWithToken(
-    const QString& message, const std::shared_ptr<std::atomic_bool>& cancellationToken,
-    const QList<ChatImage>& images, int deadlineMs, int maxOutputTokens,
-    ReasoningControl reasoning) {
+ChatProviderReply
+OllamaChatProvider::sendMessageWithToken(const QString& message,
+                                         const std::shared_ptr<std::atomic_bool>& cancellationToken,
+                                         const QList<ChatImage>& images, int deadlineMs,
+                                         int maxOutputTokens, ReasoningControl reasoning) {
     const auto trimmed = message.trimmed();
     if (trimmed.isEmpty()) {
         return failureReply(QStringLiteral("Prompt is blank."),

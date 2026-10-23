@@ -30,8 +30,9 @@
 #endif
 #include <QTimer>
 
-#include <QDir>
+#include "../support/ShortSocketPath.h"
 #include <QCryptographicHash>
+#include <QDir>
 #include <QJSEngine>
 #include <QJsonDocument>
 #include <QLocalServer>
@@ -39,7 +40,6 @@
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
-#include "../support/ShortSocketPath.h"
 #include <QTest>
 #include <QUuid>
 

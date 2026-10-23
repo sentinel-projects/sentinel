@@ -456,9 +456,8 @@ public:
         }
         auto body = normalizedRequest.body;
         // Reasoning control is written in the field name this endpoint documents.
-        const auto reasoningFields =
-            provider::openAiCompatibleReasoningFields(options.reasoning,
-                                                      provider::requestProfile(binding_).endpoint);
+        const auto reasoningFields = provider::openAiCompatibleReasoningFields(
+            options.reasoning, provider::requestProfile(binding_).endpoint);
         for (auto it = reasoningFields.begin(); it != reasoningFields.end(); ++it)
             body.insert(it.key(), it.value());
         // Budget the actual serialized native request, including schemas and tool

@@ -367,7 +367,8 @@ private slots:
         runtime.setObservationIntent(intent);
         runtime.setEvidence({});
         runtime.nextStep("Create notes.txt with a greeting", {});
-        const auto pending = provider.prompts.last().section("REQUIRED ACTIONS NOT YET PERFORMED", 1);
+        const auto pending =
+            provider.prompts.last().section("REQUIRED ACTIONS NOT YET PERFORMED", 1);
         QVERIFY(pending.contains("/fixture/notes.txt"));
         QVERIFY(pending.contains("write-file"));
         EvidenceRecord write;

@@ -66,7 +66,8 @@ impl Capabilities {
         } else {
             return Self::text("No confirmed image protocol");
         };
-        let mut picker = Picker::from_fontsize((w, h));
+        #[allow(deprecated)] // Explicit measured font size; never start another stdio probe.
+        let mut picker = Picker::from_fontsize((w, h).into());
         picker.set_protocol_type(protocol);
         Self {
             picker: Some(picker),
@@ -108,6 +109,8 @@ fn detect_unix() -> Capabilities {
         false,
         QueryStdioOptions {
             text_sizing_protocol: false,
+            terminal_background_color_osc: false,
+            ..Default::default()
         },
     );
     // Our reader is already bounded. Do not leave a late DSR response for
@@ -133,7 +136,11 @@ fn detect_unix() -> Capabilities {
             .as_millis()
             .min(i32::MAX as u128) as i32;
         let mut fds = [PollFd::new(&input, PollFlags::IN)];
-        if !matches!(poll(&mut fds,timeout),Ok(n) if n>0) {
+        let timeout = rustix::event::Timespec {
+            tv_sec: (timeout / 1000) as _,
+            tv_nsec: ((timeout % 1000) * 1_000_000) as _,
+        };
+        if !matches!(poll(&mut fds,Some(&timeout)),Ok(n) if n>0) {
             break;
         }
         let mut bytes = [0u8; 256];

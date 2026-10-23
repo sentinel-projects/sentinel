@@ -258,8 +258,7 @@ bool applyNormalizedOutcome(LocalInferenceResponse& response,
         return false;
     response.status = LocalInferenceStatus::Error;
     response.error = LocalInferenceError::InvalidResponse;
-    response.providerErrorCategory =
-        static_cast<int>(ChatProviderErrorCategory::RequestRejected);
+    response.providerErrorCategory = static_cast<int>(ChatProviderErrorCategory::RequestRejected);
     response.summary = truncationSummary;
     return true;
 }
@@ -817,9 +816,8 @@ LocalInferenceResponse OllamaLocalInferenceClient::infer(const LocalInferenceReq
 
     // Provider-specific option names live in the normalizer so Ollama's `think`
     // / `num_predict` / `num_ctx` never leak into an OpenAI-compatible body.
-    auto options = provider::ollamaOptionFields(request.options.reasoning,
-                                                request.options.maxTokens,
-                                                request.options.loadedContextTokens);
+    auto options = provider::ollamaOptionFields(
+        request.options.reasoning, request.options.maxTokens, request.options.loadedContextTokens);
     options.insert(QStringLiteral("temperature"), request.options.temperature);
     options.insert(QStringLiteral("top_p"), request.options.topP);
     body.insert(QStringLiteral("options"), options);
@@ -853,7 +851,6 @@ LocalInferenceResponse OllamaLocalInferenceClient::infer(const LocalInferenceReq
             QStringLiteral("Provider output limit reached before a complete answer; the reply "
                            "was truncated at the output limit (done_reason=length) and no "
                            "success was accepted."))) {
-        response.text = text;
         response.traces.append(trace(3, QStringLiteral("Generation"),
                                      QStringLiteral("Output Limit"), response.summary));
         return response;
@@ -987,9 +984,8 @@ LocalInferenceStreamResult OllamaLocalInferenceStreamClient::startStream(
     }
     body.insert(QStringLiteral("stream"), true);
 
-    auto options = provider::ollamaOptionFields(request.options.reasoning,
-                                                request.options.maxTokens,
-                                                request.options.loadedContextTokens);
+    auto options = provider::ollamaOptionFields(
+        request.options.reasoning, request.options.maxTokens, request.options.loadedContextTokens);
     options.insert(QStringLiteral("temperature"), request.options.temperature);
     options.insert(QStringLiteral("top_p"), request.options.topP);
     body.insert(QStringLiteral("options"), options);
@@ -1201,8 +1197,7 @@ LocalInferenceStreamResult OllamaLocalInferenceStreamClient::startStream(
     if (result.outputLimitReached) {
         result.status = LocalInferenceStreamStatus::Error;
         result.lifecycle = ChatRequestLifecycle::Failed;
-        result.providerErrorCategory =
-            static_cast<int>(ChatProviderErrorCategory::RequestRejected);
+        result.providerErrorCategory = static_cast<int>(ChatProviderErrorCategory::RequestRejected);
         result.error = LocalInferenceError::InvalidResponse;
         result.summary = QStringLiteral("Provider output limit reached before a complete answer; "
                                         "the streamed reply was truncated at the output limit "
@@ -1561,8 +1556,8 @@ LocalInferenceResponse LMStudioLocalInferenceClient::infer(const LocalInferenceR
         }
         for (const auto& key : {QStringLiteral("total_tokens")})
             if (reply.document.object().value("usage").toObject().value(key).isDouble())
-                response.diagnostics.insert(key,
-                                            reply.document.object().value("usage").toObject().value(key));
+                response.diagnostics.insert(
+                    key, reply.document.object().value("usage").toObject().value(key));
         provider::OpenAiCompatibleChatTextError textError =
             provider::OpenAiCompatibleChatTextError::None;
         const auto text =
@@ -1601,14 +1596,12 @@ LocalInferenceResponse LMStudioLocalInferenceClient::infer(const LocalInferenceR
     QJsonArray messagesArr;
     messagesArr.append(messageObj);
 
-    auto body = provider::buildOpenAiCompatibleChatBody(response.model, messagesArr,
-                                                        qMax(1, request.options.maxTokens), false,
-                                                        std::nullopt);
+    auto body = provider::buildOpenAiCompatibleChatBody(
+        response.model, messagesArr, qMax(1, request.options.maxTokens), false, std::nullopt);
     // Reasoning control is expressed in the field name this endpoint documents;
     // a dialect with no documented control keeps its body unchanged.
-    const auto reasoningFields =
-        provider::openAiCompatibleReasoningFields(request.options.reasoning,
-                                                  request.options.reasoningEndpoint);
+    const auto reasoningFields = provider::openAiCompatibleReasoningFields(
+        request.options.reasoning, request.options.reasoningEndpoint);
     for (auto it = reasoningFields.begin(); it != reasoningFields.end(); ++it)
         body.insert(it.key(), it.value());
     const auto serializedBytes = QJsonDocument(body).toJson(QJsonDocument::Compact).size();
@@ -1646,7 +1639,6 @@ LocalInferenceResponse LMStudioLocalInferenceClient::infer(const LocalInferenceR
                            "was truncated at the output limit (finish_reason=length) and no "
                            "success was accepted. Raise the output budget or turn reasoning off "
                            "for this request."))) {
-        response.text = provider::parseOpenAiCompatibleChatText(responseBody).value_or(QString{});
         response.traces.append(trace(3, QStringLiteral("Generation"),
                                      QStringLiteral("Output Limit"), response.summary));
         return response;
@@ -1676,8 +1668,7 @@ LocalInferenceResponse LMStudioLocalInferenceClient::infer(const LocalInferenceR
     response.status = LocalInferenceStatus::Succeeded;
     response.error = LocalInferenceError::None;
     response.text = *text;
-    response.approximateOutputTokens =
-        outcome.outputTokens.value_or(approximateTokenCount(*text));
+    response.approximateOutputTokens = outcome.outputTokens.value_or(approximateTokenCount(*text));
     response.summary =
         QStringLiteral("Local inference completed through LM Studio /v1/chat/completions.");
     response.traces.append(trace(3, QStringLiteral("Generation"), QStringLiteral("Succeeded"),
@@ -1875,9 +1866,8 @@ LocalInferenceStreamResult LMStudioLocalInferenceStreamClient::startStream(
         body = provider::buildOpenAiCompatibleChatBody(
             result.model, messagesArr,
             request.options.maxTokens > 0 ? request.options.maxTokens : 2048, true, std::nullopt);
-        const auto reasoningFields =
-            provider::openAiCompatibleReasoningFields(request.options.reasoning,
-                                                      request.options.reasoningEndpoint);
+        const auto reasoningFields = provider::openAiCompatibleReasoningFields(
+            request.options.reasoning, request.options.reasoningEndpoint);
         for (auto it = reasoningFields.begin(); it != reasoningFields.end(); ++it)
             body.insert(it.key(), it.value());
     }

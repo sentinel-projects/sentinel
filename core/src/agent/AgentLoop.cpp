@@ -198,8 +198,9 @@ AgentTerminalReason giveUpTerminalReason(const AgentStepDecision& decision) {
 // step ever ran in this state, so the message says so instead of implying work
 // was done and lost.
 QString classificationAbortMessage(const ObservationIntent& intent) {
-    const QString detail =
-        intent.error.trimmed().isEmpty() ? QString{} : QStringLiteral(" %1").arg(intent.error.trimmed());
+    const QString detail = intent.error.trimmed().isEmpty()
+                               ? QString{}
+                               : QStringLiteral(" %1").arg(intent.error.trimmed());
     switch (intent.failure) {
     case ObservationClassificationFailure::OutputTruncated:
         return QStringLiteral(
@@ -240,26 +241,24 @@ QString classificationAbortMessage(const ObservationIntent& intent) {
 // Keeping one implementation means the read-back recovery aims at precisely the
 // evidence that is missing rather than at an approximation of it.
 bool mutationConfirmedBy(const AgentLoopState& state, const EvidenceRecord& operation) {
-    return std::any_of(state.evidence.cbegin(), state.evidence.cend(),
-                       [&](const EvidenceRecord& observation) {
-                           if (observation.stepIndex <= operation.stepIndex ||
-                               observation.scope == EvidenceScope::Operation ||
-                               (observation.domain != ObservationDomain::FileSystem &&
-                                observation.domain != ObservationDomain::Workspace))
-                               return false;
-                           const bool sameResource =
-                               operation.resource.isEmpty() ||
-                               normalizedObservationResource(
-                                   operation.resource, ObservationDomain::FileSystem) ==
-                                   normalizedObservationResource(
-                                       observation.resource, ObservationDomain::FileSystem);
-                           return sameResource &&
-                                  (observation.outcome == EvidenceOutcome::Verified ||
-                                   (observation.outcome == EvidenceOutcome::Failed &&
-                                    observation.structuredObservation &&
-                                    observation.structuredObservation->kind ==
-                                        StructuredObservationKind::FileSystemFailure));
-                       });
+    return std::any_of(
+        state.evidence.cbegin(), state.evidence.cend(), [&](const EvidenceRecord& observation) {
+            if (observation.stepIndex <= operation.stepIndex ||
+                observation.scope == EvidenceScope::Operation ||
+                (observation.domain != ObservationDomain::FileSystem &&
+                 observation.domain != ObservationDomain::Workspace))
+                return false;
+            const bool sameResource =
+                operation.resource.isEmpty() ||
+                normalizedObservationResource(operation.resource, ObservationDomain::FileSystem) ==
+                    normalizedObservationResource(observation.resource,
+                                                  ObservationDomain::FileSystem);
+            return sameResource && (observation.outcome == EvidenceOutcome::Verified ||
+                                    (observation.outcome == EvidenceOutcome::Failed &&
+                                     observation.structuredObservation &&
+                                     observation.structuredObservation->kind ==
+                                         StructuredObservationKind::FileSystemFailure));
+        });
 }
 
 // A mutation records an Operation receipt: an event that already happened, not
@@ -336,6 +335,18 @@ std::optional<AgentStepDecision> finalVerificationRecovery(AgentLoopState& state
         !state.pendingApprovalPlan.invocations.isEmpty()) {
         return std::nullopt;
     }
+    // Do not begin a partial repair when the required checklist already exceeds
+    // the remaining recovery budget, including a possible mutation read-back.
+    int missingRequirements = 0;
+    for (const auto& requirement : state.observationIntent.requirements) {
+        ObservationIntent single;
+        single.requirements = {requirement};
+        if (!EvidencePolicy::evaluate(single, state.evidence, GroundingMode::Verified, true)
+                 .accepted)
+            ++missingRequirements;
+    }
+    if (missingRequirements > 3 - state.finalVerificationRecoveries)
+        return std::nullopt;
     // A rejected verified final over an unconfirmed mutation is the common case
     // for a plain file task: there is no shell command to satisfy a `tested`
     // precondition and no inspect requirement to drive a checklist. Observe the
@@ -527,10 +538,9 @@ bool repairRepeatedObservation(AgentLoopState& state, const ToolInvocationPlan& 
         // they can never gain an observation through repair, and a final answer
         // must not paper over them.
         const auto& last = state.steps.last();
-        const bool actionableFailure =
-            last.statusText == QLatin1String("Failed") &&
-            (last.failureCategory == ToolFailureCategory::NotFound ||
-             last.failureCategory == ToolFailureCategory::Timeout);
+        const bool actionableFailure = last.statusText == QLatin1String("Failed") &&
+                                       (last.failureCategory == ToolFailureCategory::NotFound ||
+                                        last.failureCategory == ToolFailureCategory::Timeout);
         if (!actionableFailure || state.repeatedFailureRepairs != 0)
             return false;
         ++state.repeatedFailureRepairs;

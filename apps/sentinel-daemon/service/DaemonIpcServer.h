@@ -36,7 +36,9 @@ public:
     bool startServer(const QString& serverName = {});
     // Typed diagnostic for the most recent startServer failure. Contains sizes
     // and platform limits, never the configured path itself.
-    QString lastServerError() const { return m_lastServerError; }
+    QString lastServerError() const {
+        return m_lastServerError;
+    }
     void stopServer();
     void requestShutdown();
     void setController(core::ApplicationController* controller);

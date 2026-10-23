@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "../support/DeterministicChatFixture.h"
+#include "../support/ShortSocketPath.h"
 #include "sentinel/core/agent/AgentRuntime.h"
 #include "sentinel/core/agent/IAgentStepPlanner.h"
 #include "sentinel/core/agent/NullAgentRuntime.h"
@@ -22,7 +23,6 @@
 #include <QSqlQuery>
 #include <QStandardPaths>
 #include <QTemporaryDir>
-#include "../support/ShortSocketPath.h"
 #include <QTest>
 #include <QUuid>
 #ifdef Q_OS_UNIX
