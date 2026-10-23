@@ -51,15 +51,19 @@ def verify_fixture(project, trusted_test):
 parser=argparse.ArgumentParser(description="Run an isolated opt-in Sentinel coding-agent acceptance test. Does not download models.")
 parser.add_argument('--daemon', type=Path, required=True, help='Built/deployed sentinel-daemon executable')
 parser.add_argument('--runtime-dir', type=Path, help='Optional deployed runtime directory to copy with DLLs/plugins; daemon must be inside it')
-parser.add_argument('--model', required=True, help='Installed LM Studio model ID')
-parser.add_argument('--endpoint', default='http://127.0.0.1:1234')
+parser.add_argument('--model', required=True, help='Installed local model ID')
+parser.add_argument('--provider', choices=['lm-studio', 'ollama', 'llama-cpp-server'], default='lm-studio')
+parser.add_argument('--endpoint')
 parser.add_argument('--output-dir', type=Path, help='New directory for isolated runtime and evidence; default: OS temporary directory')
 parser.add_argument('--test-command', default='python3 test_calc.py', help='Exact sandbox command, e.g. py -3 test_calc.py on Windows')
 parser.add_argument('--inspect-only', action='store_true')
+parser.add_argument('--completion-only', action='store_true', help='Edit only calc.py and read it back; independent trusted verifier still runs')
 parser.add_argument('--timeout', type=int, default=240, help='Per-case timeout in seconds')
 args=parser.parse_args()
-if urlparse(args.endpoint).hostname not in {'127.0.0.1','localhost','::1'}:parser.error('--endpoint must be a loopback LM Studio server')
+args.endpoint = args.endpoint or {'lm-studio':'http://127.0.0.1:1234', 'ollama':'http://127.0.0.1:11434', 'llama-cpp-server':'http://127.0.0.1:8080'}[args.provider]
+if urlparse(args.endpoint).hostname not in {'127.0.0.1','localhost','::1'}:parser.error('--endpoint must be a loopback local server')
 if args.timeout < 1:parser.error('--timeout must be positive')
+if args.inspect_only and args.completion_only:parser.error('--inspect-only and --completion-only are mutually exclusive')
 if not args.daemon.is_file():parser.error('--daemon must be an existing executable')
 if args.runtime_dir and not args.daemon.resolve().is_relative_to(args.runtime_dir.resolve()):parser.error('--daemon must be inside --runtime-dir')
 if os.name == 'nt':
@@ -79,7 +83,7 @@ if args.runtime_dir:
 else:
     binary.mkdir();daemon=binary/args.daemon.name;shutil.copy2(args.daemon,daemon)
 project=root/'project';project.mkdir()
-(daemon.parent/'settings.json').write_text(json.dumps({'lmStudioEndpoint':args.endpoint,'defaultPermissionPolicyState':'Ask'}),encoding='utf-8')
+(daemon.parent/'settings.json').write_text(json.dumps({{'lm-studio':'lmStudioEndpoint','ollama':'ollamaEndpoint','llama-cpp-server':'llamaCppEndpoint'}[args.provider]:args.endpoint,'defaultPermissionPolicyState':'Ask'}),encoding='utf-8')
 (project/'calc.py').write_text('def add(a, b):\n    return a - b\n',encoding='utf-8')
 (project/'test_calc.py').write_text('from calc import add\nassert add(2, 3) == 5\nassert add(-1, 1) == 0\nprint("ALL_TESTS_PASSED")\n',encoding='utf-8')
 (project/'unrelated.txt').write_text('Preserve this file exactly.\n',encoding='utf-8')
@@ -198,16 +202,19 @@ try:
         send_bytes=connection.sendall
         read_line=stream.readline
     request('hello',{'client_id':'tools-live-validation','major':1,'minor':1,'capabilities':[]})
-    request('provider.select',{'provider_id':'lm-studio'})
+    request('provider.select',{'provider_id':args.provider})
     request('desktop.action',{'session_id':'','action':'refreshModelDiscovery','arguments':[]})
     for attempt in range(40):
         catalog=request('model.list',{})
         if model in json.dumps(catalog):break
         time.sleep(.25)
-    request('model.select',{'provider_id':'lm-studio','model_id':model})
-    print('Qwen binding selected',flush=True)
-    run_case('inspect','Read calc.py and test_calc.py in the active workspace using tools. Explain the actual arithmetic bug. Do not modify files or run commands. Cite the actual source lines.')
-    if not args.inspect_only:
+    request('model.select',{'provider_id':args.provider,'model_id':model})
+    print(f'Local binding selected: {args.provider}/{model}',flush=True)
+    if not args.completion_only:
+        run_case('inspect','Read calc.py and test_calc.py in the active workspace using tools. Explain the actual arithmetic bug. Do not modify files or run commands. Cite the actual source lines.')
+    if args.completion_only:
+        run_case('write-readback', f'In the active workspace, change only {project / "calc.py"} so add(a, b) returns a + b. Read back calc.py and report the observed final content. Do not run commands or modify any other file.', edit=True)
+    elif not args.inspect_only:
         run_case('fix-and-test',f'Active workspace root: {project}. Use the absolute path {project / "calc.py"} for all edits. File paths are relative to the active workspace root, so do not prefix project/. Fix the arithmetic bug in calc.py so add returns the sum of a and b. Read the files first. Change only calc.py and preserve test_calc.py and unrelated.txt. Run exactly `{args.test_command}` using run-command and report the observed test result. Inspect the resulting change using git-diff. Do not claim success without a successful test.',edit=True)
 except Exception as error:
     failed=True

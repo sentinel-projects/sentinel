@@ -11,6 +11,7 @@
 #include "sentinel/core/runtime/RealToolExecutor.h"
 #include "sentinel/core/security/StaticSandboxPolicy.h"
 #include "sentinel/desktop/DaemonClient.h"
+#include "sentinel/desktop/DesktopRuntimeClient.h"
 #include "service/DaemonIpcServer.h"
 #include <QCryptographicHash>
 #include <QDirIterator>
@@ -95,22 +96,46 @@ public:
                                                               {"resource", state_->path},
                                                               {"purpose", "inspect"},
                                                               {"tool", "read-file"}}}}};
+            if (state_->mode == "omitted-action") {
+                auto requirements = object.value("requirements").toArray();
+                requirements.removeAt(0);
+                object.insert("requirements", requirements);
+            }
+            if (state_->mode == "wrong-content") {
+                auto requirements = object.value("requirements").toArray();
+                auto claim = requirements[1].toObject();
+                claim.insert("operation", "contains");
+                claim.insert("query", QString::fromUtf8(replacement).trimmed());
+                requirements[1] = claim;
+                object.insert("requirements", requirements);
+            }
         } else {
             const int step = state_->decisions++;
             if (state_->mode == "malformed") {
                 object = {{"action", "tool"},
                           {"tool", "write-file"},
                           {"args", QJsonObject{{"path", 42}}}};
+            } else if (step == 0 && state_->mode == "omitted-action") {
+                object = {{"action", "tool"},
+                          {"tool", "read-file"},
+                          {"args", QJsonObject{{"path", state_->path}}}};
             } else if (step == 0) {
                 object = {{"action", "tool"},
                           {"tool", "write-file"},
-                          {"args", QJsonObject{{"path", state_->path},
-                                               {"content", QString::fromUtf8(replacement)}}}};
+                          {"args",
+                           QJsonObject{{"path", state_->path},
+                                       {"content", QString::fromUtf8(state_->mode == "wrong-content"
+                                                                         ? original
+                                                                         : replacement)}}}};
             } else if (state_->mode == "unaccepted-final") {
                 object = {{"action", "final"},
                           {"grounding", "context"},
                           {"answer", "Pretended success without verification."}};
             } else if (step == 1) {
+                // External fault injection: the just-written resource disappears before
+                // verification.
+                if (state_->mode == "verification-failed")
+                    QFile::remove(state_->path);
                 object = {{"action", "tool"},
                           {"tool", "read-file"},
                           {"args", QJsonObject{{"path", state_->path}}}};
@@ -122,9 +147,41 @@ public:
                         state_->timedOut = true;
                     }
                 }
+                if (state_->mode == "repeat-after-read" && step == 2) {
+                    core::ChatProviderReply repeated;
+                    repeated.success = true;
+                    repeated.message = QString::fromUtf8(
+                        QJsonDocument(
+                            QJsonObject{
+                                {"action", "tool"},
+                                {"tool", "write-file"},
+                                {"args", QJsonObject{{"path", state_->path},
+                                                     {"content", QString::fromUtf8(replacement)}}}})
+                            .toJson(QJsonDocument::Compact));
+                    return repeated;
+                }
+                if (state_->mode == "context-final") {
+                    core::ChatProviderReply refused;
+                    refused.category = core::ChatProviderErrorCategory::RequestRejected;
+                    refused.errorMessage = "maximum context length exceeded";
+                    return refused;
+                }
+                if (state_->mode == "malformed-final") {
+                    core::ChatProviderReply malformed;
+                    malformed.success = true;
+                    malformed.message = "Finished";
+                    return malformed;
+                }
                 object = {{"action", "final"},
-                          {"grounding", "verified"},
-                          {"answer", "Fixture file updated and independently read back."}};
+                          {"grounding", state_->mode == "verification-failed" ? "unable_to_verify"
+                                        : state_->mode == "repair-final" && step == 2 ? "context"
+                                                                                      : "verified"},
+                          {"answer", state_->mode == "empty-final"
+                                         ? ""
+                                         : "Fixture file updated and independently read back."}};
+                if (state_->mode == "wrong-content")
+                    object.insert("claims",
+                                  QJsonArray{QJsonObject{{"id", "claim-2"}, {"assertion", true}}});
             }
         }
         core::ChatProviderReply reply;
@@ -146,7 +203,7 @@ struct Fixture {
     std::unique_ptr<daemon::DaemonIpcServer> server;
     QString root, path, artifact, projection, conversations;
     QMap<QString, QByteArray> before;
-    bool start(const QString& mode = {}) {
+    bool start(const QString& mode = {}, const QString& providerId = "ollama") {
         root = directory.filePath("workspace");
         if (!directory.isValid() || !QDir().mkpath(root)) {
             return false;
@@ -170,14 +227,20 @@ struct Fixture {
             }
         }
         auto models = std::make_unique<core::ModelService>(&settings);
-        models->registerProvider("ollama", [shared = script](const core::ModelBinding&) {
+        models->registerProvider(providerId, [shared = script](const core::ModelBinding&) {
             return std::make_shared<ScriptedProvider>(shared);
         });
         core::OllamaModelDiscoveryResult catalog;
         catalog.models = {{"sentinel-test-model", {}, 0}};
         catalog.lifecycle = core::ChatRequestLifecycle::Completed;
         models->acceptOllamaDiscovery(catalog, models->beginProviderHealthObservation());
-        models->setSelectedModel({"ollama", "sentinel-test-model"});
+        if (providerId != "ollama") {
+            core::ProviderDiscoveryOutcome outcome;
+            outcome.completed = true;
+            models->acceptProviderDiscovery(providerId, catalog.models, outcome,
+                                            models->beginProviderHealthObservation());
+        }
+        models->setSelectedModel({providerId, "sentinel-test-model"});
         conversations = directory.filePath("conversations.sqlite3");
         core::ApplicationControllerBuilder builder;
         controller =
@@ -204,7 +267,7 @@ struct Fixture {
         settings.setSelectedWorkspaceId(created.selectedWorkspaceId);
         settings.setWorkspaceProfilesJson(workspaces.updateProfile(
             {}, created.selectedWorkspaceId, {},
-            {{"providerId", "ollama"}, {"modelId", "sentinel-test-model"}}));
+            {{"providerId", providerId}, {"modelId", "sentinel-test-model"}}));
         controller->attachControlledTaskSettings(settings);
         controller->setAgentAutonomousMode(false);
         server = std::make_unique<daemon::DaemonIpcServer>(controller.get());
@@ -288,6 +351,103 @@ private slots:
             if (QDir(path).exists()) {
                 QVERIFY(QDir(path).removeRecursively());
             }
+        }
+    }
+    void completionRegression_data() {
+        QTest::addColumn<QString>("provider");
+        QTest::addColumn<QString>("mode");
+        for (const auto& provider : {"ollama", "lm-studio", "llama-cpp-server"})
+            for (const auto& mode : {"create-success", "empty-final", "repair-final",
+                                     "malformed-final", "wrong-content", "verification-failed",
+                                     "context-final", "repeat-after-read", "omitted-action"})
+                QTest::newRow(qPrintable(QString(provider) + "-" + mode))
+                    << QString(provider) << QString(mode);
+    }
+    void completionRegression() {
+        QFETCH(QString, provider);
+        QFETCH(QString, mode);
+        Fixture fixture;
+        QVERIFY(fixture.start(mode, provider));
+        if (mode == "create-success")
+            QVERIFY(QFile::remove(fixture.artifact));
+        DaemonClient client(fixture.path, deadlineMs, 10000);
+        client.connectToDaemon();
+        QTRY_VERIFY(client.daemonReachable());
+        const auto created = call(client, DaemonClient::Command::session_create,
+                                  {{"title", "Completion regression"}});
+        QVERIFY(created.ok);
+        DaemonClient observer(fixture.path, deadlineMs, 10000);
+        desktop::DesktopRuntimeClient ui(observer);
+        ui.setPreferredSession(created.payload.value("session_id").toString());
+        observer.connectToDaemon();
+        QTRY_VERIFY(ui.ready());
+        QSignalSpy events(&client, &DaemonClient::eventReceived);
+        QVERIFY(ui.dispatch(
+                      "runAgentRequest",
+                      {QStringLiteral(
+                          "Update allowed.txt with fixture bytes and independently read it back.")})
+                    .toBool());
+        QTRY_VERIFY(!ui.runId().isEmpty());
+        const auto runId = ui.runId();
+        QTRY_VERIFY(!wireEvent(events, "approval.requested").isEmpty() || terminalCount(events));
+        const auto approval = wireEvent(events, "approval.requested");
+        if (!approval.isEmpty()) {
+            QVERIFY(call(client, DaemonClient::Command::approval_respond,
+                         {{"run_id", runId},
+                          {"approval_id", approval.value("approval_id")},
+                          {"allow", true}})
+                        .ok);
+        }
+        QTRY_COMPARE_WITH_TIMEOUT(terminalCount(events), 1, 10000);
+        QFile bytes(fixture.artifact);
+        if (mode == "verification-failed") {
+            QVERIFY(!bytes.exists());
+        } else {
+            QVERIFY(bytes.open(QIODevice::ReadOnly));
+            QCOMPARE(bytes.readAll(), (mode == "wrong-content" || mode == "omitted-action")
+                                          ? original
+                                          : replacement);
+        }
+        QFile unchanged(QDir(fixture.root).filePath("unchanged.txt"));
+        QVERIFY(unchanged.open(QIODevice::ReadOnly));
+        QCOMPARE(unchanged.readAll(), original);
+        const auto state = fixture.state();
+        QCOMPARE(state.steps.size(), mode == "omitted-action"
+                                         ? 1
+                                         : 2); // No repeated mutation or unnecessary read/retry.
+        const bool completed = mode != "malformed-final" && mode != "wrong-content" &&
+                               mode != "verification-failed" && mode != "context-final" &&
+                               mode != "omitted-action";
+        QCOMPARE(state.phase,
+                 completed ? core::AgentLoopPhase::Completed : core::AgentLoopPhase::Failed);
+        const auto terminal = wireEvent(events, completed ? "run.completed" : "run.failed");
+        QCOMPARE(
+            terminal.value("completion_status").toString(),
+            completed ? QString("Completed")
+            : (mode == "wrong-content" || mode == "verification-failed" || mode == "omitted-action")
+                ? QString("Verification Failed")
+                : QString("Completion Indeterminate"));
+        QTRY_COMPARE(ui.value("agentCompletionStatus").toString(),
+                     terminal.value("completion_status").toString());
+        QVERIFY(fixture.controller->agentRunStore());
+        const auto runs = fixture.controller->agentRunStore()->recentRuns(1);
+        QVERIFY(!runs.isEmpty());
+        QCOMPARE(runs.first().state, core::agentLoopPhaseName(state.phase));
+        QCOMPARE(runs.first().terminalReason, core::agentTerminalReasonName(state.terminalReason));
+        if (completed)
+            QTRY_COMPARE(ui.value("lastAgentResponse").toString(), state.finalAnswer);
+        if (mode == "wrong-content" || mode == "verification-failed" || mode == "omitted-action") {
+            QCOMPARE(state.terminalReason, core::AgentTerminalReason::VerificationFailed);
+            QVERIFY(state.finalAnswer.isEmpty());
+        } else if (!completed) {
+            QCOMPARE(state.terminalReason,
+                     mode == "context-final" ? core::AgentTerminalReason::ContextBudgetExhausted
+                                             : core::AgentTerminalReason::CompletionIndeterminate);
+            QVERIFY(fixture.controller->lastAgentResponse().contains("Completion Indeterminate"));
+            QVERIFY(!fixture.controller->lastAgentResponse().contains("Agent Task Failed"));
+        } else {
+            QVERIFY(!state.finalAnswer.isEmpty());
+            QCOMPARE(state.finalGrounding.mode, core::GroundingMode::Verified);
         }
     }
     void providerDrivenChain_data() {
