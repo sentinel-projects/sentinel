@@ -40,6 +40,12 @@ jobs:
         run: cmake --preset tests
       - name: Build
         run: cmake --build --preset tests
+      - name: Verify packaged bundle layout
+        run: |
+          set -euo pipefail
+          python3 tools/packaging/check_packaging_consistency.py
+          cmake --install build/tests --prefix "$RUNNER_TEMP/sentinel-install"
+          test -x "$RUNNER_TEMP/sentinel-install/sentinel-desktop.app/Contents/Helpers/sentinel-daemon"
       - name: Test
         env:
           QT_QPA_PLATFORM: offscreen

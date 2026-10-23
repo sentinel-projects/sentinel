@@ -8,6 +8,7 @@ echo "=== Sentinel macOS Uninstaller ==="
 # 1. Terminate running process
 echo "Stopping Sentinel process..."
 pkill -x "sentinel-desktop" || true
+pkill -x "sentinel-daemon" || true
 
 # 2. Remove App Bundle (current and pre-rename bundle names)
 for bundle in "/Applications/Sentinel.app" "/Applications/Sentinel Desktop.app" \

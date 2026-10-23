@@ -116,6 +116,7 @@ jobs:
           set -euo pipefail
           app='dist/Sentinel.app'
           mv dist/sentinel-desktop.app "$app"
+          test -x "$app/Contents/Helpers/sentinel-daemon"
           signing_identity='-'
           keychain=''
           cert=''
@@ -135,8 +136,10 @@ jobs:
             test -n "$signing_identity"
           fi
           macdeployqt "$app" -qmldir=ui/qml -codesign="$signing_identity"
+          python3 tools/packaging/fix_macos_helper_rpath.py \
+            "$app/Contents/Helpers/sentinel-daemon" "$app/Contents/Frameworks"
           if [ "$signing_identity" != '-' ]; then
-            codesign --force --deep --options runtime --entitlements resources/platform/macos/sentinel.entitlements --sign "$signing_identity" "$app"
+            codesign --force --deep --options runtime --entitlements packaging/macos/bundle/sentinel.entitlements --sign "$signing_identity" "$app"
           fi
           brew install create-dmg
           mkdir artifacts

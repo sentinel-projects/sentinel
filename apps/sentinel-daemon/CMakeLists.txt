@@ -46,11 +46,24 @@ include(GNUInstallDirs)
 set(SENTINEL_DAEMON_INSTALL_DIR "${CMAKE_INSTALL_BINDIR}")
 if(WIN32)
     set(SENTINEL_DAEMON_INSTALL_DIR ".")
+elseif(APPLE)
+    # A drag-to-Applications install only copies the app bundle. Keep the
+    # daemon inside it so the desktop can launch it and uninstalling the app
+    # also removes the helper.
+    set(SENTINEL_DAEMON_INSTALL_DIR "sentinel-desktop.app/Contents/Helpers")
 endif()
 
 install(TARGETS sentinel-daemon
     RUNTIME DESTINATION ${SENTINEL_DAEMON_INSTALL_DIR}
 )
+
+if(APPLE)
+    # The helper lives in Contents/Helpers and must resolve Qt from the app's
+    # Frameworks directory rather than the build machine's Qt installation.
+    set_target_properties(sentinel-daemon PROPERTIES
+        INSTALL_RPATH "@executable_path/../Frameworks"
+    )
+endif()
 
 qt_add_resources(sentinel_daemon_service model_catalog
     PREFIX "/sentinel"
