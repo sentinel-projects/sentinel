@@ -1,6 +1,9 @@
 # Portable live coding-agent acceptance test
 
-Run `live_coding.py` from any directory with Python 3.10+, Git, a built/deployed Sentinel daemon, and an installed model exposed by a local LM Studio server. This is a test helper, not a Python application backend. It does not load/download models or change the real Sentinel profile.
+Run `live_coding.py` from any directory with Python 3.10+, Git, a built/deployed Sentinel daemon, and an installed model exposed by a local server. `--provider` accepts `lm-studio`
+(the default), `ollama` or `llama-cpp-server`; `--endpoint` defaults to that provider's
+standard loopback address. The selected provider identity is preserved throughout discovery
+and generation. This is a test helper, not a Python application backend. It does not load/download models or change the real Sentinel profile.
 
 ```sh
 python tools/agent/live_coding.py --daemon build/tests/apps/sentinel-daemon/sentinel-daemon --model qwen/qwen3-4b-2507
@@ -31,3 +34,12 @@ python tools/analysis/check_personal_paths.py
 This scans Git-tracked and nonignored untracked files, including binary debug paths, for concrete user-home paths. It is a focused path check, not a full secrets/privacy audit. Generic placeholders and standard system prefixes remain valid.
 
 The independent verifier accepts only the fixture arithmetic AST, reconstructs it without comments or encoding cookies, and runs the trusted baseline test in a separate temporary directory. Unexpected model code is refused rather than executed outside the daemon sandbox. Fixture snapshots reject symlinks and do not dump unexpected files. Acceptance also checks that no other fixture source file changed.
+
+For a narrow mutation/read-back completion check, use `--completion-only`. It
+changes only the disposable `calc.py`, then independently checks its permitted AST
+and runs the trusted baseline test. The run must still produce `run.completed`.
+Example for an already running llama.cpp server:
+
+```sh
+python tools/agent/live_coding.py --daemon build/tests/apps/sentinel-daemon/sentinel-daemon --provider llama-cpp-server --model <loaded-model-id> --completion-only --timeout 300
+```
