@@ -3649,19 +3649,17 @@ private slots:
             // id is unknown to the classified intent and is rejected.
             QCOMPARE(state.phase, AgentLoopPhase::Failed);
             QVERIFY(state.finalAnswer.isEmpty());
-            QCOMPARE(state.terminalReason, AgentTerminalReason::UnableToComplete);
+            QCOMPARE(state.terminalReason, AgentTerminalReason::VerificationFailed);
             QVERIFY2(state.abortReason.contains(QStringLiteral("unknown claim")),
                      qPrintable(state.abortReason));
             QCOMPARE(fixture.handler.counts.value(QStringLiteral("read-file"), 0), 2);
-        } else { // without-reread
-            QCOMPARE(state.phase, AgentLoopPhase::Failed);
-            QVERIFY(state.finalAnswer.isEmpty());
-            QCOMPARE(state.terminalReason, AgentTerminalReason::UnableToComplete);
-            QVERIFY2(state.abortReason.contains(QStringLiteral(
-                         "Observe the affected filesystem state after the mutation")),
-                     qPrintable(state.abortReason));
-            QCOMPARE(fixture.handler.counts.value(QStringLiteral("read-file"), 0), 1);
-            QCOMPARE(state.rejectedFinalAnswers, 2);
+        } else { // The missing read-back is recovered through the real gateway.
+            QVERIFY2(state.phase == AgentLoopPhase::Completed,
+                     qPrintable(terminalFailureDescription(state)));
+            QVERIFY(!state.finalAnswer.isEmpty());
+            QCOMPARE(fixture.handler.counts.value(QStringLiteral("read-file"), 0), 2);
+            QCOMPARE(state.rejectedFinalAnswers, 1);
+            QCOMPARE(state.finalVerificationRecoveries, 1);
         }
     }
 

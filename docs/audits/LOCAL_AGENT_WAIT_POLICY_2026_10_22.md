@@ -13,4 +13,6 @@ Local planning uses the existing cancellable non-streaming request contract. It 
 - Regression cases cover LM Studio, Ollama, llama.cpp, local compatible, Cloud and unknown identities for both phases, including cancellation-token propagation and output budgets.
 - Existing real HTTP zero-timeout cancellation test remains in the full suite.
 - Tests preset configure/build and Release daemon/Desktop build passed.
-- Final full-suite and native LM Studio evidence: pending.
+- Full-suite integration validation is recorded in
+  [pending work integration](PENDING_WORK_INTEGRATION_2026_10_23.md).
+  Native LM Studio evidence remains pending; fixture success is not live acceptance.

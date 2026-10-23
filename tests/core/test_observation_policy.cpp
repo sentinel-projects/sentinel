@@ -35,6 +35,7 @@ public:
             --failures;
             ChatProviderReply result;
             result.category = ChatProviderErrorCategory::RequestRejected;
+            result.completion = ResponseCompletion::Truncated;
             result.errorMessage = QStringLiteral(
                 "Provider 'lm-studio': Provider output limit reached; classification is "
                 "indeterminate.");
@@ -624,7 +625,7 @@ private slots:
             QCOMPARE(intent.error, QStringLiteral("Cancelled"));
         }
     }
-    void classificationRetriesOnceAfterProviderFailure() {
+    void classificationRetriesOnceAfterTypedTruncation() {
         FixedReplyProvider provider;
         provider.failures = 1;
         provider.reply = QStringLiteral("{\"requirements\":[]}");
@@ -641,7 +642,7 @@ private slots:
         const auto intent = policy.classify("List the workspace", {}, {});
         QCOMPARE(provider.calls, 2);
         QVERIFY(intent.indeterminate);
-        QVERIFY(intent.error.contains(QStringLiteral("output limit reached")));
+        QCOMPARE(intent.failure, ObservationClassificationFailure::OutputTruncated);
     }
     void cancelledClassificationNeverRetries() {
         FixedReplyProvider provider;
