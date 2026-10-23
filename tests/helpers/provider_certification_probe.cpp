@@ -104,9 +104,18 @@ int main(int argc, char** argv) {
     ProviderDiscoveryOutcome discovery;
     QList<OllamaModelSummary> catalog;
     if (provider == "llama-cpp-server") {
-        models.setLlamaCppEndpoint("http://127.0.0.1:8081");
-        catalog =
-            fetchLlamaCppModels(QUrl("http://127.0.0.1:8081/v1/models"), 4000, {}, &discovery);
+        const QUrl endpoint(
+            qEnvironmentVariable("SENTINEL_CERTIFICATION_LOCAL_ENDPOINT", "http://127.0.0.1:8081"));
+        if (!endpoint.isValid() || (endpoint.scheme() != "http" && endpoint.scheme() != "https") ||
+            !QStringList{"127.0.0.1", "localhost", "::1"}.contains(endpoint.host()) ||
+            !endpoint.userInfo().isEmpty() || endpoint.hasQuery() || endpoint.hasFragment()) {
+            report({{"configuration_error",
+                     "Local certification requires an explicit clean loopback endpoint"}});
+            return 2;
+        }
+        models.setLlamaCppEndpoint(endpoint.toString());
+        catalog = fetchLlamaCppModels(provider::openAiCompatibleModelsUrl(endpoint), 4000, {},
+                                      &discovery);
     } else if (provider == "gemini") {
         report({{"credential_present", !settings.geminiApiKey().isEmpty()}});
         catalog = fetchGeminiCloudModels(settings.geminiApiKey(), 15000, nullptr, {}, &discovery);

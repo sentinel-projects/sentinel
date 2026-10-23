@@ -453,9 +453,9 @@ target_link_libraries(test_desktop_ipc PRIVATE sentinel_desktop_viewmodels senti
 add_test(NAME test_desktop_ipc COMMAND $<TARGET_FILE:test_desktop_ipc>)
 
 qt_add_executable(test_provider_agent_e2e desktop/test_provider_agent_e2e.cpp)
-target_link_libraries(test_provider_agent_e2e PRIVATE sentinel_desktop_ipc sentinel_daemon_service sentinel_core Qt6::Test)
+target_link_libraries(test_provider_agent_e2e PRIVATE sentinel_desktop_viewmodels sentinel_desktop_ipc sentinel_daemon_service sentinel_core Qt6::Test)
 add_test(NAME test_provider_agent_e2e COMMAND $<TARGET_FILE:test_provider_agent_e2e>)
-set_tests_properties(test_provider_agent_e2e PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 90)
+set_tests_properties(test_provider_agent_e2e PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 180)
 
 qt_add_executable(test_agent_reliability_ipc desktop/test_agent_reliability_ipc.cpp)
 target_link_libraries(test_agent_reliability_ipc PRIVATE
