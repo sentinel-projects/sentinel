@@ -212,13 +212,13 @@ ApprovalRequested {run_id: String, session_id: String, approval_id: String, tool
 #[serde(rename = "tool.result")]
 ToolResult {run_id: String, session_id: String, tool: String, detail: String, risk: u64, resources: Vec<serde_json::Value>, #[serde(default)] server_generation: Option<String>, #[serde(default)] event_sequence: Option<u64>, #[serde(default)] tool_call_id: Option<String>, #[serde(default)] timestamp: Option<String>, #[serde(default)] state: Option<String>, #[serde(default)] duration_ms: Option<u64>},
 #[serde(rename = "run.completed")]
-RunCompleted {run_id: String, session_id: String, text: String, state: String, #[serde(default)] server_generation: Option<String>, #[serde(default)] event_sequence: Option<u64>},
+RunCompleted {run_id: String, session_id: String, text: String, state: String, #[serde(default)] server_generation: Option<String>, #[serde(default)] event_sequence: Option<u64>, #[serde(default)] completion_status: Option<String>, #[serde(default)] terminal_reason: Option<String>},
 #[serde(rename = "run.failed")]
-RunFailed {run_id: String, session_id: String, text: String, state: String, #[serde(default)] server_generation: Option<String>, #[serde(default)] event_sequence: Option<u64>},
+RunFailed {run_id: String, session_id: String, text: String, state: String, #[serde(default)] server_generation: Option<String>, #[serde(default)] event_sequence: Option<u64>, #[serde(default)] completion_status: Option<String>, #[serde(default)] terminal_reason: Option<String>},
 #[serde(rename = "run.cancelled")]
-RunCancelled {run_id: String, session_id: String, text: String, state: String, #[serde(default)] server_generation: Option<String>, #[serde(default)] event_sequence: Option<u64>},
+RunCancelled {run_id: String, session_id: String, text: String, state: String, #[serde(default)] server_generation: Option<String>, #[serde(default)] event_sequence: Option<u64>, #[serde(default)] completion_status: Option<String>, #[serde(default)] terminal_reason: Option<String>},
 #[serde(rename = "agent.activity")]
-AgentActivity {run_id: String, session_id: String, activity: String, step: u64, #[serde(default)] server_generation: Option<String>, #[serde(default)] event_sequence: Option<u64>, #[serde(default)] decision: Option<String>},
+AgentActivity {run_id: String, session_id: String, activity: String, step: u64, #[serde(default)] server_generation: Option<String>, #[serde(default)] event_sequence: Option<u64>, #[serde(default)] decision: Option<String>, #[serde(default)] completion_status: Option<String>},
 #[serde(rename = "tool.running")]
 ToolRunning {run_id: String, session_id: String, tool: String, detail: String, risk: u64, resources: Vec<serde_json::Value>, #[serde(default)] server_generation: Option<String>, #[serde(default)] event_sequence: Option<u64>, #[serde(default)] tool_call_id: Option<String>, #[serde(default)] timestamp: Option<String>, #[serde(default)] state: Option<String>},
 #[serde(rename = "subagent.activity")]

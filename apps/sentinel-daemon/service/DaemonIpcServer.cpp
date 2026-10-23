@@ -2025,6 +2025,9 @@ void DaemonIpcServer::onAgentEvent(const core::AgentEvent& e) {
                                              {"utc", e.timestamp.toString(Qt::ISODateWithMs)}})
                        .toJson(QJsonDocument::Compact);
             QJsonObject activity{{"activity", names.at(index)}, {"step", qMax(0, e.stepIndex)}};
+            if (const auto* state = std::get_if<core::AgentStateEvent>(&e.payload);
+                state && !state->completionStatus.isEmpty())
+                activity.insert("completion_status", state->completionStatus);
             if (e.type == AgentEventType::ToolApprovalResolved) {
                 if (const auto* decision = std::get_if<core::AgentTextEvent>(&e.payload)) {
                     if (decision->text == QLatin1String("Approved") ||
@@ -2100,19 +2103,30 @@ void DaemonIpcServer::onAgentEvent(const core::AgentEvent& e) {
         m_state = e.type == AgentEventType::AgentCompleted   ? "completed"
                   : e.type == AgentEventType::AgentCancelled ? "cancelled"
                                                              : "failed";
+        const auto state = m_controller->agentRuntime()->sessionState(e.sessionId);
+        const auto publishTerminal = [&](QJsonObject payload) {
+            const auto phase =
+                e.type == AgentEventType::AgentCompleted   ? QStringLiteral("Completed")
+                : e.type == AgentEventType::AgentCancelled ? QStringLiteral("Cancelled")
+                                                           : QStringLiteral("Failed");
+            payload.insert("terminal_reason", core::agentTerminalReasonName(state.terminalReason));
+            payload.insert("completion_status",
+                           core::agentCompletionStatusName(
+                               phase, core::agentTerminalReasonName(state.terminalReason)));
+            publishEvent("run." + m_state, payload);
+        };
         if (const auto* result = std::get_if<core::AgentRunEvent>(&e.payload)) {
             m_outputTruncated = result->finalAnswer.size() > 65536;
             m_output = result->finalAnswer.left(65536);
-            publishEvent("run." + m_state,
-                         {{"text", result->finalAnswer}, {"detail", result->abortReason}});
+            publishTerminal({{"text", result->finalAnswer}, {"detail", result->abortReason}});
         } else if (const auto* text = std::get_if<core::AgentTextEvent>(&e.payload)) {
             const bool completed = e.type == AgentEventType::AgentCompleted;
             m_outputTruncated = completed && text->text.size() > 65536;
             m_output = completed ? text->text.left(65536) : QString{};
-            publishEvent("run." + m_state, {{"text", completed ? text->text : QString{}},
-                                            {"detail", completed ? QString{} : text->text}});
+            publishTerminal({{"text", completed ? text->text : QString{}},
+                             {"detail", completed ? QString{} : text->text}});
         } else {
-            publishEvent("run." + m_state, {{"detail", "Runtime terminal payload unavailable"}});
+            publishTerminal({{"detail", "Runtime terminal payload unavailable"}});
         }
         if (m_state == "completed")
             scheduleConversationTitle();

@@ -5099,20 +5099,27 @@
     },
     "run.completed": {
       "server_generation": "string",
-      "event_sequence": "integer"
+      "event_sequence": "integer",
+      "completion_status": "string",
+      "terminal_reason": "string"
     },
     "run.failed": {
       "server_generation": "string",
-      "event_sequence": "integer"
+      "event_sequence": "integer",
+      "completion_status": "string",
+      "terminal_reason": "string"
     },
     "run.cancelled": {
       "server_generation": "string",
-      "event_sequence": "integer"
+      "event_sequence": "integer",
+      "completion_status": "string",
+      "terminal_reason": "string"
     },
     "agent.activity": {
       "server_generation": "string",
       "event_sequence": "integer",
-      "decision": "string"
+      "decision": "string",
+      "completion_status": "string"
     },
     "tool.running": {
       "server_generation": "string",
