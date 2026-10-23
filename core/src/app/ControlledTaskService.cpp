@@ -297,7 +297,10 @@ void ControlledTaskService::onAgentEvent(const AgentEvent& event) {
                                               : run->abortReason);
             current = domain_.applyRuntimeState(current, agentLoopPhaseName(run->phase), detail,
                                                 event.sessionId, event.turnId);
-            if (run->phase != AgentLoopPhase::AwaitingApproval) {
+            current.completionStatus = agentCompletionStatusName(
+                agentLoopPhaseName(run->phase), agentTerminalReasonName(run->terminalReason));
+            if (run->phase != AgentLoopPhase::AwaitingApproval &&
+                run->phase != AgentLoopPhase::Running && run->phase != AgentLoopPhase::Cancelling) {
                 sessionByTask_.remove(taskId);
                 taskBySession_.remove(event.sessionId);
             }
@@ -306,6 +309,8 @@ void ControlledTaskService::onAgentEvent(const AgentEvent& event) {
             if (state->phase == AgentLoopPhase::Running) {
                 current = domain_.applyRuntimeState(current, QStringLiteral("Running"), {},
                                                     event.sessionId, event.turnId);
+                if (!state->completionStatus.isEmpty())
+                    current.completionStatus = state->completionStatus;
                 upsert(std::move(current));
             }
         }

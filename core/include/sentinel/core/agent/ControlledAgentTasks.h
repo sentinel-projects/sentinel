@@ -52,6 +52,7 @@ struct ControlledAgentTask {
     QList<ControlledAgentStep> steps;
     QList<ControlledAgentApproval> approvals;
     QString resultSummary;
+    QString completionStatus;
     ControlledTaskState state = ControlledTaskState::Draft;
     int currentStepIndex = -1;
 };

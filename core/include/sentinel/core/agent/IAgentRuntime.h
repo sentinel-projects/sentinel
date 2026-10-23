@@ -91,6 +91,9 @@ enum class AgentRuntimeErrorCode {
     CapabilityUnavailable,
     SecurityDenied,
     IterationLimit,
+    CompletionIndeterminate,
+    VerificationFailed,
+    Blocked,
 };
 
 struct AgentRuntimeError {

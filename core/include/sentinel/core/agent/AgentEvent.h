@@ -36,6 +36,7 @@ enum class AgentEventType {
 
 struct AgentStateEvent {
     AgentLoopPhase phase = AgentLoopPhase::Idle;
+    QString completionStatus;
 };
 
 struct AgentTextEvent {

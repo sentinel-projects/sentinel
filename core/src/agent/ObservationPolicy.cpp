@@ -161,6 +161,44 @@ bool matches(const ObservationRequirement& requirement, const EvidenceRecord& ev
            resourceMatches(requirement, evidence);
 }
 
+// A narrow consistency floor for explicit file imperatives, not a planner.
+// This creates only a proof obligation: no call, command, grant or path access.
+// Semantic/ambiguous requests remain with the classifier. Negated actions and
+// questions cannot silently acquire an operation requirement through this path.
+QList<ObservationRequirement> explicitFileActions(const QString& goal, const QString& workspace,
+                                                  const QList<ObservationRequirement>& classified) {
+    QList<ObservationRequirement> result;
+    static const QRegularExpression imperative(
+        QStringLiteral(
+            R"((?:^|[.!]\s+|,\s*)(?:please\s+)?(?:create|write|edit|modify|change|update|delete|remove|move|rename)\s+(?:only\s+)?([^\n;!?]{1,1024}))"),
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression path(QStringLiteral(
+        R"((~/[^\s,;!?]+|\./[^\s,;!?]+|/[a-zA-Z0-9_][^\s,;!?]+|[a-zA-Z0-9_-]+\.[a-zA-Z0-9]{1,12})(?=\s|$|[,;!?]))"));
+    auto matches = imperative.globalMatch(goal.left(8192));
+    while (matches.hasNext() && result.size() < 4) {
+        const auto action = matches.next();
+        const auto concrete = path.match(action.captured(1));
+        if (!concrete.hasMatch() || concrete.capturedStart() != 0)
+            continue;
+        auto target = concrete.captured(1);
+        // Reuse an unambiguous classifier-resolved named-folder path rather than
+        // inventing a workspace location for a bare filename.
+        if (!target.contains('/')) {
+            QSet<QString> candidates;
+            for (const auto& requirement : classified)
+                if (QFileInfo(requirement.resourceHint).fileName() == target)
+                    candidates.insert(requirement.resourceHint);
+            if (candidates.size() == 1)
+                target = *candidates.cbegin();
+        }
+        target = ExternalDirectoryGate{}.resolvePath(
+            target, workspace.isEmpty() ? QDir::currentPath() : workspace);
+        result.append({ObservationDomain::FileSystem, target, EvidenceFreshness::TurnScoped,
+                       ObservationPurpose::Operate});
+    }
+    return result;
+}
+
 QList<ObservationRequirement> explicitResourceQuestions(const QString& goal) {
     QList<ObservationRequirement> requirements;
     // Concrete path/URL syntax is an independent runtime signal. Requiring a
@@ -583,6 +621,28 @@ ObservationIntent ObservationIntentPolicy::classify(const QString& goal,
             }
         }
         intent.requirements.append(std::move(requirement));
+    }
+    const auto workspace =
+        rootOffset < 0 ? QString{} : conversationContext.mid(rootOffset + marker.size()).trimmed();
+    for (const auto& action : explicitFileActions(goal, workspace, intent.requirements)) {
+        const bool covered = std::any_of(
+            intent.requirements.cbegin(), intent.requirements.cend(), [&](const auto& requirement) {
+                return requirement.purpose == ObservationPurpose::Operate &&
+                       requirement.domain == action.domain &&
+                       normalizedResource(requirement.resourceHint, requirement.domain) ==
+                           normalizedResource(action.resourceHint, action.domain);
+            });
+        if (!covered) {
+            if (intent.requirements.size() >= 8) {
+                intent.indeterminate = true;
+                intent.failure = ObservationClassificationFailure::ContractViolation;
+                intent.error = QStringLiteral(
+                    "Explicit file action cannot fit the bounded requirement contract.");
+                intent.requirements.clear();
+                return intent;
+            }
+            intent.requirements.append(action);
+        }
     }
     for (const auto& structural : explicitResourceQuestions(goal)) {
         bool alreadyRequired = false;

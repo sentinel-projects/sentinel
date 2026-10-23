@@ -12,6 +12,7 @@ inline QJsonObject encode(const StoredAgentRun& value) {
     o.insert("parentToolCallId", value.parentToolCallId.left(2048));
     o.insert("runType", value.runType.left(2048));
     o.insert("state", value.state.left(2048));
+    o.insert("completionStatus", agentCompletionStatusName(value.state, value.terminalReason));
     o.insert("providerId", value.providerId.left(2048));
     o.insert("modelId", value.modelId.left(2048));
     o.insert("goalSummary", value.goalSummary.left(2048));

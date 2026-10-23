@@ -148,6 +148,7 @@ QJsonObject taskToJson(const ControlledAgentTask& task) {
     object.insert(QStringLiteral("steps"), steps);
     object.insert(QStringLiteral("approvals"), approvals);
     object.insert(QStringLiteral("resultSummary"), task.resultSummary);
+    object.insert(QStringLiteral("completionStatus"), task.completionStatus);
     object.insert(QStringLiteral("state"), controlledTaskStateName(task.state));
     object.insert(QStringLiteral("currentStepIndex"), task.currentStepIndex);
     return object;
@@ -172,6 +173,7 @@ ControlledAgentTask taskFromJson(const QJsonObject& object) {
         task.approvals.append(approvalFromJson(value.toObject()));
     }
     task.resultSummary = object.value(QStringLiteral("resultSummary")).toString();
+    task.completionStatus = object.value(QStringLiteral("completionStatus")).toString();
     task.state = controlledTaskStateFromName(object.value(QStringLiteral("state")).toString());
     task.currentStepIndex = object.value(QStringLiteral("currentStepIndex")).toInt(-1);
     return task;
@@ -234,7 +236,11 @@ QString controlledAgentStepSummary(const ControlledAgentStep& step) {
 QString controlledAgentTaskSummary(const ControlledAgentTask& task) {
     return QStringLiteral("%1 [%2] - %3 / %4 steps / workspace %5")
         .arg(task.title, controlledTaskStateName(task.state))
-        .arg(task.resultSummary.isEmpty() ? task.description : task.resultSummary)
+        .arg(task.resultSummary.isEmpty()
+                 ? task.description
+                 : (task.completionStatus.isEmpty()
+                        ? task.resultSummary
+                        : task.completionStatus + ": " + task.resultSummary))
         .arg(task.steps.size())
         .arg(task.workspaceId);
 }
@@ -476,6 +482,7 @@ ControlledAgentTask ControlledAgentTaskService::applyRuntimeState(
     const QString& sessionId, const QString& runId) const {
     if (task.id.isEmpty())
         return task;
+    task.completionStatus = state;
     task.runtimeSessionId = sessionId;
     if (!runId.isEmpty())
         task.runtimeRunId = runId;
@@ -485,7 +492,7 @@ ControlledAgentTask ControlledAgentTaskService::applyRuntimeState(
                                  ? QStringLiteral("Agent approval is required to continue.")
                                  : detail;
     } else if (state == QLatin1String("Completed") && !detail.trimmed().isEmpty()) {
-        task.state = ControlledTaskState::Cancelled;
+        task.state = ControlledTaskState::Completed;
         task.resultSummary = detail;
     } else if (state == QLatin1String("Cancelled")) {
         task.state = ControlledTaskState::Cancelled;

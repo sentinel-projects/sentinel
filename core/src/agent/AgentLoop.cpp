@@ -241,23 +241,66 @@ QString classificationAbortMessage(const ObservationIntent& intent) {
 // Keeping one implementation means the read-back recovery aims at precisely the
 // evidence that is missing rather than at an approximation of it.
 bool mutationConfirmedBy(const AgentLoopState& state, const EvidenceRecord& operation) {
+    const auto resource =
+        normalizedObservationResource(operation.resource, ObservationDomain::FileSystem);
+    // Only the last approved mutation determines this resource's final revision.
+    // An earlier receipt is not a second requirement to restore an obsolete value.
+    if (std::any_of(state.evidence.cbegin(), state.evidence.cend(), [&](const auto& later) {
+            return later.stepIndex > operation.stepIndex &&
+                   later.scope == EvidenceScope::Operation &&
+                   later.outcome == EvidenceOutcome::Verified &&
+                   normalizedObservationResource(later.resource, ObservationDomain::FileSystem) ==
+                       resource;
+        }))
+        return true;
     return std::any_of(
         state.evidence.cbegin(), state.evidence.cend(), [&](const EvidenceRecord& observation) {
             if (observation.stepIndex <= operation.stepIndex ||
                 observation.scope == EvidenceScope::Operation ||
                 (observation.domain != ObservationDomain::FileSystem &&
-                 observation.domain != ObservationDomain::Workspace))
+                 observation.domain != ObservationDomain::Workspace) ||
+                (!operation.resource.isEmpty() &&
+                 normalizedObservationResource(observation.resource,
+                                               ObservationDomain::FileSystem) != resource))
                 return false;
-            const bool sameResource =
-                operation.resource.isEmpty() ||
-                normalizedObservationResource(operation.resource, ObservationDomain::FileSystem) ==
-                    normalizedObservationResource(observation.resource,
-                                                  ObservationDomain::FileSystem);
-            return sameResource && (observation.outcome == EvidenceOutcome::Verified ||
-                                    (observation.outcome == EvidenceOutcome::Failed &&
-                                     observation.structuredObservation &&
-                                     observation.structuredObservation->kind ==
-                                         StructuredObservationKind::FileSystemFailure));
+            if (observation.outcome == EvidenceOutcome::Failed) {
+                // Absence is a verified deletion outcome, never proof that a write succeeded.
+                return (operation.toolId == QLatin1String("delete-file") ||
+                        operation.toolId == QLatin1String("move-file")) &&
+                       observation.structuredObservation &&
+                       observation.structuredObservation->kind ==
+                           StructuredObservationKind::FileSystemFailure &&
+                       observation.structuredObservation->fileSystemFailure ==
+                           FileSystemFailure::NotFound;
+            }
+            if (observation.outcome != EvidenceOutcome::Verified)
+                return false;
+            if (operation.toolId == QLatin1String("write-file") ||
+                operation.toolId == QLatin1String("edit-file")) {
+                if (!observation.structuredObservation ||
+                    observation.structuredObservation->kind !=
+                        StructuredObservationKind::FileContent)
+                    return false; // Presence alone cannot verify a file write.
+                const auto& data = observation.structuredObservation->data;
+                if (!data.value("complete").toBool() || data.value("truncated").toBool() ||
+                    data.value("cancelled").toBool())
+                    return false;
+                if (operation.toolId == QLatin1String("write-file")) {
+                    const auto step = std::find_if(
+                        state.steps.cbegin(), state.steps.cend(),
+                        [&](const auto& step) { return step.index == operation.stepIndex; });
+                    if (step == state.steps.cend())
+                        return false;
+                    const auto content = std::find_if(
+                        step->arguments.cbegin(), step->arguments.cend(), [](const auto& argument) {
+                            return argument.id == QLatin1String("content");
+                        });
+                    if (content == step->arguments.cend() ||
+                        data.value("content").toString() != content->value)
+                        return false;
+                }
+            }
+            return true;
         });
 }
 
@@ -487,6 +530,24 @@ bool repeatsUnchangedStep(const AgentLoopState& state, const ToolInvocationPlan&
         if (it == state.steps.crbegin()) {
             return true;
         }
+        // An identical successful mutation followed by its independent read-back
+        // is not productive work. Ask for a final decision without replaying it.
+        if (it->succeeded &&
+            std::any_of(state.evidence.cbegin(), state.evidence.cend(), [&](const auto& item) {
+                return item.stepIndex == it->index && item.scope == EvidenceScope::Operation &&
+                       item.outcome == EvidenceOutcome::Verified &&
+                       mutationConfirmedBy(state, item) &&
+                       !std::any_of(
+                           state.evidence.cbegin(), state.evidence.cend(), [&](const auto& later) {
+                               return later.stepIndex > item.stepIndex &&
+                                      later.scope == EvidenceScope::Operation &&
+                                      normalizedObservationResource(
+                                          later.resource, ObservationDomain::FileSystem) ==
+                                          normalizedObservationResource(
+                                              item.resource, ObservationDomain::FileSystem);
+                           });
+            }))
+            return true;
         // A stale read is legitimately repeatable after mutation. A still-current
         // successful observation/command must not be executed again just to finish.
         if (it->succeeded &&
@@ -982,7 +1043,7 @@ void AgentLoop::advanceAsync() {
         qMax(0, static_cast<int>(asyncState_.steps.size()) - asyncState_.blockedSteps);
     if (asyncState_.blockedSteps >= config_.maxBlockedSteps) {
         asyncState_.phase = AgentLoopPhase::Failed;
-        asyncState_.terminalReason = AgentTerminalReason::UnableToComplete;
+        asyncState_.terminalReason = AgentTerminalReason::Blocked;
         asyncState_.abortReason =
             QStringLiteral("Too many blocked tool requests (%1). Review the tool contract and "
                            "choose a permitted action.")
@@ -992,7 +1053,7 @@ void AgentLoop::advanceAsync() {
     }
     if (asyncState_.consecutiveBlockedSteps >= config_.maxConsecutiveBlockedSteps) {
         asyncState_.phase = AgentLoopPhase::Failed;
-        asyncState_.terminalReason = AgentTerminalReason::UnableToComplete;
+        asyncState_.terminalReason = AgentTerminalReason::Blocked;
         asyncState_.abortReason =
             QStringLiteral("Too many consecutive blocked tool requests (%1). The planner did not "
                            "recover after the previous rejection; inspect the last observation and "
@@ -1001,14 +1062,7 @@ void AgentLoop::advanceAsync() {
         completeAsync();
         return;
     }
-    if (productiveSteps >= config_.maxIterations) {
-        asyncState_.phase = AgentLoopPhase::Failed;
-        asyncState_.terminalReason = AgentTerminalReason::IterationLimit;
-        asyncState_.abortReason = QStringLiteral("Iteration limit reached (%1 productive steps).")
-                                      .arg(config_.maxIterations);
-        completeAsync();
-        return;
-    }
+
     const int stepIndex = asyncState_.steps.size() + 1;
     if (planningCallback_)
         planningCallback_(stepIndex, true);
@@ -1065,6 +1119,15 @@ void AgentLoop::advanceAsync() {
         completeAsync();
         return;
     }
+    if (productiveSteps >= config_.maxIterations) {
+        asyncState_.phase = AgentLoopPhase::Failed;
+        asyncState_.terminalReason = AgentTerminalReason::IterationLimit;
+        asyncState_.abortReason = QStringLiteral("Iteration limit reached (%1 productive steps).")
+                                      .arg(config_.maxIterations);
+        completeAsync();
+        return;
+    }
+
     auto plan = planFromDecision(decision);
     if (std::any_of(plan.invocations.cbegin(), plan.invocations.cend(),
                     [this](const auto& call) { return !knownToolIds_.contains(call.toolId); })) {
@@ -1088,7 +1151,7 @@ void AgentLoop::advanceAsync() {
         }
         asyncState_.phase = AgentLoopPhase::Stuck;
         asyncState_.terminalReason = asyncState_.steps.last().succeeded
-                                         ? AgentTerminalReason::UnableToComplete
+                                         ? AgentTerminalReason::CompletionIndeterminate
                                          : AgentTerminalReason::ToolFailure;
         asyncState_.abortReason = QStringLiteral("Agent repeated the same tool call without a "
                                                  "changed argument or intervening observation.");
@@ -1464,7 +1527,7 @@ AgentLoopState AgentLoop::advance(AgentLoopState state) {
             qMax(0, static_cast<int>(state.steps.size()) - state.blockedSteps);
         if (state.blockedSteps >= config_.maxBlockedSteps) {
             state.phase = AgentLoopPhase::Failed;
-            state.terminalReason = AgentTerminalReason::UnableToComplete;
+            state.terminalReason = AgentTerminalReason::Blocked;
             state.abortReason =
                 QStringLiteral("Too many blocked tool requests (%1). Review the tool contract and "
                                "choose a permitted action.")
@@ -1473,19 +1536,12 @@ AgentLoopState AgentLoop::advance(AgentLoopState state) {
         }
         if (state.consecutiveBlockedSteps >= config_.maxConsecutiveBlockedSteps) {
             state.phase = AgentLoopPhase::Failed;
-            state.terminalReason = AgentTerminalReason::UnableToComplete;
+            state.terminalReason = AgentTerminalReason::Blocked;
             state.abortReason =
                 QStringLiteral("Too many consecutive blocked tool requests (%1). The planner did "
                                "not recover after the previous rejection; inspect the last "
                                "observation and choose a different permitted action.")
                     .arg(state.consecutiveBlockedSteps);
-            return state;
-        }
-        if (productiveSteps >= config_.maxIterations) {
-            state.phase = AgentLoopPhase::Failed;
-            state.terminalReason = AgentTerminalReason::IterationLimit;
-            state.abortReason = QStringLiteral("Iteration limit reached (%1 productive steps).")
-                                    .arg(config_.maxIterations);
             return state;
         }
 
@@ -1543,6 +1599,14 @@ AgentLoopState AgentLoop::advance(AgentLoopState state) {
             return state;
         }
 
+        if (productiveSteps >= config_.maxIterations) {
+            state.phase = AgentLoopPhase::Failed;
+            state.terminalReason = AgentTerminalReason::IterationLimit;
+            state.abortReason = QStringLiteral("Iteration limit reached (%1 productive steps).")
+                                    .arg(config_.maxIterations);
+            return state;
+        }
+
         const auto known = decision.toolBatch.isEmpty()
                                ? knownToolIds_.contains(decision.toolId)
                                : std::all_of(decision.toolBatch.cbegin(), decision.toolBatch.cend(),
@@ -1571,7 +1635,7 @@ AgentLoopState AgentLoop::advance(AgentLoopState state) {
             }
             state.phase = AgentLoopPhase::Stuck;
             state.terminalReason = state.steps.last().succeeded
-                                       ? AgentTerminalReason::UnableToComplete
+                                       ? AgentTerminalReason::CompletionIndeterminate
                                        : AgentTerminalReason::ToolFailure;
             state.abortReason = QStringLiteral("Agent repeated the same tool call without a "
                                                "changed argument or intervening observation.");
@@ -1847,9 +1911,9 @@ void AgentLoop::initializeObservationIntent(AgentLoopState& state) {
 
 bool AgentLoop::acceptFinalAnswer(AgentLoopState& state, const AgentStepDecision& decision) {
     state.lastFinalRejection = AgentStepFailure::None;
-    if (state.repeatedActionRecoveryPending) {
+    if (state.repeatedActionRecoveryPending && decision.grounding != GroundingMode::Verified) {
         state.phase = AgentLoopPhase::Stuck;
-        state.terminalReason = AgentTerminalReason::ToolFailure;
+        state.terminalReason = AgentTerminalReason::CompletionIndeterminate;
         state.abortReason =
             QStringLiteral("Agent repeated a previously executed action and did not choose a "
                            "different action after the bounded repair.");
@@ -1859,6 +1923,8 @@ bool AgentLoop::acceptFinalAnswer(AgentLoopState& state, const AgentStepDecision
         ClaimGroundingResolver::facts(state.observationIntent, state.evidence));
     auto gate = EvidencePolicy::evaluate(state.observationIntent, state.evidence,
                                          decision.grounding, decision.groundingDeclared);
+    if (!gate.accepted)
+        state.lastFinalRejection = AgentStepFailure::VerificationFailed;
     if (gate.accepted && !state.pendingApprovalPlan.invocations.isEmpty()) {
         gate.accepted = false;
         gate.repair = QStringLiteral("Required approval is still unresolved.");
@@ -1958,6 +2024,23 @@ bool AgentLoop::acceptFinalAnswer(AgentLoopState& state, const AgentStepDecision
     }
     traceStage(state, "final_gate", gate.accepted ? "accepted" : "rejected");
     if (gate.accepted) {
+        const bool mutated =
+            std::any_of(state.evidence.cbegin(), state.evidence.cend(), [](const auto& e) {
+                return e.scope == EvidenceScope::Operation &&
+                       e.outcome == EvidenceOutcome::Verified &&
+                       (e.domain == ObservationDomain::FileSystem ||
+                        e.domain == ObservationDomain::Workspace);
+            });
+        if (mutated && decision.grounding == GroundingMode::UnableToVerify) {
+            state.phase = AgentLoopPhase::Failed;
+            state.terminalReason = AgentTerminalReason::VerificationFailed;
+            state.abortReason =
+                gate.answerOverride.isEmpty() ? decision.answer : gate.answerOverride;
+            state.abortReason += QStringLiteral(
+                " Applied changes remain in place; task completion was not verified.");
+            return true;
+        }
+        state.repeatedActionRecoveryPending = false;
         state.finalGrounding = std::move(gate.grounding);
         state.finalClaims = decision.claims;
         state.finalAnswer = gate.answerOverride.isEmpty() ? decision.answer : gate.answerOverride;
@@ -1987,6 +2070,8 @@ bool AgentLoop::acceptFinalAnswer(AgentLoopState& state, const AgentStepDecision
                 .arg(gate.repair);
         return true;
     }
+    if (statusCallback_)
+        statusCallback_(QStringLiteral("Verification Pending"));
     planner_.setPlannerFeedback(gate.repair);
     return false;
 }

@@ -13,6 +13,14 @@ class ControlledAgentTasksTest final : public QObject {
     Q_OBJECT
 
 private slots:
+    void acceptedFinalStaysCompleted() {
+        ControlledAgentTaskService service;
+        auto task = service.createPlan("Write fixture", "coding", "Local", "fixture", {}, {});
+        task = service.applyRuntimeState(task, "Completed", "Verified final", "session", "run");
+        QCOMPARE(task.state, ControlledTaskState::Completed);
+        const auto restored = service.tasksFromJson(service.tasksToJson({task}));
+        QCOMPARE(restored.first().state, ControlledTaskState::Completed);
+    }
     void plannerLifecycleRequiresApproval();
     void queueAllowsSingleActiveTask();
     void permissionsPersistByWorkspace();
