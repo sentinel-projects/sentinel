@@ -14,4 +14,4 @@ ratatui-image = { version = "=11.1.0", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "0.38", features = ["event", "stdio", "fs", "termios"] }
+rustix = { version = "1.1", features = ["event", "stdio", "fs", "termios"] }
