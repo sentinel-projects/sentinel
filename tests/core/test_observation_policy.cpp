@@ -609,6 +609,36 @@ private slots:
         QVERIFY(!answer->contains(QChar(0x1b)));
         QVERIFY(answer->contains(QStringLiteral("\\n")));
     }
+    void explicitFileMutationCannotBeClassifiedAsReadOnly_data() {
+        QTest::addColumn<QString>("goal");
+        QTest::addColumn<bool>("operation");
+        QTest::newRow("imperative")
+            << QString("Change /fixture/result.txt to contain the requested text.") << true;
+        QTest::newRow("workspace-prefix")
+            << QString("In the active workspace, change only /fixture/result.txt and read it back.")
+            << true;
+        QTest::newRow("relative") << QString("Create result.txt with the requested text.") << true;
+        QTest::newRow("negated") << QString("Do not change /fixture/result.txt. Read it only.")
+                                 << false;
+        QTest::newRow("writing-about-path")
+            << QString("Write a story about /fixture/result.txt.") << false;
+        QTest::newRow("explanation")
+            << QString("Explain how to change /fixture/result.txt without modifying it.") << false;
+    }
+    void explicitFileMutationCannotBeClassifiedAsReadOnly() {
+        QFETCH(QString, goal);
+        QFETCH(bool, operation);
+        FixedReplyProvider provider;
+        provider.reply =
+            R"({"requirements":[{"domain":"filesystem","resource":"/fixture/result.txt","purpose":"inspect","tool":"read-file"}]})";
+        ObservationIntentPolicy policy(&provider);
+        const auto intent = policy.classify(goal, {}, BuiltInToolProvider::descriptors());
+        QVERIFY(!intent.indeterminate);
+        QCOMPARE(
+            std::any_of(intent.requirements.cbegin(), intent.requirements.cend(),
+                        [](const auto& r) { return r.purpose == ObservationPurpose::Operate; }),
+            operation);
+    }
     void localClassificationHasNoDeadlineAndRemainsCancellable() {
         for (const auto& id : {"lm-studio", "ollama", "llama-cpp-server", "openai-compatible-local",
                                "cloud-api", "unknown"}) {

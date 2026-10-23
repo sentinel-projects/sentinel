@@ -3576,6 +3576,7 @@ private slots:
         QTest::addColumn<QString>("variant");
         QTest::newRow("mutated-without-reread") << QStringLiteral("without-reread");
         QTest::newRow("mutated-with-reread") << QStringLiteral("with-reread");
+        QTest::newRow("repeat-after-reread") << QStringLiteral("repeat-after-reread");
         QTest::newRow("fabricated-claim-after-reread") << QStringLiteral("fabricated");
     }
 
@@ -3609,6 +3610,8 @@ private slots:
             // Structurally valid reread evidence plus a fabricated claim id.
             final.claims = {{QStringLiteral("ghost-claim"), true}};
             planner.decisions = {readBefore, write, readAfter, final};
+        } else if (variant == QStringLiteral("repeat-after-reread")) {
+            planner.decisions = {readBefore, write, readAfter, write, final};
         } else if (variant == QStringLiteral("with-reread")) {
             planner.decisions = {readBefore, write, readAfter, final};
         } else { // without-reread
@@ -3638,7 +3641,8 @@ private slots:
         QVERIFY2(verifier.matches(expected, &actual), qPrintable(actual));
         QCOMPARE(verifier.fileContent(QStringLiteral("src/calc.cpp")), fixed);
 
-        if (variant == QStringLiteral("with-reread")) {
+        if (variant == QStringLiteral("with-reread") ||
+            variant == QStringLiteral("repeat-after-reread")) {
             QVERIFY2(state.phase == AgentLoopPhase::Completed,
                      qPrintable(terminalFailureDescription(state)));
             QVERIFY(!state.finalAnswer.isEmpty());

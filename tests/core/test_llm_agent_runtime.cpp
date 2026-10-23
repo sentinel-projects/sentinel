@@ -97,6 +97,41 @@ class LlmAgentRuntimeTest final : public QObject {
     Q_OBJECT
 
 private slots:
+    void emptyVerifiedFinalReachesEvidenceGate_data() {
+        QTest::addColumn<QString>("providerId");
+        for (const auto& id : {"ollama", "lm-studio", "llama-cpp-server"})
+            QTest::newRow(id) << QString(id);
+    }
+    void emptyVerifiedFinalReachesEvidenceGate() {
+        QFETCH(QString, providerId);
+        auto provider = std::make_shared<FakeChatProvider>();
+        provider->scriptedReply =
+            R"({"action":"final","grounding":"verified","answer":"","claims":[]})";
+        LlmAgentRuntime runtime(BuiltInToolProvider::descriptors(), provider.get());
+        ModelBinding binding;
+        binding.providerId = providerId;
+        binding.capabilities.contextWindow = 32768;
+        runtime.bindModel(binding, provider);
+        ObservationIntent intent;
+        intent.requirements = {{ObservationDomain::FileSystem, "/fixture/result.txt",
+                                EvidenceFreshness::TurnScoped, ObservationPurpose::Operate}};
+        runtime.setObservationIntent(intent);
+        EvidenceRecord operation;
+        operation.toolId = "write-file";
+        operation.resource = "/fixture/result.txt";
+        operation.domain = ObservationDomain::FileSystem;
+        operation.scope = EvidenceScope::Operation;
+        operation.outcome = EvidenceOutcome::Verified;
+        operation.toolCallId = "write";
+        operation.stepIndex = 1;
+        runtime.setEvidence({operation});
+        const auto final = runtime.nextStep("Create fixture result", {sampleRecord()});
+        QCOMPARE(final.kind, AgentStepDecision::Kind::FinalAnswer);
+        QVERIFY(!final.answer.trimmed().isEmpty());
+        QCOMPARE(final.grounding, GroundingMode::Verified);
+        QCOMPARE(provider->prompts.size(), 1);
+        // This is only a final proposal. AgentLoop must still reject its receipt-only evidence.
+    }
     void localPlanningHasNoDeadlineAndKeepsCancellationAndBudget() {
         for (const auto& id : {"lm-studio", "ollama", "llama-cpp-server", "openai-compatible-local",
                                "cloud-api", "unknown"}) {
@@ -272,7 +307,8 @@ private slots:
         call.toolCalls.append({"new-call", "read-file", QJsonObject{{"path", "calc.py"}}, {}});
         ChatProviderReply final;
         final.success = true;
-        final.message = "No new observation was executed.";
+        final.message =
+            R"({"action":"final","grounding":"verified","claims":[],"answer":"No new observation was executed."})";
         provider->scriptedRequests = {call, final};
         LlmAgentRuntime runtime(BuiltInToolProvider::descriptors(), provider.get());
         ModelBinding binding;
@@ -943,7 +979,13 @@ private slots:
                  AgentStepDecision::Kind::FinalAnswer);
     }
 
-    void nativeProseFinalWithFileEvidenceIsNotCanonicalized() {
+    void nativeProseFinalRequiresExplicitDecision_data() {
+        QTest::addColumn<bool>("recover");
+        QTest::newRow("bounded-repair") << true;
+        QTest::newRow("indeterminate") << false;
+    }
+    void nativeProseFinalRequiresExplicitDecision() {
+        QFETCH(bool, recover);
         auto provider = std::make_shared<FakeChatProvider>();
         ChatProviderReply call;
         call.success = true;
@@ -954,7 +996,10 @@ private slots:
         ChatProviderReply final;
         final.success = true;
         final.message = QStringLiteral("The audit file contains a greeting.");
-        provider->scriptedRequests = {call, final};
+        auto explicitFinal = final;
+        explicitFinal.message =
+            R"({"action":"final","grounding":"verified","claims":[],"answer":"The audit file contains a greeting."})";
+        provider->scriptedRequests = {call, final, recover ? explicitFinal : final};
         LlmAgentRuntime runtime(BuiltInToolProvider::descriptors(), provider.get());
         ModelBinding binding;
         binding.capabilities.contextWindow = 131072;
@@ -982,6 +1027,12 @@ private slots:
         record.toolId = QStringLiteral("read-file");
         record.observation = QStringLiteral("hello audit");
         const auto answer = runtime.nextStep(QStringLiteral("Read audit.txt"), {record});
+        QCOMPARE(provider->requestOptions.size(), 3);
+        if (!recover) {
+            QCOMPARE(answer.kind, AgentStepDecision::Kind::GiveUp);
+            QCOMPARE(answer.failure, AgentStepFailure::CompletionIndeterminate);
+            return;
+        }
         QCOMPARE(answer.kind, AgentStepDecision::Kind::FinalAnswer);
         QCOMPARE(answer.answer, final.message);
         QVERIFY(!answer.answer.contains(QStringLiteral("observed_text")));
@@ -1400,7 +1451,8 @@ private slots:
              {}});
         ChatProviderReply final;
         final.success = true;
-        final.message = QStringLiteral("Observed audit content.");
+        final.message =
+            R"({"action":"final","grounding":"verified","claims":[],"answer":"Observed audit content."})";
         provider->scriptedRequests = {invalid, corrected, final};
         LlmAgentRuntime runtime(BuiltInToolProvider::descriptors(), provider.get());
         ModelBinding binding;
@@ -1519,7 +1571,8 @@ private slots:
                                    {}});
         ChatProviderReply finalReply;
         finalReply.success = true;
-        finalReply.message = QStringLiteral("The workspace contains CMakeLists.txt.");
+        finalReply.message =
+            R"({"action":"final","grounding":"verified","claims":[{"id":"claim-1","assertion":true}],"answer":"The workspace contains CMakeLists.txt."})";
         provider->scriptedRequests = {toolCall, finalReply};
 
         LlmAgentRuntime runtime(BuiltInToolProvider::descriptors(), provider.get());
@@ -1555,7 +1608,7 @@ private slots:
         record.observation = QStringLiteral("CMakeLists.txt");
         const auto final = runtime.nextStep(QStringLiteral("List the workspace"), {record});
         QCOMPARE(final.kind, AgentStepDecision::Kind::FinalAnswer);
-        QCOMPARE(final.answer, finalReply.message);
+        QCOMPARE(final.answer, QStringLiteral("The workspace contains CMakeLists.txt."));
         QCOMPARE(final.grounding, GroundingMode::Verified);
         QVERIFY(final.groundingDeclared);
         QCOMPARE(final.claims.size(), 1);

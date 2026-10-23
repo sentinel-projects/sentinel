@@ -9499,6 +9499,11 @@ void ApplicationController::onAgentEvent(const AgentEvent& event) {
         if (const auto* run = std::get_if<AgentRunEvent>(&event.payload)) {
             AgentLoopState state;
             state.phase = run->phase;
+            state.terminalReason = run->terminalReason;
+            state.observationIntent = run->observationIntent;
+            state.evidence = run->evidence;
+            state.finalGrounding = run->grounding;
+            state.finalClaims = run->finalClaims;
             state.finalAnswer = run->finalAnswer;
             state.abortReason = run->abortReason;
             state.steps.resize(run->completedSteps);
@@ -9513,7 +9518,8 @@ void ApplicationController::onAgentEvent(const AgentEvent& event) {
             }
             onAgentLoopFinished(state);
         } else if (const auto* state = std::get_if<AgentStateEvent>(&event.payload)) {
-            onAgentLoopStatus(agentLoopPhaseName(state->phase));
+            onAgentLoopStatus(state->completionStatus.isEmpty() ? agentLoopPhaseName(state->phase)
+                                                                : state->completionStatus);
         }
     }
 }
@@ -9604,15 +9610,21 @@ void ApplicationController::onAgentLoopFinished(const AgentLoopState& state) {
                                     QStringLiteral("agent loop cancelled"));
         break;
     case AgentLoopPhase::Stuck:
-        finalText = QStringLiteral("**Ajan Döngüye Takıldı / Doom Loop Detected**\n\n%1\n\n"
-                                   "*%2 adım çalıştırıldı / %2 steps executed.*")
-                        .arg(state.abortReason, QString::number(state.steps.size()));
+        finalText =
+            QStringLiteral(
+                "**%1**\n\n%2\n\n*%3 steps executed. Applied tool effects remain in place.*")
+                .arg(agentCompletionStatusName(agentLoopPhaseName(state.phase),
+                                               agentTerminalReasonName(state.terminalReason)),
+                     state.abortReason, QString::number(state.steps.size()));
         transitionConversationState(ConversationState::Error, QStringLiteral("agent loop stuck"));
         break;
     case AgentLoopPhase::Failed:
-        finalText = QStringLiteral("**Ajan Görevi Başarısız / Agent Task Failed**\n\n%1\n\n"
-                                   "*%2 adım çalıştırıldı / %2 steps executed.*")
-                        .arg(state.abortReason, QString::number(state.steps.size()));
+        finalText =
+            QStringLiteral("**%1**\n\n%2\n\n*%3 steps executed. Applied changes remain in place; "
+                           "no rollback is implied.*")
+                .arg(agentCompletionStatusName(agentLoopPhaseName(state.phase),
+                                               agentTerminalReasonName(state.terminalReason)),
+                     state.abortReason, QString::number(state.steps.size()));
         transitionConversationState(ConversationState::Error, QStringLiteral("agent loop failed"));
         break;
     case AgentLoopPhase::Running:

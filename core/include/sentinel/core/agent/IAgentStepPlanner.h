@@ -59,6 +59,7 @@ enum class AgentStepFailure {
     Blocked,
     // The run reached its iteration limit.
     IterationLimit,
+    CompletionIndeterminate,
 };
 
 inline QString agentStepFailureName(AgentStepFailure failure) {
@@ -75,6 +76,8 @@ inline QString agentStepFailureName(AgentStepFailure failure) {
         return QStringLiteral("Blocked");
     case AgentStepFailure::IterationLimit:
         return QStringLiteral("IterationLimit");
+    case AgentStepFailure::CompletionIndeterminate:
+        return QStringLiteral("CompletionIndeterminate");
     case AgentStepFailure::None:
         break;
     }

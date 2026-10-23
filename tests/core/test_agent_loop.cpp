@@ -222,6 +222,35 @@ class AgentLoopTest final : public QObject {
     Q_OBJECT
 
 private slots:
+    void finalDecisionAtToolBudget_data() {
+        QTest::addColumn<bool>("async");
+        QTest::newRow("sync") << false;
+        QTest::newRow("async") << true;
+    }
+    void finalDecisionAtToolBudget() {
+        QFETCH(bool, async);
+        ScriptedPlanner planner;
+        planner.decisions = {toolDecision("read-file"), finalDecision("Observed fixture result")};
+        RecordingExecutor executor;
+        StaticApprovalPolicy approval;
+        auto sandbox = permissiveSandbox();
+        AgentLoop::Config config;
+        config.maxIterations = 1;
+        AgentLoop loop(planner, executor, approval, sandbox, {"read-file"}, config);
+        AgentLoopState state;
+        bool finished = false;
+        if (async) {
+            loop.runAsync("Inspect fixture", "budget-final", this, [&](const auto& result) {
+                state = result;
+                finished = true;
+            });
+            QTRY_VERIFY(finished);
+        } else
+            state = loop.run("Inspect fixture");
+        QCOMPARE(executor.requests.size(), 1);
+        QCOMPARE(state.phase, AgentLoopPhase::Completed);
+        QCOMPARE(planner.calls, 2);
+    }
     void codingTaskFinalization_data() {
         QTest::addColumn<QString>("scenario");
         QTest::addColumn<bool>("async");
@@ -536,7 +565,7 @@ private slots:
         const auto state =
             loop.run(QStringLiteral("Inspect missing.txt"), QStringLiteral("diagnostic"));
         QCOMPARE(state.phase, AgentLoopPhase::Failed);
-        QCOMPARE(state.terminalReason, AgentTerminalReason::UnableToComplete);
+        QCOMPARE(state.terminalReason, AgentTerminalReason::VerificationFailed);
         QVERIFY(state.abortReason.contains(QStringLiteral("lacks fresh")));
         QVERIFY(state.finalAnswer.isEmpty());
         QVERIFY(executor.requests.isEmpty());
@@ -901,7 +930,8 @@ private slots:
         ScriptedPlanner planner;
         planner.decisions = {toolDecision(QStringLiteral("run-command"), QStringLiteral("one")),
                              toolDecision(QStringLiteral("run-command"), QStringLiteral("two")),
-                             toolDecision(QStringLiteral("run-command"), QStringLiteral("three"))};
+                             toolDecision(QStringLiteral("run-command"), QStringLiteral("three")),
+                             toolDecision(QStringLiteral("run-command"), QStringLiteral("four"))};
         RecordingExecutor executor;
         StaticApprovalPolicy approval;
         auto sandbox = permissiveSandbox();

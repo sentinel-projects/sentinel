@@ -46,13 +46,25 @@ request carries the run's cancellation token and remains interruptible through S
 An explicitly configured provider timeout still applies; the default is zero (disabled).
 Cloud and unknown providers retain the classification/planning deadlines of 60/120 seconds.
 Local planning uses the cancellable non-streaming request contract, rather than claiming
-that an unlimited request satisfies the bounded-streaming contract. A classification request
-that the provider rejects (for example a small local reasoning model that exhausts its output
-budget on hidden reasoning before emitting the JSON) is retried once with the identical
-prompt, budget and cancellation token; a second failure reports the run indeterminate.
+that an unlimited request satisfies the bounded-streaming contract. A classification reply with typed output truncation may be retried once with a larger
+output budget, subject to fresh context admission and the same cancellation token. Other
+provider/contract failures are not blindly retried; an unresolved classification is indeterminate.
 Output/context admission,
 iteration limits, final grounding and tool/approval timeouts remain independent.
 
 ## Approval lifetime
 
 A run paused for approval is not an unbounded wait. `AgentRuntime` applies a five-minute approval timeout by default (`setApprovalTimeoutMs`, zero disables it). On expiry the pending plan is explicitly denied, its session grants are cleared, no tool is dispatched, and the run terminates as `Failed` / `ApprovalDenied` with a retryable message. Approving or cancelling invalidates the timer, and a late timer cannot overwrite a newer run generation. The desktop approval dialog still offers immediate Deny, Allow once, and Cancel run; the timeout only prevents a forgotten prompt from leaving the session permanently paused.
+
+## Completion assessment
+
+Execution phase is distinct from completion assessment. Only the accepted final gate
+completes a task. A successful tool receipt cannot replace an independent observation
+of the resulting state. Empty verified final proposals can use the evidence-derived
+presentation, then must pass all ordinary claim/evidence and security checks. The
+productive tool budget limits dispatch, while allowing a final decision at its boundary.
+
+Verification Pending remains a running state. Verification Failed, Completion
+Indeterminate and Blocked are projected from authoritative terminal reasons without
+changing the execution phase contract. Applied tool effects are not rolled back merely
+because the model cannot finalize. See [completion audit](../audits/AGENT_COMPLETION_FALSE_NEGATIVES_2026_10_23.md).

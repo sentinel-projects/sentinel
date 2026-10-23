@@ -59,6 +59,14 @@ AgentRuntimeErrorCode errorCodeFor(const AgentLoopState& state) {
         return AgentRuntimeErrorCode::IterationLimit;
     case AgentTerminalReason::Cancelled:
         return AgentRuntimeErrorCode::Cancelled;
+    case AgentTerminalReason::ObservationIndeterminate:
+    case AgentTerminalReason::ContextBudgetExhausted:
+    case AgentTerminalReason::CompletionIndeterminate:
+        return AgentRuntimeErrorCode::CompletionIndeterminate;
+    case AgentTerminalReason::VerificationFailed:
+        return AgentRuntimeErrorCode::VerificationFailed;
+    case AgentTerminalReason::Blocked:
+        return AgentRuntimeErrorCode::Blocked;
     case AgentTerminalReason::UnableToComplete:
         return AgentRuntimeErrorCode::ExecutionFailed;
     case AgentTerminalReason::Completed:
@@ -1187,7 +1195,13 @@ void AgentRuntime::configureLoop(AgentLoop& loop, const QString& sessionId,
         if (callback)
             callback(step);
     });
-    loop.setStatusCallback(options.onStatus);
+    loop.setStatusCallback([this, sessionId, callback = options.onStatus](const QString& status) {
+        if (status == QLatin1String("Verification Pending"))
+            publish(sessionId, AgentEventType::RuntimeStateChanged,
+                    AgentStateEvent{AgentLoopPhase::Running, status});
+        if (callback)
+            callback(status);
+    });
     loop.setPlanningCallback([this, sessionId, goal](int index, bool started) {
         const auto* llm = dynamic_cast<const LlmAgentRuntime*>(planner_);
         if (llm && llm->hasModelProvider() && !goal.trimmed().isEmpty()) {

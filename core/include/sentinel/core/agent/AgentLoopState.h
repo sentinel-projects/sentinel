@@ -46,6 +46,7 @@ enum class AgentTerminalReason {
     VerificationFailed,
     // Every remaining action is blocked, denied or out of scope.
     Blocked,
+    CompletionIndeterminate,
 };
 
 inline QString agentTerminalReasonName(AgentTerminalReason reason) {
@@ -76,6 +77,8 @@ inline QString agentTerminalReasonName(AgentTerminalReason reason) {
         return QStringLiteral("ContextBudgetExhausted");
     case AgentTerminalReason::VerificationFailed:
         return QStringLiteral("VerificationFailed");
+    case AgentTerminalReason::CompletionIndeterminate:
+        return QStringLiteral("CompletionIndeterminate");
     case AgentTerminalReason::Blocked:
         return QStringLiteral("Blocked");
     }
@@ -98,6 +101,8 @@ inline AgentTerminalReason agentTerminalReasonFor(AgentStepFailure failure) {
         return AgentTerminalReason::Blocked;
     case AgentStepFailure::IterationLimit:
         return AgentTerminalReason::IterationLimit;
+    case AgentStepFailure::CompletionIndeterminate:
+        return AgentTerminalReason::CompletionIndeterminate;
     case AgentStepFailure::None:
         break;
     }
@@ -125,6 +130,24 @@ inline QString agentLoopPhaseName(AgentLoopPhase phase) {
     }
 
     return QStringLiteral("Idle");
+}
+
+// Completion is a projection over the existing execution phase/reason. Keep wire
+// phases and stored run states stable; never turn uncertainty into success.
+inline QString agentCompletionStatusName(const QString& phase, const QString& reason) {
+    if (phase == QLatin1String("Completed"))
+        return QStringLiteral("Completed");
+    if (reason == QLatin1String("VerificationFailed"))
+        return QStringLiteral("Verification Failed");
+    if (reason == QLatin1String("CompletionIndeterminate") ||
+        reason == QLatin1String("ContextBudgetExhausted") ||
+        reason == QLatin1String("ObservationIndeterminate"))
+        return QStringLiteral("Completion Indeterminate");
+    if (reason == QLatin1String("Blocked") || reason == QLatin1String("ApprovalDenied") ||
+        reason == QLatin1String("SecurityDenied") ||
+        reason == QLatin1String("CapabilityUnavailable"))
+        return QStringLiteral("Blocked");
+    return phase;
 }
 
 struct AgentLoopState {
