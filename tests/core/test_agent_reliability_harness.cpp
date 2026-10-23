@@ -3681,12 +3681,16 @@ private:
         provider->readPath = provider->artifact;
         sentinel::test::DeterministicModelServiceFixture catalog;
         auto models = catalog.takeModelService();
-        models->registerProvider("ollama", [provider](const ModelBinding&) { return provider; });
-        OllamaModelDiscoveryResult discovery;
-        discovery.lifecycle = ChatRequestLifecycle::Completed;
-        discovery.models = {{"original-model", {}, 0}, {"next-model", {}, 0}};
-        models->acceptOllamaDiscovery(discovery, models->beginProviderHealthObservation());
-        models->setSelectedModel({"ollama", "original-model"});
+        // COR-11 verifies the deadline-aware bounded planner streaming contract.
+        // Providers registered as Local intentionally use the cancellable
+        // non-streaming request without a wall-clock deadline, so this fixture
+        // binds an unregistered provider ID, which the wait policy treats like
+        // the cloud/unknown class that keeps the 60/120 s deadlines. The probe
+        // factory answers every request; no network endpoint is contacted.
+        models->setLmStudioEndpoint(QStringLiteral("http://127.0.0.1:1234"));
+        models->registerProvider("remote-probe",
+                                 [provider](const ModelBinding&) { return provider; });
+        models->setSelectedModel({"remote-probe", "original-model"});
         auto original = models->resolve(models->selectedModel());
         QVERIFY(original.ok());
         original.binding.capabilities.streaming = CapabilitySupport::Supported;
@@ -3735,9 +3739,9 @@ private:
             0; // Internal observer; never require private public deltas.
         const auto oldToken = provider->originalToken;
         QVERIFY(oldToken && !oldToken->load());
-        models->setSelectedModel({"ollama", "next-model"});
+        models->setSelectedModel({"remote-probe", "next-model"});
         QCOMPARE(planner.modelBinding().modelId, QStringLiteral("original-model"));
-        QCOMPARE(planner.modelBinding().providerId, QStringLiteral("ollama"));
+        QCOMPARE(planner.modelBinding().providerId, QStringLiteral("remote-probe"));
         QVERIFY(runtime.cancel(session));
         QVERIFY(oldToken->load());
         QCOMPARE(runtime.sessionState(session).phase, AgentLoopPhase::Cancelling);
@@ -3768,7 +3772,7 @@ private:
             if (turn.isEmpty())
                 turn = event.turnId;
             QCOMPARE(event.turnId, turn);
-            QCOMPARE(event.providerId, QStringLiteral("ollama"));
+            QCOMPARE(event.providerId, QStringLiteral("remote-probe"));
             QCOMPARE(event.modelId, QStringLiteral("original-model"));
         }
         // Bounded planner streaming is the selected dispatch for text-only

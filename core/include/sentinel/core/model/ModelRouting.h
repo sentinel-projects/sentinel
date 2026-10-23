@@ -55,6 +55,46 @@ enum class ModelMetadataSource {
     UserOverride,
 };
 
+// What a reported context window actually describes. A model's published
+// maximum is a property of the weights; the capacity a server loaded the model
+// with is a property of the running runtime. Token admission must never treat
+// the first as the second: llama.cpp can be launched with -c 8192 for a model
+// whose trained context is 131072, and only the server knows which one is in
+// effect for the current request.
+enum class ContextCapacityKind {
+    Unknown,
+    // Published/trained maximum context for the model. An upper bound only.
+    ModelMaximum,
+    // The context the server actually configured for the loaded model
+    // (llama.cpp /props n_ctx, LM Studio loaded_instances context_length,
+    // Ollama /api/ps context). Authoritative for admission.
+    ServerConfigured,
+};
+
+inline QString contextCapacityKindName(ContextCapacityKind kind) {
+    switch (kind) {
+    case ContextCapacityKind::ServerConfigured:
+        return QStringLiteral("server_configured");
+    case ContextCapacityKind::ModelMaximum:
+        return QStringLiteral("model_maximum");
+    case ContextCapacityKind::Unknown:
+        break;
+    }
+    return QStringLiteral("unknown");
+}
+
+// A more specific observation supersedes a vaguer one when capability snapshots
+// are merged.
+inline ContextCapacityKind tighterContextCapacityKind(ContextCapacityKind base,
+                                                      ContextCapacityKind candidate) {
+    if (candidate == ContextCapacityKind::ServerConfigured)
+        return ContextCapacityKind::ServerConfigured;
+    if (candidate == ContextCapacityKind::ModelMaximum &&
+        base != ContextCapacityKind::ServerConfigured)
+        return ContextCapacityKind::ModelMaximum;
+    return base;
+}
+
 struct ModelCapabilityProvenance {
     ModelMetadataSource streaming = ModelMetadataSource::Unknown;
     ModelMetadataSource structuredOutput = ModelMetadataSource::Unknown;
@@ -65,6 +105,10 @@ struct ModelCapabilityProvenance {
     ModelMetadataSource audioOutput = ModelMetadataSource::Unknown;
     ModelMetadataSource contextWindow = ModelMetadataSource::Unknown;
     ModelMetadataSource maxOutputTokens = ModelMetadataSource::Unknown;
+    // Provenance for `contextCapacity`, kept separate so a catalog maximum and a
+    // runtime-reported loaded capacity can be told apart even when both describe
+    // `contextWindow`.
+    ModelMetadataSource contextCapacity = ModelMetadataSource::Unknown;
 };
 
 struct ModelCapabilities {
@@ -77,6 +121,9 @@ struct ModelCapabilities {
     CapabilitySupport audioOutput = CapabilitySupport::Unknown;
     std::optional<int> contextWindow;
     std::optional<int> maxOutputTokens;
+    // What `contextWindow` describes. Admission uses a ServerConfigured value;
+    // a ModelMaximum value is an upper bound and is reported as such.
+    ContextCapacityKind contextCapacity = ContextCapacityKind::Unknown;
     ModelCapabilityProvenance provenance;
 };
 

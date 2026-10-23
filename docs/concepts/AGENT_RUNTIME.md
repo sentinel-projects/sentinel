@@ -30,13 +30,28 @@ Natural-language input is never converted into a shell command by heuristic plan
 
 Tool output is truncated to a bounded preview (default 16 KiB / 120 lines). The preview reports the full-output path and tells the model to request a narrower range instead of repeating the same call. The context assembler keeps the newest observations intact and compacts older ones head-and-tail, preserving the beginning and the failure tail without unbounded request growth. A deterministic run checkpoint (step counts, recent blockers, and changed resources) is retained separately so compacted observations do not erase the run's progress.
 
-A repeated identical action is never executed again. Read-only repeats and already successful verification commands get one planning repair. A repeated mutation or other non-observation action also gets one bounded repair, but a final answer is not accepted while that repair is unresolved; if the planner still cannot choose a different action, the run stops as stuck rather than reporting success.
+A repeated identical action is never executed again. Read-only repeats and already successful verification commands get one planning repair. A repeated mutation or other non-observation action also gets one bounded repair, but a final answer is not accepted while that repair is unresolved. A repeat of a call whose previous attempt executed and returned a definitive or transient result (NotFound or Timeout) also gets one bounded repair stating that result, so the planner can choose a different action or answer from existing evidence; invalid, unknown, denied or capability-unavailable repeats keep the immediate fail-closed stop. If the planner still cannot choose a different action, the run stops as stuck rather than reporting success.
 
 ## Final answers and verification recovery
 
 A verified final answer is published as the model's natural-language response. The evidence-derived projection is a fallback when the answer is empty and a mandatory representation only when the observation scope cannot support an absence conclusion (for example, a directory listing with hidden entries excluded or truncated). Claim, permission, approval, and sandbox checks remain authoritative.
 
 When a final is rejected solely because a read-only verification requirement is missing, `AgentLoop` may recover by running one permitted `read-file`, `git-diff`, or `git-status` step, up to three times. The final is accepted only after the resulting evidence is observed; a receipt-only claim never completes a run on its own.
+
+## Model generation waits
+
+Agent classification and planning add no wall-clock deadline for providers registered as
+Local (LM Studio, Ollama, llama.cpp and the local compatible endpoint). The generation
+request carries the run's cancellation token and remains interruptible through Stop.
+An explicitly configured provider timeout still applies; the default is zero (disabled).
+Cloud and unknown providers retain the classification/planning deadlines of 60/120 seconds.
+Local planning uses the cancellable non-streaming request contract, rather than claiming
+that an unlimited request satisfies the bounded-streaming contract. A classification request
+that the provider rejects (for example a small local reasoning model that exhausts its output
+budget on hidden reasoning before emitting the JSON) is retried once with the identical
+prompt, budget and cancellation token; a second failure reports the run indeterminate.
+Output/context admission,
+iteration limits, final grounding and tool/approval timeouts remain independent.
 
 ## Approval lifetime
 

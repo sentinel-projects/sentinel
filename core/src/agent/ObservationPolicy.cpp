@@ -1,11 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Sopwit <sopwith.osdev@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sentinel/core/agent/ObservationPolicy.h"
+#include "sentinel/core/agent/AgentInferencePolicy.h"
 #include "sentinel/core/agent/ClaimGroundingResolver.h"
 #include "sentinel/core/context/ContextBudgetManager.h"
 #include "sentinel/core/platform/UserDirectories.h"
 
 #include "sentinel/core/interfaces/IChatProvider.h"
+#include "sentinel/core/provider/ProviderCapabilityNormalizer.h"
 #include "sentinel/core/security/ExternalDirectoryGate.h"
 
 #include <QDateTime>
@@ -23,6 +25,8 @@
 #include <QUrl>
 #include <QUuid>
 #include <algorithm>
+#include <limits>
+#include <utility>
 
 namespace sentinel::core {
 namespace {
@@ -229,12 +233,33 @@ QString groundingModeName(GroundingMode mode) {
     return QStringLiteral("context");
 }
 
+QString observationClassificationFailureName(ObservationClassificationFailure failure) {
+    switch (failure) {
+    case ObservationClassificationFailure::Cancelled:
+        return QStringLiteral("cancelled");
+    case ObservationClassificationFailure::BudgetRefused:
+        return QStringLiteral("budget_refused");
+    case ObservationClassificationFailure::ProviderFailure:
+        return QStringLiteral("provider_failure");
+    case ObservationClassificationFailure::OutputTruncated:
+        return QStringLiteral("output_truncated");
+    case ObservationClassificationFailure::InvalidJson:
+        return QStringLiteral("invalid_json");
+    case ObservationClassificationFailure::ContractViolation:
+        return QStringLiteral("contract_violation");
+    case ObservationClassificationFailure::None:
+        break;
+    }
+    return QStringLiteral("none");
+}
+
 ObservationIntent ObservationIntentPolicy::classify(const QString& goal,
                                                     const QString& conversationContext,
                                                     const QList<ToolDescriptor>& tools) const {
     ObservationIntent intent;
     if (!provider_) {
         intent.indeterminate = true;
+        intent.failure = ObservationClassificationFailure::ProviderFailure;
         intent.error = QStringLiteral("No model is configured for observation intent.");
         return intent;
     }
@@ -302,19 +327,67 @@ ObservationIntent ObservationIntentPolicy::classify(const QString& goal,
                .toJson(QJsonDocument::Compact);
     ChatRequestOptions options;
     options.cancellationToken = cancellationToken_;
-    // Reasoning models count hidden reasoning against the completion budget too.
-    // Keep a hard bound, while leaving room for the required classification JSON.
-    options.deadlineMs = 60000;
+    options.deadlineMs = agentInferenceDeadlineMs(binding_, 60000);
+    // Classification is a small, schema-shaped answer. Hidden reasoning competes
+    // directly with the required JSON for the completion budget, so ask the model
+    // to skip it through the field this endpoint documents. A model whose
+    // endpoint documents no switch is left alone rather than sent a foreign
+    // field; the typed truncation path below reports the consequence honestly.
+    options.reasoning = ReasoningControl::Disabled;
     options.maxOutputTokens = 2048;
     const auto budget = ContextBudgetManager{}.assemble(
         binding_, options, {{prompt, ContextBudgetKind::Instruction, 0, true}});
     if (!budget.accepted()) {
         intent.indeterminate = true;
+        intent.failure = ObservationClassificationFailure::BudgetRefused;
         intent.error = QStringLiteral("Context budget refused observation classification.");
         return intent;
     }
     options.maxOutputTokens = budget.reservedOutput;
-    const auto reply = provider_->sendRequest(budget.prompt, options);
+
+    // Bounded classification retry policy. A retry is only justified by a typed,
+    // recoverable failure and must change the request in a way that could change
+    // the outcome. The only such failure here is truncation at the provider
+    // output limit: the second attempt raises the completion budget, which is a
+    // different request. A complete reply with invalid JSON is not retried,
+    // because repeating the identical request cannot fix a contract violation,
+    // and a cancelled run never retries. The identical request is never sent
+    // twice and no more than one retry is taken.
+    ChatProviderReply reply;
+    QString retryReason;
+    int attemptOutputBudget = budget.reservedOutput;
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        options.maxOutputTokens = attemptOutputBudget;
+        reply = provider_->sendRequest(budget.prompt, options);
+        if (cancellationToken_ && cancellationToken_->load())
+            break;
+        const bool truncated =
+            reply.completion == ResponseCompletion::Truncated ||
+            reply.diagnostics.value(provider::kOutputLimitReachedDiagnostic).toBool();
+        if (!truncated)
+            break;
+        if (attempt != 0)
+            break;
+        // The first attempt was cut off. Raise the completion budget rather than
+        // resending the identical bounded request. When the model's own output
+        // cap leaves no room to grow, there is no changed condition to try and
+        // the typed truncation is reported instead of looping.
+        const int ceiling =
+            binding_.capabilities.maxOutputTokens.value_or(std::numeric_limits<int>::max());
+        if (attemptOutputBudget >= ceiling) {
+            retryReason = QStringLiteral(
+                "no larger completion budget is available within the model output limit");
+            break;
+        }
+        attemptOutputBudget = qMin(ceiling, attemptOutputBudget * 2);
+        retryReason =
+            QStringLiteral("output truncated at the completion budget; retrying once with %1 "
+                           "output tokens and reasoning still disabled")
+                .arg(attemptOutputBudget);
+    }
+    const bool truncatedReply =
+        reply.completion == ResponseCompletion::Truncated ||
+        reply.diagnostics.value(provider::kOutputLimitReachedDiagnostic).toBool();
     const auto recordOutcome = qScopeGuard([&] {
         QJsonObject diagnostic{{"stage", "classification"},
                                {"event", "exit"},
@@ -328,7 +401,8 @@ ObservationIntent ObservationIntentPolicy::classify(const QString& goal,
              {"provider_id", "model_id", "deadline_ms", "output_budget_tokens", "elapsed_ms",
               "http_status", "category", "upstream_cancellation", "reported_context_tokens",
               "request_bytes", "estimated_input_tokens", "estimate_method", "finish_reason",
-              "prompt_tokens", "completion_tokens", "total_tokens"}) {
+              "prompt_tokens", "completion_tokens", "total_tokens", "reasoning_tokens",
+              "output_limit_reached"}) {
             const auto value = reply.diagnostics.value(QLatin1String(key));
             if (value.isDouble() || value.isBool() || value.isString())
                 diagnostic.insert(QLatin1String(key), value.isString()
@@ -338,6 +412,12 @@ ObservationIntent ObservationIntentPolicy::classify(const QString& goal,
         if (reply.success && intent.indeterminate) {
             diagnostic.insert(QStringLiteral("parse_failure"), intent.error);
         }
+        diagnostic.insert(QStringLiteral("classification_retry"),
+                          QJsonValue(!retryReason.isEmpty()));
+        if (!retryReason.isEmpty())
+            diagnostic.insert(QStringLiteral("retry_reason"), retryReason.left(256));
+        diagnostic.insert(QStringLiteral("classification_failure"),
+                          observationClassificationFailureName(intent.failure));
         diagnostic.insert(QStringLiteral("classification_result"),
                           intent.indeterminate ? QStringLiteral("indeterminate")
                                                : QStringLiteral("classified"));
@@ -346,31 +426,56 @@ ObservationIntent ObservationIntentPolicy::classify(const QString& goal,
     });
     if (!reply.success) {
         intent.indeterminate = true;
-        intent.error = reply.errorMessage;
+        // A reply cut off at the provider output limit is a distinct, typed
+        // failure: the classification JSON is a prefix and must not be parsed or
+        // guessed. Everything else is a provider failure.
+        intent.failure = cancellationToken_ && cancellationToken_->load()
+                             ? ObservationClassificationFailure::Cancelled
+                         : truncatedReply ? ObservationClassificationFailure::OutputTruncated
+                                          : ObservationClassificationFailure::ProviderFailure;
+        intent.error = truncatedReply
+                           ? QStringLiteral(
+                                 "Classifier output was truncated at the provider output limit; "
+                                 "no complete classification JSON was produced. Increase the "
+                                 "model output limit or disable reasoning for this model.")
+                           : reply.errorMessage;
         return intent;
     }
     const auto candidate = strictJsonObject(reply.message);
     if (candidate.isEmpty()) {
-        intent.error = QStringLiteral("Classifier response is not a standalone JSON object.");
+        intent.error = truncatedReply
+                           ? QStringLiteral(
+                                 "Classifier output was truncated at the provider output limit; "
+                                 "no complete classification JSON was produced.")
+                           : QStringLiteral(
+                                 "Classifier response is not a standalone JSON object. A reply "
+                                 "that adds prose or reasoning around the JSON is not a completed "
+                                 "classification.");
+        intent.failure = truncatedReply ? ObservationClassificationFailure::OutputTruncated
+                                        : ObservationClassificationFailure::InvalidJson;
         intent.indeterminate = true;
         return intent;
     }
     const auto document = QJsonDocument::fromJson(candidate.toUtf8());
     if (!document.isObject() ||
         !document.object().value(QStringLiteral("requirements")).isArray()) {
+        // A truncated or malformed body is never a completed classification.
         intent.error = QStringLiteral("Classifier requirements JSON is malformed.");
+        intent.failure = ObservationClassificationFailure::InvalidJson;
         intent.indeterminate = true;
         return intent;
     }
     const auto entries = document.object().value(QStringLiteral("requirements")).toArray();
     if (entries.size() > 8) {
         intent.error = QStringLiteral("Classifier requirements exceed the eight-entry limit.");
+        intent.failure = ObservationClassificationFailure::ContractViolation;
         intent.indeterminate = true;
         return intent;
     }
     for (const auto& entry : entries) {
         if (!entry.isObject()) {
             intent.error = QStringLiteral("Classifier requirement is not an object.");
+            intent.failure = ObservationClassificationFailure::ContractViolation;
             intent.indeterminate = true;
             intent.requirements.clear();
             return intent;
@@ -379,6 +484,7 @@ ObservationIntent ObservationIntentPolicy::classify(const QString& goal,
         const auto domain = domainFromName(object.value(QStringLiteral("domain")).toString());
         if (!domain) {
             intent.error = QStringLiteral("Classifier selected an unsupported domain.");
+            intent.failure = ObservationClassificationFailure::ContractViolation;
             intent.indeterminate = true;
             intent.requirements.clear();
             return intent;
@@ -389,6 +495,7 @@ ObservationIntent ObservationIntentPolicy::classify(const QString& goal,
         requirement.toolId = object.value(QStringLiteral("tool")).toString();
         if (!requirement.toolId.isEmpty() && !availableToolIds.contains(requirement.toolId)) {
             intent.error = QStringLiteral("Classifier selected an unregistered tool.");
+            intent.failure = ObservationClassificationFailure::ContractViolation;
             intent.indeterminate = true;
             intent.requirements.clear();
             return intent;

@@ -5,6 +5,7 @@
 #pragma once
 
 #include "sentinel/core/interfaces/IChatProvider.h"
+#include "sentinel/core/provider/ProviderRegistry.h"
 #include "sentinel/core/runtime/LocalInferenceTransport.h"
 #include "sentinel/core/runtime/OllamaRuntime.h"
 
@@ -78,6 +79,18 @@ struct LocalInferenceOptions {
     // Explicit bounded requirement. When set, this streaming request must resolve
     // to a positive deadline; the transport refuses instead of waiting unbounded.
     bool requireBoundedStreaming = false;
+    // Reasoning/thinking intent. The transport translates it into the field its
+    // own protocol documents (`think` for Ollama, `chat_template_kwargs` /
+    // `reasoning_effort` for OpenAI-compatible local servers).
+    ReasoningControl reasoning = ReasoningControl::Default;
+    // Which wire dialect `reasoning` should be expressed in. Set by the provider
+    // adapter from the active ModelBinding; a generic or unknown dialect emits no
+    // reasoning field rather than borrowing another protocol's field name.
+    ProviderEndpoint reasoningEndpoint = ProviderEndpoint::FixedLocal;
+    // The context the running server configured for the loaded model, when the
+    // caller knows it. Never a model's published maximum: `num_ctx` selects the
+    // server's load-time context and must describe the runtime being addressed.
+    std::optional<int> loadedContextTokens;
 };
 
 struct LocalInferenceRequest {
@@ -158,6 +171,9 @@ struct LocalInferenceStreamResult {
     int attempts = 1;
     QString retrySummary;
     ChatRequestLifecycle lifecycle = ChatRequestLifecycle::Pending;
+    // Allowlisted normalized completion metadata: stop reason, truncation flag
+    // and provider-reported token usage. Never prompts or reasoning text.
+    QJsonObject diagnostics;
 };
 
 QString localInferenceTraceSummary(const LocalInferenceTrace& trace);

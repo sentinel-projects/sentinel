@@ -3,6 +3,7 @@
 #include "sentinel/core/chat/ChatImageContent.h"
 #include "sentinel/core/interfaces/IChatProvider.h"
 #include "sentinel/core/model/ModelRouting.h"
+#include "sentinel/core/provider/ProviderCapabilityNormalizer.h"
 #include "sentinel/core/provider/protocols/anthropic_messages/AnthropicMessagesProtocol.h"
 #include "sentinel/core/provider/protocols/gemini_generate_content/GeminiGenerateContentProtocol.h"
 #include "sentinel/core/provider/protocols/openai_compatible/OpenAiCompatibleProtocol.h"
@@ -344,12 +345,14 @@ public:
     }
     ChatProviderReply sendMessageWithToken(
         const QString& message, const std::shared_ptr<std::atomic_bool>& cancellationToken,
-        const QList<ChatImage>& images = {}, int deadlineMs = 0, int maxOutputTokens = 0) {
+        const QList<ChatImage>& images = {}, int deadlineMs = 0, int maxOutputTokens = 0,
+        ReasoningControl reasoning = ReasoningControl::Default) {
         if (!config_.isAllowedEndpoint())
             return providerFailure(
                 QStringLiteral("Selected provider '%1' is unavailable or not configured.")
                     .arg(binding_.providerId),
                 ChatProviderErrorCategory::ProviderUnavailable);
+        const auto profile = provider::requestProfile(binding_);
         LocalInferenceRequest request;
         request.prompt = message;
         request.images = images;
@@ -358,6 +361,9 @@ public:
         if (maxOutputTokens > 0)
             request.options.maxTokens = maxOutputTokens;
         request.options.cancellationToken = cancellationToken;
+        request.options.reasoning = reasoning;
+        request.options.reasoningEndpoint = profile.endpoint;
+        request.options.loadedContextTokens = profile.loadedContextTokens;
         LMStudioLocalInferenceClient client(config_, timeoutMs_);
         QElapsedTimer elapsed;
         elapsed.start();
@@ -427,7 +433,8 @@ public:
                 ChatProviderReply::Error::CapabilityRejected);
         if (!options.nativeToolCalling && !options.structuredOutput)
             return sendMessageWithToken(message, options.cancellationToken, options.images,
-                                        options.deadlineMs, options.maxOutputTokens);
+                                        options.deadlineMs, options.maxOutputTokens,
+                                        options.reasoning);
         if (!config_.isAllowedEndpoint())
             return providerFailure(QStringLiteral("Selected endpoint is unavailable."),
                                    ChatProviderErrorCategory::ProviderUnavailable);
@@ -448,6 +455,12 @@ public:
                                    ChatProviderReply::Error::InvalidResponse);
         }
         auto body = normalizedRequest.body;
+        // Reasoning control is written in the field name this endpoint documents.
+        const auto reasoningFields =
+            provider::openAiCompatibleReasoningFields(options.reasoning,
+                                                      provider::requestProfile(binding_).endpoint);
+        for (auto it = reasoningFields.begin(); it != reasoningFields.end(); ++it)
+            body.insert(it.key(), it.value());
         // Budget the actual serialized native request, including schemas and tool
         // results omitted by ContextEngine's prompt estimate. This is an estimate,
         // not a tokenizer measurement; the provider may still reject the request.
@@ -585,16 +598,19 @@ public:
             reply.requestId = completion.requestId;
             return finish(reply, QStringLiteral("response_format_failure"));
         };
-        if (parsed.outputLimit)
-            return finish(
-                providerFailure(
-                    QStringLiteral(
-                        "Native provider output budget exhausted (finish_reason=length). "
-                        "No tool calls accepted; inspect prior changes before a smaller retry."),
-                    ChatProviderErrorCategory::RequestRejected,
-                    ChatProviderReply::Error::InvalidResponse, completion.httpStatus,
-                    completion.attempts, completion.retrySummary),
-                QStringLiteral("output_limit"));
+        if (parsed.outputLimit) {
+            auto reply = providerFailure(
+                QStringLiteral(
+                    "Native provider output budget exhausted (finish_reason=length). "
+                    "No tool calls accepted; inspect prior changes before a smaller retry."),
+                ChatProviderErrorCategory::RequestRejected,
+                ChatProviderReply::Error::InvalidResponse, completion.httpStatus,
+                completion.attempts, completion.retrySummary);
+            // Typed truncation: the visible content is a prefix and must never be
+            // accepted as a completed structured response or tool call list.
+            reply.completion = ResponseCompletion::Truncated;
+            return finish(reply, QStringLiteral("output_limit"));
+        }
         for (const auto& call : parsed.toolCalls) {
             QString toolId;
             for (const auto& tool : options.tools)

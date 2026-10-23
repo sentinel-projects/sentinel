@@ -273,6 +273,13 @@ OpenAiCompatibleCatalogParse parseOpenAiCompatibleModelCatalog(const QJsonObject
         if (!model.capabilities.contextWindow)
             model.capabilities.contextWindow =
                 positiveLimit(object, QStringLiteral("max_context_length"));
+        if (model.capabilities.contextWindow) {
+            // A catalog entry describes the model, not the runtime that loaded
+            // it. This is an upper bound; a server may be running the model with
+            // a much smaller context and only the server can say so.
+            model.capabilities.contextCapacity = ContextCapacityKind::ModelMaximum;
+            model.capabilities.provenance.contextCapacity = ModelMetadataSource::ProviderCatalog;
+        }
         model.capabilities.maxOutputTokens =
             positiveLimit(object, QStringLiteral("max_output_tokens"));
 

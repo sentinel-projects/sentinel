@@ -94,6 +94,7 @@ void traceStage(const AgentLoopState& state, const char* stage, const char* even
     record.insert("consecutive_blocked_steps", state.consecutiveBlockedSteps);
     record.insert("read_repairs", state.repeatedReadRepairs);
     record.insert("repeated_action_repairs", state.repeatedActionRepairs);
+    record.insert("failed_repeat_repairs", state.repeatedFailureRepairs);
     record.insert("verification_recoveries", state.finalVerificationRecoveries);
     if (decision) {
         record.insert("decision", int(decision->kind));
@@ -183,6 +184,150 @@ void AgentLoop::preparePlanningContext(const AgentLoopState& state) {
 
 namespace {
 
+// A GiveUp decision carries a typed stop reason. Prefer it over the generic
+// fallback so a context-budget refusal or an indeterminate observation is
+// reported as itself rather than as an ordinary inability to complete.
+AgentTerminalReason giveUpTerminalReason(const AgentStepDecision& decision) {
+    if (decision.failure != AgentStepFailure::None)
+        return agentTerminalReasonFor(decision.failure);
+    return decision.providerFailure ? AgentTerminalReason::ProviderFailure
+                                    : AgentTerminalReason::UnableToComplete;
+}
+
+// Turns a typed classification failure into a message the user can act on. No
+// step ever ran in this state, so the message says so instead of implying work
+// was done and lost.
+QString classificationAbortMessage(const ObservationIntent& intent) {
+    const QString detail =
+        intent.error.trimmed().isEmpty() ? QString{} : QStringLiteral(" %1").arg(intent.error.trimmed());
+    switch (intent.failure) {
+    case ObservationClassificationFailure::OutputTruncated:
+        return QStringLiteral(
+                   "Observation classification failed: the model reached its output limit before "
+                   "a complete classification result existed, so no step was planned or executed. "
+                   "Raise the model's output limit or disable reasoning for this model, then "
+                   "retry.") +
+               detail;
+    case ObservationClassificationFailure::InvalidJson:
+    case ObservationClassificationFailure::ContractViolation:
+        return QStringLiteral(
+                   "Observation classification failed: the model did not return a valid "
+                   "classification result, so no step was planned or executed. Invalid output is "
+                   "never treated as a decision. Retry, or select a model that can return "
+                   "structured output.") +
+               detail;
+    case ObservationClassificationFailure::BudgetRefused:
+        return QStringLiteral(
+                   "Observation classification failed: the classification request does not fit the "
+                   "effective context window, so no step was planned or executed. Reduce the task "
+                   "size or select a model with a larger context window.") +
+               detail;
+    case ObservationClassificationFailure::Cancelled:
+        return QStringLiteral("Observation classification was cancelled before it completed.") +
+               detail;
+    case ObservationClassificationFailure::ProviderFailure:
+    case ObservationClassificationFailure::None:
+        break;
+    }
+    return QStringLiteral(
+               "Observation classification failed; retry after checking the provider. No step "
+               "was planned or executed.") +
+           detail;
+}
+
+// The exact predicate `acceptFinalAnswer` enforces for a mutation receipt: a
+// later evidence record that reports the resulting state of the same resource.
+// Keeping one implementation means the read-back recovery aims at precisely the
+// evidence that is missing rather than at an approximation of it.
+bool mutationConfirmedBy(const AgentLoopState& state, const EvidenceRecord& operation) {
+    return std::any_of(state.evidence.cbegin(), state.evidence.cend(),
+                       [&](const EvidenceRecord& observation) {
+                           if (observation.stepIndex <= operation.stepIndex ||
+                               observation.scope == EvidenceScope::Operation ||
+                               (observation.domain != ObservationDomain::FileSystem &&
+                                observation.domain != ObservationDomain::Workspace))
+                               return false;
+                           const bool sameResource =
+                               operation.resource.isEmpty() ||
+                               normalizedObservationResource(
+                                   operation.resource, ObservationDomain::FileSystem) ==
+                                   normalizedObservationResource(
+                                       observation.resource, ObservationDomain::FileSystem);
+                           return sameResource &&
+                                  (observation.outcome == EvidenceOutcome::Verified ||
+                                   (observation.outcome == EvidenceOutcome::Failed &&
+                                    observation.structuredObservation &&
+                                    observation.structuredObservation->kind ==
+                                        StructuredObservationKind::FileSystemFailure));
+                       });
+}
+
+// A mutation records an Operation receipt: an event that already happened, not
+// an observation of the state it produced. A verified claim therefore needs a
+// later observation of the affected resource. When the planner cannot choose
+// that observation itself, dispatch exactly one safe, read-only read-back of the
+// mutated resource. The mutation is never executed again on this path: it only
+// reads, and the resulting call still passes plan validation, approval,
+// permission and sandbox like any other plan.
+std::optional<AgentStepDecision> postMutationReadBack(AgentLoopState& state,
+                                                      const QString& workspace,
+                                                      const QStringList& knownTools,
+                                                      const IToolRegistry* registry) {
+    const auto target =
+        std::find_if(state.evidence.cbegin(), state.evidence.cend(), [&](const auto& item) {
+            if (item.scope != EvidenceScope::Operation ||
+                (item.domain != ObservationDomain::FileSystem &&
+                 item.domain != ObservationDomain::Workspace) ||
+                item.outcome != EvidenceOutcome::Verified)
+                return false;
+            const auto resource =
+                normalizedObservationResource(item.resource, ObservationDomain::FileSystem);
+            // Never read back a mutation twice, and never one that is already
+            // confirmed by a later observation.
+            return !state.mutationReadBacks.contains(resource) && !mutationConfirmedBy(state, item);
+        });
+    if (target == state.evidence.cend())
+        return std::nullopt;
+
+    const bool bareWorkspaceTarget = target->resource.trimmed().isEmpty();
+    const auto path = bareWorkspaceTarget
+                          ? workspace
+                          : ExternalDirectoryGate{}.resolvePath(target->resource, workspace);
+    if (path.isEmpty())
+        return std::nullopt;
+
+    // Choose the narrowest safe read-only observation that can report the
+    // resulting state. A directory is listed; everything else, including a
+    // resource that no longer exists, is read so a typed absence is observed
+    // rather than assumed.
+    const QString toolId = (!bareWorkspaceTarget && QFileInfo(path).isDir())
+                               ? QStringLiteral("list-directory")
+                               : QStringLiteral("read-file");
+    if (!knownTools.contains(toolId))
+        return std::nullopt;
+    const auto tool = registry->findToolById(toolId);
+    if (!tool || tool->source != ToolSource::BuiltIn || !tool->enabled || !tool->exposedToModel ||
+        !toolSupportedOnCurrentPlatform(*tool)) {
+        return std::nullopt;
+    }
+
+    state.mutationReadBacks.append(
+        normalizedObservationResource(target->resource, ObservationDomain::FileSystem));
+    AgentStepDecision decision;
+    decision.kind = AgentStepDecision::Kind::ToolCall;
+    decision.toolId = tool->id;
+    decision.toolName = tool->name;
+    decision.riskLevel = tool->riskLevel;
+    decision.executionMode = tool->executionMode;
+    decision.arguments = {{QStringLiteral("path"), path}};
+    decision.thought = QStringLiteral(
+        "Read back the resource the mutation changed so its resulting state is observed. "
+        "This is a read-only verification of an already executed change; it does not repeat "
+        "the change.");
+    ++state.finalVerificationRecoveries;
+    return decision;
+}
+
 std::optional<AgentStepDecision> finalVerificationRecovery(AgentLoopState& state,
                                                            const QString& workspace,
                                                            const QStringList& knownTools,
@@ -191,6 +336,12 @@ std::optional<AgentStepDecision> finalVerificationRecovery(AgentLoopState& state
         !state.pendingApprovalPlan.invocations.isEmpty()) {
         return std::nullopt;
     }
+    // A rejected verified final over an unconfirmed mutation is the common case
+    // for a plain file task: there is no shell command to satisfy a `tested`
+    // precondition and no inspect requirement to drive a checklist. Observe the
+    // mutation's result first, then fall through to the requirement checklist.
+    if (auto readBack = postMutationReadBack(state, workspace, knownTools, registry))
+        return readBack;
     const bool wrote =
         std::any_of(state.evidence.cbegin(), state.evidence.cend(), [](const auto& item) {
             return item.scope == EvidenceScope::Operation &&
@@ -364,8 +515,39 @@ bool repeatsFailedCycle(const AgentLoopState& state, const ToolInvocationPlan& p
 
 bool repairRepeatedObservation(AgentLoopState& state, const ToolInvocationPlan& plan,
                                IAgentStepPlanner& planner) {
-    if (plan.invocations.size() != 1 || state.steps.isEmpty() || !state.steps.last().succeeded)
+    if (plan.invocations.size() != 1 || state.steps.isEmpty())
         return false;
+    if (!state.steps.last().succeeded) {
+        // One bounded repair is granted only when the previous attempt actually
+        // executed and returned a result the planner can act on: NotFound is a
+        // definitive observation (the target does not exist) and Timeout is a
+        // transient failure. The identical call is never executed again, and a
+        // second repeat still stops fail-closed. Invalid, unknown, denied or
+        // capability-unavailable blocks keep their immediate fail-closed stop:
+        // they can never gain an observation through repair, and a final answer
+        // must not paper over them.
+        const auto& last = state.steps.last();
+        const bool actionableFailure =
+            last.statusText == QLatin1String("Failed") &&
+            (last.failureCategory == ToolFailureCategory::NotFound ||
+             last.failureCategory == ToolFailureCategory::Timeout);
+        if (!actionableFailure || state.repeatedFailureRepairs != 0)
+            return false;
+        ++state.repeatedFailureRepairs;
+        QString semantics =
+            last.failureCategory == ToolFailureCategory::NotFound
+                ? QStringLiteral(
+                      "A NotFound result is definitive: that target does not currently exist. ")
+                : QStringLiteral("A Timeout may resolve on a different approach. ");
+        planner.setPlannerFeedback(
+            QStringLiteral("The identical %1 call was not executed again because its previous "
+                           "attempt already returned %2. %3Do not repeat the failed call: choose "
+                           "a different action with changed arguments, report the blocker, or "
+                           "provide a final answer grounded in the observations already "
+                           "collected.")
+                .arg(last.toolId, last.statusText, semantics));
+        return true;
+    }
     const auto& id = plan.invocations.first().toolId;
     const bool read = id == QLatin1String("read-file") || id == QLatin1String("glob") ||
                       id == QLatin1String("grep") || id == QLatin1String("list-directory");
@@ -397,8 +579,8 @@ bool repairRepeatedObservation(AgentLoopState& state, const ToolInvocationPlan& 
             "same path."));
         return true;
     }
-    // A blocked or failed request has no new observation to offer; the early
-    // return keeps the existing fail-closed path instead of a speculative repair.
+    // A repeated non-observation action after a successful step (for example a
+    // mutation) gets one bounded repair below; the next repeat stops fail-closed.
     if (state.repeatedActionRepairs != 0)
         return false;
     ++state.repeatedActionRepairs;
@@ -697,11 +879,8 @@ void AgentLoop::runAsync(const QString& goal, const QString& sessionId, QObject*
             cancellationRequested() ? AgentLoopPhase::Cancelled : AgentLoopPhase::Failed;
         asyncState_.terminalReason = cancellationRequested()
                                          ? AgentTerminalReason::Cancelled
-                                         : AgentTerminalReason::UnableToComplete;
-        asyncState_.abortReason =
-            QStringLiteral(
-                "Observation classification failed; retry after checking the provider. ") +
-            asyncState_.observationIntent.error;
+                                         : AgentTerminalReason::ObservationIndeterminate;
+        asyncState_.abortReason = classificationAbortMessage(asyncState_.observationIntent);
         completeAsync();
         return;
     }
@@ -870,9 +1049,7 @@ void AgentLoop::advanceAsync() {
     if (decision.kind == AgentStepDecision::Kind::GiveUp) {
         asyncState_.providerFailure = decision.providerFailure;
         asyncState_.phase = AgentLoopPhase::Failed;
-        asyncState_.terminalReason = decision.providerFailure
-                                         ? AgentTerminalReason::ProviderFailure
-                                         : AgentTerminalReason::UnableToComplete;
+        asyncState_.terminalReason = giveUpTerminalReason(decision);
         asyncState_.abortReason =
             decision.reason.trimmed().isEmpty() ? decision.thought : decision.reason;
         completeAsync();
@@ -1223,12 +1400,10 @@ AgentLoopState AgentLoop::run(const QString& goal, const QString& sessionId) {
     initializeObservationIntent(state);
     if (state.observationIntent.indeterminate) {
         state.phase = cancellationRequested() ? AgentLoopPhase::Cancelled : AgentLoopPhase::Failed;
-        state.terminalReason = cancellationRequested() ? AgentTerminalReason::Cancelled
-                                                       : AgentTerminalReason::UnableToComplete;
-        state.abortReason =
-            QStringLiteral(
-                "Observation classification failed; retry after checking the provider. ") +
-            state.observationIntent.error;
+        state.terminalReason = cancellationRequested()
+                                   ? AgentTerminalReason::Cancelled
+                                   : AgentTerminalReason::ObservationIndeterminate;
+        state.abortReason = classificationAbortMessage(state.observationIntent);
         return state;
     }
     return advance(std::move(state));
@@ -1352,8 +1527,7 @@ AgentLoopState AgentLoop::advance(AgentLoopState state) {
         if (decision.kind == AgentStepDecision::Kind::GiveUp) {
             state.providerFailure = decision.providerFailure;
             state.phase = AgentLoopPhase::Failed;
-            state.terminalReason = decision.providerFailure ? AgentTerminalReason::ProviderFailure
-                                                            : AgentTerminalReason::UnableToComplete;
+            state.terminalReason = giveUpTerminalReason(decision);
             state.abortReason =
                 decision.reason.trimmed().isEmpty() ? decision.thought : decision.reason;
             return state;
@@ -1662,6 +1836,7 @@ void AgentLoop::initializeObservationIntent(AgentLoopState& state) {
 }
 
 bool AgentLoop::acceptFinalAnswer(AgentLoopState& state, const AgentStepDecision& decision) {
+    state.lastFinalRejection = AgentStepFailure::None;
     if (state.repeatedActionRecoveryPending) {
         state.phase = AgentLoopPhase::Stuck;
         state.terminalReason = AgentTerminalReason::ToolFailure;
@@ -1685,31 +1860,12 @@ bool AgentLoop::acceptFinalAnswer(AgentLoopState& state, const AgentStepDecision
                  operation.domain != ObservationDomain::Workspace) ||
                 operation.outcome != EvidenceOutcome::Verified)
                 continue;
-            const bool confirmed = std::any_of(
-                state.evidence.cbegin(), state.evidence.cend(),
-                [&](const EvidenceRecord& observation) {
-                    if (observation.stepIndex <= operation.stepIndex ||
-                        observation.scope == EvidenceScope::Operation ||
-                        (observation.domain != ObservationDomain::FileSystem &&
-                         observation.domain != ObservationDomain::Workspace))
-                        return false;
-                    const bool sameResource =
-                        operation.resource.isEmpty() ||
-                        normalizedObservationResource(operation.resource,
-                                                      ObservationDomain::FileSystem) ==
-                            normalizedObservationResource(observation.resource,
-                                                          ObservationDomain::FileSystem);
-                    return sameResource && (observation.outcome == EvidenceOutcome::Verified ||
-                                            (observation.outcome == EvidenceOutcome::Failed &&
-                                             observation.structuredObservation &&
-                                             observation.structuredObservation->kind ==
-                                                 StructuredObservationKind::FileSystemFailure));
-                });
-            if (!confirmed) {
+            if (!mutationConfirmedBy(state, operation)) {
                 gate.accepted = false;
                 gate.repair = QStringLiteral(
                     "Observe the affected filesystem state after the mutation before "
                     "claiming a verified result.");
+                state.lastFinalRejection = AgentStepFailure::VerificationFailed;
                 break;
             }
         }
@@ -1725,6 +1881,7 @@ bool AgentLoop::acceptFinalAnswer(AgentLoopState& state, const AgentStepDecision
             if (!known) {
                 gate.accepted = false;
                 gate.repair = QStringLiteral("Final references an unknown claim ID.");
+                state.lastFinalRejection = AgentStepFailure::VerificationFailed;
                 break;
             }
         }
@@ -1741,6 +1898,7 @@ bool AgentLoop::acceptFinalAnswer(AgentLoopState& state, const AgentStepDecision
                 gate.repair =
                     QStringLiteral("Verified final requires a structured assertion for %1.")
                         .arg(requirement.claimId);
+                state.lastFinalRejection = AgentStepFailure::VerificationFailed;
                 break;
             }
             const auto resolved =
@@ -1754,6 +1912,7 @@ bool AgentLoop::acceptFinalAnswer(AgentLoopState& state, const AgentStepDecision
                                   : QStringLiteral("The observed result cannot determine %1. "
                                                    "Observe more or report inability to verify.")
                                         .arg(requirement.claimId);
+                state.lastFinalRejection = AgentStepFailure::VerificationFailed;
                 break;
             }
             gate.grounding.evidenceCallIds.append(resolved.fact.evidenceCallIds);
@@ -1774,6 +1933,7 @@ bool AgentLoop::acceptFinalAnswer(AgentLoopState& state, const AgentStepDecision
                     QStringLiteral("The current observation scope cannot support that conclusion. "
                                    "Use the evidence-derived scoped representation or obtain "
                                    "complete coverage.");
+                state.lastFinalRejection = AgentStepFailure::VerificationFailed;
             } else if (decision.answer.trimmed().isEmpty()) {
                 gate.answerOverride = *canonical;
             }
@@ -1784,6 +1944,7 @@ bool AgentLoop::acceptFinalAnswer(AgentLoopState& state, const AgentStepDecision
         gate.accepted = false;
         gate.repair = QStringLiteral("You declared that observation is needed. Use an "
                                      "appropriate tool before answering.");
+        state.lastFinalRejection = AgentStepFailure::VerificationFailed;
     }
     traceStage(state, "final_gate", gate.accepted ? "accepted" : "rejected");
     if (gate.accepted) {
@@ -1800,12 +1961,20 @@ bool AgentLoop::acceptFinalAnswer(AgentLoopState& state, const AgentStepDecision
     ++state.rejectedFinalAnswers;
     if (state.rejectedFinalAnswers >= 2) {
         state.phase = AgentLoopPhase::Failed;
-        state.terminalReason = AgentTerminalReason::UnableToComplete;
+        // A rejection that is specifically about verification or an unconfirmed
+        // mutation reports that, so the user is not told a generic "could not
+        // complete" when the run actually stopped over missing proof.
+        state.terminalReason = agentTerminalReasonFor(state.lastFinalRejection);
         // This is a bounded policy diagnostic, not model reasoning or raw output.
         // Keep the failed requirement observable instead of hiding every grounding
         // failure behind the same generic terminal message.
         state.abortReason =
-            QStringLiteral("Agent could not determine a grounded next action. %1").arg(gate.repair);
+            QStringLiteral(
+                "Agent could not determine a grounded next action. %1 No verified result was "
+                "published and no success is claimed; any tool effects already applied remain in "
+                "place. Inspect the affected resources, then retry with a narrower goal or supply "
+                "the missing evidence.")
+                .arg(gate.repair);
         return true;
     }
     planner_.setPlannerFeedback(gate.repair);

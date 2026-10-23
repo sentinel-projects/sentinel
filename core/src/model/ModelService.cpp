@@ -215,6 +215,23 @@ ModelCapabilities mergedCapabilities(ModelCapabilities base, const ModelCapabili
             override.provenance.contextWindow == ModelMetadataSource::Unknown
                 ? source
                 : override.provenance.contextWindow;
+        // The capacity kind travels with the value it describes. A later value
+        // only narrows the kind when it is at least as specific as the current
+        // one, so a catalog maximum can never relabel a runtime-reported loaded
+        // capacity as merely theoretical.
+        base.contextCapacity =
+            tighterContextCapacityKind(base.contextCapacity, override.contextCapacity);
+        base.provenance.contextCapacity =
+            override.provenance.contextCapacity == ModelMetadataSource::Unknown
+                ? source
+                : override.provenance.contextCapacity;
+    } else if (override.contextCapacity != ContextCapacityKind::Unknown) {
+        base.contextCapacity =
+            tighterContextCapacityKind(base.contextCapacity, override.contextCapacity);
+        base.provenance.contextCapacity =
+            override.provenance.contextCapacity == ModelMetadataSource::Unknown
+                ? source
+                : override.provenance.contextCapacity;
     }
     if (override.maxOutputTokens && *override.maxOutputTokens > 0) {
         base.maxOutputTokens = override.maxOutputTokens;

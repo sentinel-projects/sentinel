@@ -51,10 +51,12 @@ private:
                                     const std::function<void(const QString&)>& onDelta,
                                     const std::shared_ptr<std::atomic_bool>& cancellationToken,
                                     const QList<ChatImage>& images, int deadlineMs,
-                                    int maxOutputTokens, bool requireBoundedStreaming);
+                                    int maxOutputTokens, bool requireBoundedStreaming,
+                                    ReasoningControl reasoning = ReasoningControl::Default);
     ChatProviderReply sendMessageWithToken(
         const QString& message, const std::shared_ptr<std::atomic_bool>& cancellationToken,
-        const QList<ChatImage>& images = {}, int deadlineMs = 0, int maxOutputTokens = 0);
+        const QList<ChatImage>& images = {}, int deadlineMs = 0, int maxOutputTokens = 0,
+        ReasoningControl reasoning = ReasoningControl::Default);
     OllamaConfig config_;
     int timeoutMs_ = 30000;
     QString selectedModel_;

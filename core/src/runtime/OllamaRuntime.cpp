@@ -1673,7 +1673,7 @@ fetchLlamaCppModels(const QUrl& modelsUrl, int timeoutMs,
                     ProviderDiscoveryOutcome* outcome) {
     auto models =
         fetchOpenAiCompatibleModels(modelsUrl, timeoutMs, {}, nullptr, cancellationToken, outcome);
-    if (models.size() != 1 || (cancellationToken && cancellationToken->load()))
+    if (models.isEmpty() || (cancellationToken && cancellationToken->load()))
         return models;
     auto propsUrl = modelsUrl;
     auto path = propsUrl.path();
@@ -1686,23 +1686,43 @@ fetchLlamaCppModels(const QUrl& modelsUrl, int timeoutMs,
     if (!reply.ok)
         return models; // Optional metadata must not invalidate working Chat discovery.
     const auto props = reply.document.object();
-    // /props describes the loaded runtime, not every model in a router catalog.
-    // Bind it only to an unambiguous, matching loaded-model identity.
-    if (props.value(QStringLiteral("model_alias")).toString() != models.front().name)
+    // /props describes the running server, not a router catalog: n_ctx is the
+    // context the server actually loaded the model with, which is what token
+    // admission must use. It is never the model's trained maximum. Bind it only
+    // to the catalog entry the loaded runtime identifies, so one server's
+    // configuration is never applied to a different model.
+    const auto alias = props.value(QStringLiteral("model_alias")).toString();
+    int target = -1;
+    for (int i = 0; i < models.size(); ++i) {
+        if (!alias.isEmpty() && models.at(i).name == alias) {
+            target = i;
+            break;
+        }
+    }
+    if (target < 0 && models.size() == 1 && alias.isEmpty())
+        target = 0;
+    if (target < 0)
         return models;
     const auto caps = props.value(QStringLiteral("chat_template_caps")).toObject();
     const auto tools = caps.value(QStringLiteral("supports_tools"));
     const auto calls = caps.value(QStringLiteral("supports_tool_calls"));
     if (tools.isBool() && calls.isBool())
-        models.front().capabilities.nativeToolCalling = tools.toBool() && calls.toBool()
+        models[target].capabilities.nativeToolCalling = tools.toBool() && calls.toBool()
                                                             ? CapabilitySupport::Supported
                                                             : CapabilitySupport::Unsupported;
     const auto context = props.value(QStringLiteral("default_generation_settings"))
                              .toObject()
                              .value(QStringLiteral("n_ctx"))
                              .toDouble();
-    if (context > 0 && context <= std::numeric_limits<int>::max() && context == std::floor(context))
-        models.front().capabilities.contextWindow = static_cast<int>(context);
+    if (context > 0 && context <= std::numeric_limits<int>::max() && context == std::floor(context)) {
+        models[target].capabilities.contextWindow = static_cast<int>(context);
+        // The server reported the capacity it is running with, so this is the
+        // authoritative value for admission rather than a published maximum.
+        models[target].capabilities.contextCapacity = ContextCapacityKind::ServerConfigured;
+        models[target].capabilities.provenance.contextWindow = ModelMetadataSource::RuntimeReported;
+        models[target].capabilities.provenance.contextCapacity =
+            ModelMetadataSource::RuntimeReported;
+    }
     return models;
 }
 

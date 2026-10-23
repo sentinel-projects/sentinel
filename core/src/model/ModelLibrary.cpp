@@ -162,18 +162,36 @@ bool LMStudioNativeCatalogAdapter::acceptResponse(const QByteArray& response) {
         discovered.publisher = entry.publisher;
         discovered.architecture = entry.architecture;
         const auto maxContext = item.value(QStringLiteral("max_context_length")).toInt();
-        if (maxContext > 0) discovered.capabilities.contextWindow = maxContext;
+        if (maxContext > 0) {
+            discovered.capabilities.contextWindow = maxContext;
+            // A published maximum is a property of the model weights.
+            discovered.capabilities.contextCapacity = ContextCapacityKind::ModelMaximum;
+            discovered.capabilities.provenance.contextCapacity =
+                ModelMetadataSource::ProviderCatalog;
+        }
         // A published maximum is not the context of a loaded inference instance.
         // Use the smallest reported loaded window because requests use the model key.
+        bool sawLoadedWindow = false;
         for (const auto& instance : item.value(QStringLiteral("loaded_instances")).toArray()) {
             const auto loaded = instance.toObject()
                                     .value(QStringLiteral("config"))
                                     .toObject()
                                     .value(QStringLiteral("context_length"))
                                     .toInt();
-            if (loaded > 0)
+            if (loaded > 0) {
                 discovered.capabilities.contextWindow =
                     qMin(discovered.capabilities.contextWindow.value_or(loaded), loaded);
+                sawLoadedWindow = true;
+            }
+        }
+        if (sawLoadedWindow) {
+            // The server reported the capacity its loaded instances run with, so
+            // this value is authoritative for token admission.
+            discovered.capabilities.contextCapacity = ContextCapacityKind::ServerConfigured;
+            discovered.capabilities.provenance.contextWindow =
+                ModelMetadataSource::RuntimeReported;
+            discovered.capabilities.provenance.contextCapacity =
+                ModelMetadataSource::RuntimeReported;
         }
         const auto capabilities = item.value(QStringLiteral("capabilities")).toObject();
         if (capabilities.value(QStringLiteral("vision")).isBool())

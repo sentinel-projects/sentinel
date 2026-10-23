@@ -3,8 +3,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "sentinel/core/agent/LlmAgentRuntime.h"
+#include "sentinel/core/agent/AgentInferencePolicy.h"
 #include "sentinel/core/agent/ClaimGroundingResolver.h"
 #include "sentinel/core/agent/ObservationPolicy.h"
+#include "sentinel/core/provider/ProviderCapabilityNormalizer.h"
 #include "sentinel/core/runtime/IToolRegistry.h"
 #include "sentinel/core/runtime/ProviderRequestRuntime.h"
 #include "sentinel/core/runtime/ToolArgumentValidator.h"
@@ -315,13 +317,51 @@ AgentStepDecision LlmAgentRuntime::nextStep(const QString& goal,
     }
     const auto feedback = std::exchange(plannerFeedback_, QString{});
     QString repair = feedback.isEmpty() ? QString{} : QStringLiteral("\nREPAIR: %1").arg(feedback);
-    int requestedOutputTokens = 2048;
+
+    // Execution evidence a grounded decision still depends on is never compacted:
+    // the receipts of mutations performed in this run, and the observations that
+    // still have to satisfy an open observation requirement. Everything else is
+    // historical tool output that the budget may safely compact or omit instead
+    // of refusing the request outright.
+    QSet<QString> criticalEvidenceSources;
+    for (const auto& record : activeEvidence_) {
+        if (record.scope == EvidenceScope::Operation &&
+            (record.domain == ObservationDomain::FileSystem ||
+             record.domain == ObservationDomain::Workspace))
+            criticalEvidenceSources.insert(record.toolCallId);
+    }
+    for (const auto& requirement : activeIntent_.requirements) {
+        ObservationIntent single;
+        single.requirements = {requirement};
+        if (EvidencePolicy::evaluate(single, activeEvidence_, GroundingMode::Verified, true)
+                .accepted)
+            continue;
+        for (const auto& record : activeEvidence_)
+            if (record.domain == requirement.domain)
+                criticalEvidenceSources.insert(record.toolCallId);
+    }
+
+    // The output reserve scales with the model and the runtime instead of
+    // pinning every request to one number. A model with a known output headroom
+    // gets a share of it; a small effective context window cannot afford a large
+    // reserve and shrinks it so a simple task still fits. The reserve never
+    // exceeds the budget manager's ceiling, so this can only widen admission.
+    const int outputCap = modelBinding_.capabilities.maxOutputTokens.value_or(0);
+    int requestedOutputTokens = outputCap > 0 ? qBound(256, outputCap, 2048) : 2048;
+    const int effectiveWindow =
+        provider::requestProfile(modelBinding_).effectiveContextTokens().value_or(0);
+    if (effectiveWindow > 0)
+        requestedOutputTokens = qMin(requestedOutputTokens, qMax(256, effectiveWindow / 5));
+
     for (int attempt = 0; attempt < 2; ++attempt) {
         ChatRequestOptions options;
         options.cancellationToken = streamCancellationToken_;
-        options.deadlineMs = 120000;
+        options.deadlineMs = agentInferenceDeadlineMs(modelBinding_, 120000);
         options.maxOutputTokens = requestedOutputTokens;
         options.images = inputImages_;
+        // Planning asks for bounded reasoning so hidden reasoning is a small,
+        // accounted share of the completion budget rather than an unbounded one.
+        options.reasoning = ReasoningControl::Low;
         options.structuredOutput =
             modelBinding_.capabilities.structuredOutput == CapabilitySupport::Supported;
         options.nativeToolCalling =
@@ -350,18 +390,25 @@ AgentStepDecision LlmAgentRuntime::nextStep(const QString& goal,
         }
         QList<ContextBudgetItem> budgetItems;
         for (const auto& item : requestContext.items) {
+            const bool criticalObservation =
+                item.kind == AgentContextKind::Observation &&
+                criticalEvidenceSources.contains(item.source);
             const bool required =
                 item.kind == AgentContextKind::Goal || item.kind == AgentContextKind::Requirement ||
                 item.kind == AgentContextKind::Workspace || item.kind == AgentContextKind::Fact ||
-                item.kind == AgentContextKind::Observation ||
                 item.kind == AgentContextKind::Checkpoint ||
-                item.kind == AgentContextKind::ResponseProfile;
+                item.kind == AgentContextKind::ResponseProfile || criticalObservation;
             const auto kind = item.kind == AgentContextKind::Memory ? ContextBudgetKind::Memory
                               : item.kind == AgentContextKind::Observation
                                   ? ContextBudgetKind::Observation
                                   : ContextBudgetKind::Other;
-            budgetItems.append(
-                {item.content, kind, 100 - static_cast<int>(item.priority), required});
+            // Historical tool output is the first thing compacted when space is
+            // tight; it is still offered to the budget so it is kept whenever it
+            // fits.
+            const auto priority = (item.kind == AgentContextKind::Observation && !criticalObservation)
+                                      ? AgentContextPriority::Low
+                                      : item.priority;
+            budgetItems.append({item.content, kind, 100 - static_cast<int>(priority), required});
         }
         const auto budget = ContextBudgetManager{}.assemble(
             modelBinding_, options, budgetItems,
@@ -374,14 +421,32 @@ AgentStepDecision LlmAgentRuntime::nextStep(const QString& goal,
             },
             {candidates.sessionId, candidates.workspaceId});
         budgetDiagnostics_ = budget.diagnostics();
-        budgetDiagnostics_.insert("candidate_omissions", candidates.omittedItems);
+        budgetDiagnostics_.insert(QStringLiteral("candidate_omissions"), candidates.omittedItems);
+        if (budget.estimatedRequiredInput)
+            budgetDiagnostics_.insert(QStringLiteral("required_input_tokens"),
+                                      double(*budget.estimatedRequiredInput));
+        budgetDiagnostics_.insert(QStringLiteral("output_reserve_tokens"), budget.reservedOutput);
+        budgetDiagnostics_.insert(QStringLiteral("effective_context_tokens"),
+                                  budget.effectiveCapacity);
         if (!budget.accepted()) {
             AgentStepDecision failure;
             failure.kind = AgentStepDecision::Kind::GiveUp;
+            // Typed stop: this is a budget exhaustion, not a provider failure and
+            // not an ordinary inability to complete. Nothing was executed and no
+            // success is accepted.
+            failure.failure = AgentStepFailure::ContextBudgetExhausted;
             failure.reason =
-                QStringLiteral("Context budget refused: required instructions, execution "
-                               "evidence or continuation cannot fit safely; no final "
-                               "success was accepted.");
+                QStringLiteral(
+                    "Context budget refused: required instructions, execution evidence or "
+                    "continuation cannot fit safely; no request was sent, no step was executed "
+                    "and no final success was accepted. Effective context %1 tokens, required "
+                    "content %2 tokens, output reserve %3 tokens, estimated request %4 tokens. "
+                    "Reduce the task size, or select a model whose configured context window is "
+                    "large enough.")
+                    .arg(budget.effectiveCapacity)
+                    .arg(budget.estimatedRequiredInput ? *budget.estimatedRequiredInput : 0)
+                    .arg(budget.reservedOutput)
+                    .arg(budget.estimatedInput ? *budget.estimatedInput : 0);
             failure.providerFailure = ProviderFailureMetadata{
                 ChatRequestLifecycle::Failed, ChatProviderErrorCategory::RequestRejected, 0, 0, {}};
             return failure;
@@ -391,8 +456,9 @@ AgentStepDecision LlmAgentRuntime::nextStep(const QString& goal,
         bool outputEmitted = false;
         bool plannerStreamOverflow = false;
         // Use the bounded-streaming contract only when the selected provider
-        // explicitly implements it. The planner keeps its finite 120000 ms
-        // deadline; the bounded overload carries that deadline into the
+        // explicitly implements it and a finite deadline applies. Local generation
+        // uses cancellable non-streaming without a wall-clock deadline. The
+        // bounded overload carries the remote deadline into the
         // streaming transport and rejects rather than running unbounded. Native
         // tool calls, structured output and image requests stay on the bounded
         // non-streaming path, and there is no unbounded streaming fallback.
@@ -1204,6 +1270,41 @@ QString LlmAgentRuntime::buildPlannerPrompt(const QString& goal,
                 "repeating that failed call.\n")
                 .arg(QString::fromUtf8(QJsonDocument(missing).toJson(QJsonDocument::Compact)));
     }
+    // An operate requirement can only be satisfied by performing the change itself.
+    // Small models otherwise probe the target repeatedly and finalize with an
+    // unverifiable claim, so name the pending action explicitly. This grants no
+    // authority: the mutation still passes approval, permission and sandbox.
+    QJsonArray pendingActions;
+    for (const auto& requirement : activeIntent_.requirements) {
+        if (requirement.purpose != ObservationPurpose::Operate ||
+            requirement.resourceHint.isEmpty()) {
+            continue;
+        }
+        ObservationIntent single;
+        single.requirements = {requirement};
+        if (EvidencePolicy::evaluate(single, activeEvidence_, GroundingMode::Verified, true)
+                .accepted) {
+            continue;
+        }
+        pendingActions.append(QJsonObject{{QStringLiteral("domain"),
+                                           observationDomainName(requirement.domain)},
+                                          {QStringLiteral("resource"),
+                                           requirement.resourceHint}});
+    }
+    if (!pendingActions.isEmpty())
+        prompt +=
+            QStringLiteral(
+                "\nREQUIRED ACTIONS NOT YET PERFORMED (runtime policy, not tool output): %1\n"
+                "The user goal requires one of these state changes. Issue the requested change "
+                "itself as a tool call with a registered mutation tool (for a filesystem target: "
+                "write-file or edit-file) using the full absolute path and the complete intended "
+                "content; the call still goes through the normal approval, permission and sandbox "
+                "gates. A read, listing or existence check cannot satisfy an action, so do not "
+                "probe the target again or substitute one for it. Do not return a successful "
+                "final while the action is unperformed. If the action cannot be performed, "
+                "report the blocker.\n")
+                .arg(QString::fromUtf8(
+                    QJsonDocument(pendingActions).toJson(QJsonDocument::Compact)));
     return prompt;
 }
 

@@ -94,6 +94,34 @@ struct ProviderFailureMetadata {
     QString requestId;
 };
 
+// Typed response-completion state. `Truncated` means the provider stopped at its
+// output limit and the visible answer is incomplete. A truncated reply must
+// never be accepted as a finished classification, summary or final answer, even
+// when it happens to contain parseable text.
+enum class ResponseCompletion {
+    // Provider reported a natural stop.
+    Complete,
+    // Provider stopped at its output limit; the reply is a prefix.
+    Truncated,
+    // Provider returned no usable payload at all.
+    Empty,
+};
+
+// Caller's reasoning/thinking intent for one request. Providers translate this
+// into the field their own protocol documents (Ollama `think`, llama.cpp
+// `chat_template_kwargs`, LM Studio `reasoning_effort`); a protocol with no
+// documented control emits nothing rather than borrowing another protocol's
+// field name.
+enum class ReasoningControl {
+    // Leave the model's own default alone.
+    Default,
+    // No hidden reasoning budget. Used for classification and other small,
+    // schema-shaped answers where reasoning only competes with the required JSON.
+    Disabled,
+    // Bounded reasoning; the model may think briefly.
+    Low,
+};
+
 struct ChatProviderReply {
     bool success = false;
     QString message;
@@ -116,6 +144,9 @@ struct ChatProviderReply {
     std::optional<QJsonObject> structuredResult;
     // Allowlisted numeric/status metadata only; never prompts, credentials or reasoning.
     QJsonObject diagnostics;
+    // Typed completion state normalized across providers. `Truncated` marks a
+    // reply that stopped at the output limit; it is not a successful response.
+    ResponseCompletion completion = ResponseCompletion::Complete;
 };
 
 struct ChatImage {
@@ -150,6 +181,8 @@ struct ChatRequestOptions {
     // running unbounded. A zero/absent deadline never satisfies a request that
     // explicitly requires bounded streaming.
     bool requireBoundedStreaming = false;
+    // Reasoning/thinking intent. Providers map it to their own documented field.
+    ReasoningControl reasoning = ReasoningControl::Default;
 };
 
 inline QString chatProviderStatusName(ChatProviderStatus status) {

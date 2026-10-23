@@ -125,6 +125,31 @@ struct StructuredFact {
 };
 enum class GroundingMode { Context, Verified, UnableToVerify };
 
+// Why observation classification could not produce a usable intent. Typed so a
+// truncated structured reply, an invalid JSON body and a genuine provider
+// failure stay distinguishable; none of them may be papered over with a guessed
+// decision.
+enum class ObservationClassificationFailure {
+    None,
+    // The run was cancelled before classification finished.
+    Cancelled,
+    // The request could not be admitted at the current context budget.
+    BudgetRefused,
+    // The provider rejected or failed the request for a reason other than its
+    // output limit.
+    ProviderFailure,
+    // The provider stopped at its output limit; the classification JSON is a
+    // prefix and must not be parsed into a decision.
+    OutputTruncated,
+    // The provider returned a complete reply whose body is not the required
+    // standalone JSON object.
+    InvalidJson,
+    // The reply named a domain, tool or entry count the contract forbids.
+    ContractViolation,
+};
+
+QString observationClassificationFailureName(ObservationClassificationFailure failure);
+
 struct ToolEvidenceDescriptor {
     ObservationDomain domain = ObservationDomain::ExternalService;
     EvidenceFreshness freshness = EvidenceFreshness::TurnScoped;
@@ -150,6 +175,11 @@ struct ObservationIntent {
     QList<ObservationRequirement> requirements;
     bool indeterminate = false;
     QString error;
+    // Typed reason for an indeterminate classification. Consumers and retry
+    // policy key off this instead of matching error prose, so a reply truncated
+    // at the provider output limit is never mistaken for a provider outage or
+    // for invalid JSON.
+    ObservationClassificationFailure failure = ObservationClassificationFailure::None;
     bool requiresObservation() const {
         return !requirements.isEmpty();
     }

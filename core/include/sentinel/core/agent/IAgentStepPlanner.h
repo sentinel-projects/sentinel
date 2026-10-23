@@ -41,6 +41,46 @@ struct AgentToolAction {
     QString providerCallId;
 };
 
+// Typed reason a planner stopped instead of producing another tool call.
+// `AgentLoop` maps this to the run's terminal reason so a context-budget
+// refusal, an indeterminate observation classification and a verification
+// failure stay distinguishable instead of collapsing into one generic abort.
+enum class AgentStepFailure {
+    None,
+    // Required instructions, execution evidence or continuation cannot fit.
+    ContextBudgetExhausted,
+    // Observation classification could not produce a usable intent.
+    ObservationIndeterminate,
+    // A required verification could not be observed or did not hold.
+    VerificationFailed,
+    // The provider failed and no safe recovery remains.
+    ProviderFailure,
+    // Every remaining action is blocked, denied or out of scope.
+    Blocked,
+    // The run reached its iteration limit.
+    IterationLimit,
+};
+
+inline QString agentStepFailureName(AgentStepFailure failure) {
+    switch (failure) {
+    case AgentStepFailure::ContextBudgetExhausted:
+        return QStringLiteral("ContextBudgetExhausted");
+    case AgentStepFailure::ObservationIndeterminate:
+        return QStringLiteral("ObservationIndeterminate");
+    case AgentStepFailure::VerificationFailed:
+        return QStringLiteral("VerificationFailed");
+    case AgentStepFailure::ProviderFailure:
+        return QStringLiteral("ProviderFailure");
+    case AgentStepFailure::Blocked:
+        return QStringLiteral("Blocked");
+    case AgentStepFailure::IterationLimit:
+        return QStringLiteral("IterationLimit");
+    case AgentStepFailure::None:
+        break;
+    }
+    return QStringLiteral("None");
+}
+
 struct AgentStepDecision {
     enum class Kind {
         ToolCall,
@@ -64,6 +104,8 @@ struct AgentStepDecision {
     GroundingMode grounding = GroundingMode::Context;
     bool groundingDeclared = false;
     QList<ClaimAssertion> claims;
+    // Typed stop reason for `Kind::GiveUp`. Absent decisions keep `None`.
+    AgentStepFailure failure = AgentStepFailure::None;
 };
 
 class IAgentStepPlanner {

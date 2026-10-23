@@ -9,6 +9,7 @@
 
 #include <QList>
 #include <QString>
+#include <QStringList>
 
 namespace sentinel::core {
 
@@ -34,6 +35,17 @@ enum class AgentTerminalReason {
     SecurityDenied,
     IterationLimit,
     UnableToComplete,
+    // Observation classification could not produce a usable intent, so no
+    // grounded step could be planned. Distinct from a provider outage so the
+    // user is told to check the model rather than the network.
+    ObservationIndeterminate,
+    // Required instructions, execution evidence or continuation cannot fit in
+    // the effective context window and no safe compaction remained.
+    ContextBudgetExhausted,
+    // A required post-mutation or final verification could not be observed.
+    VerificationFailed,
+    // Every remaining action is blocked, denied or out of scope.
+    Blocked,
 };
 
 inline QString agentTerminalReasonName(AgentTerminalReason reason) {
@@ -58,8 +70,38 @@ inline QString agentTerminalReasonName(AgentTerminalReason reason) {
         return QStringLiteral("IterationLimit");
     case AgentTerminalReason::UnableToComplete:
         return QStringLiteral("UnableToComplete");
+    case AgentTerminalReason::ObservationIndeterminate:
+        return QStringLiteral("ObservationIndeterminate");
+    case AgentTerminalReason::ContextBudgetExhausted:
+        return QStringLiteral("ContextBudgetExhausted");
+    case AgentTerminalReason::VerificationFailed:
+        return QStringLiteral("VerificationFailed");
+    case AgentTerminalReason::Blocked:
+        return QStringLiteral("Blocked");
     }
     return QStringLiteral("None");
+}
+
+// Maps a typed planner stop onto the run's terminal reason. Unknown values stay
+// `UnableToComplete` rather than `None`: a run that stopped has a reason.
+inline AgentTerminalReason agentTerminalReasonFor(AgentStepFailure failure) {
+    switch (failure) {
+    case AgentStepFailure::ObservationIndeterminate:
+        return AgentTerminalReason::ObservationIndeterminate;
+    case AgentStepFailure::ContextBudgetExhausted:
+        return AgentTerminalReason::ContextBudgetExhausted;
+    case AgentStepFailure::VerificationFailed:
+        return AgentTerminalReason::VerificationFailed;
+    case AgentStepFailure::ProviderFailure:
+        return AgentTerminalReason::ProviderFailure;
+    case AgentStepFailure::Blocked:
+        return AgentTerminalReason::Blocked;
+    case AgentStepFailure::IterationLimit:
+        return AgentTerminalReason::IterationLimit;
+    case AgentStepFailure::None:
+        break;
+    }
+    return AgentTerminalReason::UnableToComplete;
 }
 
 inline QString agentLoopPhaseName(AgentLoopPhase phase) {
@@ -96,12 +138,21 @@ struct AgentLoopState {
     FinalAnswerGrounding finalGrounding;
     QList<ClaimAssertion> finalClaims;
     int rejectedFinalAnswers = 0;
+    // Typed reason the most recent final answer was rejected. `None` means the
+    // rejection came from the general evidence gate and keeps the generic
+    // terminal reason; verification-specific rejections stay distinguishable.
+    AgentStepFailure lastFinalRejection = AgentStepFailure::None;
     int blockedSteps = 0;
     int consecutiveBlockedSteps = 0;
     int repeatedReadRepairs = 0;
     int repeatedActionRepairs = 0;
+    int repeatedFailureRepairs = 0;
     bool repeatedActionRecoveryPending = false;
     int finalVerificationRecoveries = 0;
+    // Normalized resources of mutations already verified by an automatic
+    // read-back in this run. A mutation is never read back twice and never
+    // re-executed by the recovery path.
+    QStringList mutationReadBacks;
     int providerRecoveryAttempts = 0;
     QString finalAnswer;
     QString abortReason;

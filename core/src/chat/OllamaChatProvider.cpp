@@ -99,12 +99,13 @@ ChatProviderReply OllamaChatProvider::sendRequest(const QString& message,
     if (options.nativeToolCalling || options.structuredOutput)
         return IChatProvider::sendRequest(message, options);
     return sendMessageWithToken(message, options.cancellationToken, options.images,
-                                options.deadlineMs, options.maxOutputTokens);
+                                options.deadlineMs, options.maxOutputTokens, options.reasoning);
 }
 
 ChatProviderReply OllamaChatProvider::sendMessageWithToken(
     const QString& message, const std::shared_ptr<std::atomic_bool>& cancellationToken,
-    const QList<ChatImage>& images, int deadlineMs, int maxOutputTokens) {
+    const QList<ChatImage>& images, int deadlineMs, int maxOutputTokens,
+    ReasoningControl reasoning) {
     const auto trimmed = message.trimmed();
     if (trimmed.isEmpty()) {
         return failureReply(QStringLiteral("Prompt is blank."),
@@ -148,6 +149,9 @@ ChatProviderReply OllamaChatProvider::sendMessageWithToken(
     request.options.temperature = 0.7;
     request.options.topP = 0.9;
     request.options.maxTokens = maxOutputTokens > 0 ? maxOutputTokens : 2048;
+    // Ollama's documented reasoning switch; the transport writes it as `think`.
+    request.options.reasoning = reasoning;
+    request.options.reasoningEndpoint = ProviderEndpoint::Ollama;
 
     const auto response = inferenceClient.infer(request);
     if (response.status == LocalInferenceStatus::Succeeded) {
@@ -156,6 +160,8 @@ ChatProviderReply OllamaChatProvider::sendMessageWithToken(
         reply.attempts = response.attempts;
         reply.retrySummary = response.retrySummary;
         reply.requestId = response.requestId;
+        reply.diagnostics = response.diagnostics;
+        reply.completion = ResponseCompletion::Complete;
         return reply;
     }
 
@@ -169,6 +175,9 @@ ChatProviderReply OllamaChatProvider::sendMessageWithToken(
     reply.attempts = response.attempts;
     reply.retrySummary = response.retrySummary;
     reply.requestId = response.requestId;
+    reply.diagnostics = response.diagnostics;
+    if (response.diagnostics.value(QStringLiteral("output_limit_reached")).toBool())
+        reply.completion = ResponseCompletion::Truncated;
     return reply;
 }
 
@@ -205,13 +214,13 @@ ChatProviderReply OllamaChatProvider::sendMessageStreaming(
     const int deadlineMs = options.deadlineMs > 0 ? options.deadlineMs : timeoutMs_;
     const int maxOutputTokens = options.maxOutputTokens > 0 ? options.maxOutputTokens : 2048;
     return streamMessage(message, onDelta, token, options.images, deadlineMs, maxOutputTokens,
-                         options.requireBoundedStreaming);
+                         options.requireBoundedStreaming, options.reasoning);
 }
 
 ChatProviderReply OllamaChatProvider::streamMessage(
     const QString& message, const std::function<void(const QString&)>& onDelta,
     const std::shared_ptr<std::atomic_bool>& cancellationToken, const QList<ChatImage>& images,
-    int deadlineMs, int maxOutputTokens, bool requireBoundedStreaming) {
+    int deadlineMs, int maxOutputTokens, bool requireBoundedStreaming, ReasoningControl reasoning) {
     const auto trimmed = message.trimmed();
     if (trimmed.isEmpty())
         return failureReply(QStringLiteral("Prompt is blank."),
@@ -272,6 +281,8 @@ ChatProviderReply OllamaChatProvider::streamMessage(
     request.options.maxTokens = maxOutputTokens;
     request.options.streamingRequested = true;
     request.options.cancellationToken = cancellationToken;
+    request.options.reasoning = reasoning;
+    request.options.reasoningEndpoint = ProviderEndpoint::Ollama;
 
     OllamaLocalInferenceStreamClient client(config_, timeoutMs_);
     const auto result = client.startStream(request, [&](const LocalInferenceStreamChunk& chunk) {

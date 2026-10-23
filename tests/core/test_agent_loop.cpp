@@ -11,6 +11,7 @@
 #include "sentinel/core/runtime/IToolExecutor.h"
 #include "sentinel/core/runtime/InMemoryToolRegistry.h"
 #include "sentinel/core/runtime/RealToolExecutor.h"
+#include <algorithm>
 #include "sentinel/core/security/StaticApprovalPolicy.h"
 #include "sentinel/core/security/StaticSandboxPolicy.h"
 #include <QFile>
@@ -49,11 +50,15 @@ public:
     QVector<AgentStepDecision> decisions;
     mutable QVector<QList<AgentStepRecord>> observedHistories;
     mutable int calls = 0;
+    mutable QStringList feedbacks;
     bool repeatLast = false;
     bool canonicalFinal = false;
     QList<EvidenceRecord> evidence;
     void setEvidence(const QList<EvidenceRecord>& value) override {
         evidence = value;
+    }
+    void setPlannerFeedback(const QString& feedback) override {
+        feedbacks.append(feedback);
     }
     std::function<void(int)> onCall;
 
@@ -94,10 +99,13 @@ public:
     mutable QVector<ToolExecutionRequest> requests;
     QString summary = QStringLiteral("observation-from-tool");
     ToolExecutionStatus status = ToolExecutionStatus::Succeeded;
+    ToolFailureCategory failureCategory = ToolFailureCategory::None;
 
     ToolExecutionResult execute(const ToolExecutionRequest& request) const override {
         requests.append(request);
-        return {status, summary};
+        ToolExecutionResult result{status, summary};
+        result.failureCategory = failureCategory;
+        return result;
     }
 };
 
@@ -753,6 +761,59 @@ private slots:
         QCOMPARE(state.repeatedActionRepairs, 1);
         QCOMPARE(executor.requests.size(), 1);
         QVERIFY(state.finalAnswer.isEmpty());
+    }
+
+    void repeatedFailedStepGetsOneBoundedRepairWithoutReexecution_data() {
+        QTest::addColumn<bool>("recover");
+        QTest::addColumn<bool>("async");
+        QTest::newRow("sync-final") << true << false;
+        QTest::newRow("sync-repeat") << false << false;
+        QTest::newRow("async-final") << true << true;
+        QTest::newRow("async-repeat") << false << true;
+    }
+
+    void repeatedFailedStepGetsOneBoundedRepairWithoutReexecution() {
+        QFETCH(bool, recover);
+        QFETCH(bool, async);
+        ScriptedPlanner planner;
+        const auto stat = toolDecision(QStringLiteral("read-file"));
+        // First call fails with NotFound; the model repeats it unchanged. The
+        // repeat is never re-executed; one repair teaches that the failed result
+        // is already the answer. A second repeat still stops fail-closed.
+        planner.decisions = {stat, stat, recover ? finalDecision(QStringLiteral("path is absent"))
+                                                 : stat};
+        planner.repeatLast = true;
+        RecordingExecutor executor;
+        executor.status = ToolExecutionStatus::Failed;
+        executor.failureCategory = ToolFailureCategory::NotFound;
+        StaticApprovalPolicy approval;
+        auto sandbox = permissiveSandbox();
+        AgentLoop loop(planner, executor, approval, sandbox,
+                       QStringList{QStringLiteral("read-file")});
+        AgentLoopState state;
+        bool finished = false;
+        if (async) {
+            loop.runAsync(QStringLiteral("Inspect missing file"),
+                          QStringLiteral("failed-repeat"), this,
+                          [&](const AgentLoopState& result) {
+                              state = result;
+                              finished = true;
+                          });
+            QTRY_VERIFY(finished);
+        } else {
+            state = loop.run(QStringLiteral("Inspect missing file"));
+        }
+        QCOMPARE(state.phase, recover ? AgentLoopPhase::Completed : AgentLoopPhase::Stuck);
+        QCOMPARE(state.repeatedFailureRepairs, 1);
+        QCOMPARE(executor.requests.size(), 1);
+        const bool hasFailureRepair = std::any_of(
+            planner.feedbacks.cbegin(), planner.feedbacks.cend(), [](const QString& feedback) {
+                return feedback.contains(QStringLiteral("A NotFound result is definitive")) &&
+                       feedback.contains(QStringLiteral("already returned Failed"));
+            });
+        QVERIFY(hasFailureRepair);
+        if (!recover)
+            QVERIFY(state.finalAnswer.isEmpty());
     }
 
     void multipleToolResultsRequireAcceptedFinal() {

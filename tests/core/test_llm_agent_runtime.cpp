@@ -97,6 +97,32 @@ class LlmAgentRuntimeTest final : public QObject {
     Q_OBJECT
 
 private slots:
+    void localPlanningHasNoDeadlineAndKeepsCancellationAndBudget() {
+        for (const auto& id : {"lm-studio", "ollama", "llama-cpp-server", "openai-compatible-local",
+                               "cloud-api", "unknown"}) {
+            auto provider = std::make_shared<FakeChatProvider>();
+            provider->bounded = true;
+            provider->scriptedReply =
+                "{\"action\":\"final\",\"grounding\":\"context\",\"answer\":\"hello\"}";
+            LlmAgentRuntime runtime({}, provider.get());
+            ModelBinding binding;
+            binding.providerId = id;
+            binding.modelId = "fixture";
+            binding.capabilities.streaming = CapabilitySupport::Supported;
+            runtime.bindModel(binding, provider);
+            runtime.setObservationIntent({});
+            auto token = std::make_shared<std::atomic_bool>(false);
+            runtime.setStreamObserver([](const QString&) {}, token);
+            const auto result = runtime.nextStep("hello", {});
+            QCOMPARE(result.kind, AgentStepDecision::Kind::FinalAnswer);
+            const auto options = provider->requestOptions.first();
+            const bool remote = QString(id) == "cloud-api" || QString(id) == "unknown";
+            QCOMPARE(options.deadlineMs, remote ? 120000 : 0);
+            QCOMPARE(options.requireBoundedStreaming, remote);
+            QCOMPARE(options.cancellationToken, token);
+            QVERIFY(options.maxOutputTokens > 0 && options.maxOutputTokens <= 2048);
+        }
+    }
     void truncatedPlannerAnswerGetsOneBudgetAdmittedRetry() {
         for (bool recover : {false, true}) {
             FakeChatProvider provider;
@@ -329,6 +355,30 @@ private slots:
         runtime.setEvidence({read, diff});
         runtime.nextStep("Fix calc.py, run the test and inspect git-diff", {});
         QVERIFY(!provider.prompts.last().contains("REMAINING REQUIRED OBSERVATIONS"));
+    }
+
+    void pendingOperateActionIsNamedAndDisappearsAfterMutation() {
+        FakeChatProvider provider;
+        provider.scriptedReply = R"({"action":"giveup","reason":"fixture stop"})";
+        LlmAgentRuntime runtime(BuiltInToolProvider::descriptors(), &provider);
+        ObservationIntent intent;
+        intent.requirements = {{ObservationDomain::FileSystem, "/fixture/notes.txt",
+                                EvidenceFreshness::TurnScoped, ObservationPurpose::Operate}};
+        runtime.setObservationIntent(intent);
+        runtime.setEvidence({});
+        runtime.nextStep("Create notes.txt with a greeting", {});
+        const auto pending = provider.prompts.last().section("REQUIRED ACTIONS NOT YET PERFORMED", 1);
+        QVERIFY(pending.contains("/fixture/notes.txt"));
+        QVERIFY(pending.contains("write-file"));
+        EvidenceRecord write;
+        write.domain = ObservationDomain::FileSystem;
+        write.resource = "/fixture/notes.txt";
+        write.scope = EvidenceScope::Operation;
+        write.outcome = EvidenceOutcome::Verified;
+        write.toolId = "write-file";
+        runtime.setEvidence({write});
+        runtime.nextStep("Create notes.txt with a greeting", {});
+        QVERIFY(!provider.prompts.last().contains("REQUIRED ACTIONS NOT YET PERFORMED"));
     }
 
     void focusesLocalCodingToolsWithoutExpandingProfile() {

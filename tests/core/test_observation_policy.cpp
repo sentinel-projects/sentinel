@@ -31,10 +31,20 @@ public:
         return ChatProviderStatus::Ready;
     }
     ChatProviderReply sendMessage(const QString&) override {
+        if (failures > 0) {
+            --failures;
+            ChatProviderReply result;
+            result.category = ChatProviderErrorCategory::RequestRejected;
+            result.errorMessage = QStringLiteral(
+                "Provider 'lm-studio': Provider output limit reached; classification is "
+                "indeterminate.");
+            return result;
+        }
         return {true, reply, {}};
     }
     ChatProviderReply sendRequest(const QString& message,
                                   const ChatRequestOptions& options) override {
+        ++calls;
         request = options;
         prompt = message;
         if (options.cancellationToken && options.cancellationToken->load()) {
@@ -50,6 +60,8 @@ public:
     QString reply;
     QString prompt;
     ChatRequestOptions request;
+    int calls = 0;
+    int failures = 0;
 };
 
 } // namespace
@@ -595,6 +607,51 @@ private slots:
         QVERIFY(answer);
         QVERIFY(!answer->contains(QChar(0x1b)));
         QVERIFY(answer->contains(QStringLiteral("\\n")));
+    }
+    void localClassificationHasNoDeadlineAndRemainsCancellable() {
+        for (const auto& id : {"lm-studio", "ollama", "llama-cpp-server", "openai-compatible-local",
+                               "cloud-api", "unknown"}) {
+            FixedReplyProvider provider;
+            auto token = std::make_shared<std::atomic_bool>(true);
+            ModelBinding binding;
+            binding.providerId = id;
+            ObservationIntentPolicy policy(&provider, token, binding);
+            const auto intent = policy.classify("List the workspace", {}, {});
+            QCOMPARE(provider.request.deadlineMs,
+                     QString(id) == "cloud-api" || QString(id) == "unknown" ? 60000 : 0);
+            QCOMPARE(provider.request.cancellationToken, token);
+            QCOMPARE(provider.request.maxOutputTokens, 2048);
+            QCOMPARE(intent.error, QStringLiteral("Cancelled"));
+        }
+    }
+    void classificationRetriesOnceAfterProviderFailure() {
+        FixedReplyProvider provider;
+        provider.failures = 1;
+        provider.reply = QStringLiteral("{\"requirements\":[]}");
+        ObservationIntentPolicy policy(&provider);
+        const auto intent = policy.classify("List the workspace", {}, {});
+        QCOMPARE(provider.calls, 2);
+        QVERIFY(!intent.indeterminate);
+        QVERIFY(intent.requirements.isEmpty());
+    }
+    void classificationStopsAfterTheSingleRetry() {
+        FixedReplyProvider provider;
+        provider.failures = 5;
+        ObservationIntentPolicy policy(&provider);
+        const auto intent = policy.classify("List the workspace", {}, {});
+        QCOMPARE(provider.calls, 2);
+        QVERIFY(intent.indeterminate);
+        QVERIFY(intent.error.contains(QStringLiteral("output limit reached")));
+    }
+    void cancelledClassificationNeverRetries() {
+        FixedReplyProvider provider;
+        provider.failures = 5;
+        auto token = std::make_shared<std::atomic_bool>(true);
+        ObservationIntentPolicy policy(&provider, token);
+        const auto intent = policy.classify("List the workspace", {}, {});
+        QCOMPARE(provider.calls, 1);
+        QVERIFY(intent.indeterminate);
+        QCOMPARE(intent.error, QStringLiteral("Cancelled"));
     }
     void classifierPropagatesCancellationWithoutOtherPayload() {
         FixedReplyProvider provider;
