@@ -14,5 +14,5 @@ serde_json = "1"
 sentinel-ipc = { path = "crates/sentinel-ipc" }
 sentinel-tui = { path = "crates/sentinel-tui" }
 ratatui = "0.30"
-crossterm = "0.28"
+crossterm = "0.29"
 ctrlc = "3"
