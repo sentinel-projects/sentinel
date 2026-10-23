@@ -1767,6 +1767,22 @@ private slots:
         QFETCH(QString, url);
         QVERIFY(sentinel::desktop::QuickPanelController::parseLink(url).isEmpty());
     }
+    void runtimeSummaryDoesNotReadCloudCredentials() {
+        auto credentials = std::make_shared<CountingCredentials>();
+        sentinel::core::AppSettings settings(
+            std::make_unique<sentinel::core::InMemorySettingsStore>(),
+            sentinel::core::CredentialStore(credentials));
+        sentinel::test::DeterministicModelServiceFixture models(
+            sentinel::test::DeterministicChatReply::Final, &settings);
+        sentinel::core::ApplicationControllerBuilder builder;
+        auto controller = builder.withModelService(models.takeModelService())
+                              .withOllamaRuntimeClient(std::make_unique<MetadataClient>())
+                              .withMemoryStore(std::make_unique<sentinel::core::InMemoryStore>())
+                              .build();
+        const auto before = credentials->reads;
+        controller->activeRuntimeLocalOnlySummary();
+        QCOMPARE(credentials->reads, before);
+    }
     void modelLibraryProjectionDoesNotReadCloudCredentials() {
         auto credentials = std::make_shared<CountingCredentials>();
         sentinel::core::AppSettings settings(

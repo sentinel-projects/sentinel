@@ -196,3 +196,96 @@ remain separate from local macOS results.
 - `tools/agent/README.md`
 - `tools/agent/live_coding.py`
 - `ui/qml/pages/AgentInspectorPage.qml`
+
+
+## LM Studio follow-up acceptance — 2026-10-23
+
+LM Studio became available at loopback port 1234. Its native model catalog
+confirmed `qwen/qwen3.5-9b` was already loaded with a 262144-token context.
+No model was loaded/downloaded and no user profile or server setting was changed.
+Ollama is explicitly deferred.
+
+Two isolated full-daemon `--completion-only` runs used the real LM Studio
+transport, native tools, permission approval, AgentLoop and IPC. Both changed
+`calc.py` from subtraction to addition and successfully read it back. The trusted
+AST verifier and arithmetic tests passed; unrelated source and tests were preserved.
+The first run reached the final planner repair but exceeded its 300-second harness
+limit without a terminal event. Its independent verifier was run separately after
+the harness stopped; this is not an accepted final or live acceptance pass.
+
+The second run, bounded to 600 seconds with diagnostic logging, reached a terminal
+result: `run.failed`, `completion_status=Completion Indeterminate`,
+`terminal_reason=CompletionIndeterminate`. After read/edit/read the model requested
+`todo-read`, then repeatedly requested the already observed `read-file` instead of
+an explicit accepted final. The single repeated-read repair was exhausted. No
+additional mutation was dispatched and no rollback was reported. There was no
+context-budget error. This demonstrates a remaining model/finalization reliability
+failure, not an execution failure, successful acceptance, or UI projection mismatch.
+The existing acceptance gate correctly refused to turn successful tool execution
+into Completed. It does not establish that an accepted final is possible for this
+model on this flow; further finalization recovery work remains.
+
+Compact sanitized evidence is in
+[LM Studio acceptance evidence](AGENT_COMPLETION_LM_STUDIO_2026_10_23.json).
+These follow-up runs do not modify production code or replace the earlier
+180-target deterministic regression result.
+
+
+## User screenshot follow-up — 2026-10-23
+
+Read-only inspection of the four matching persisted daemon runs separates the
+reported symptoms. The command attempts returned `SecurityDenied`, with sandbox
+category `WorkingDirectoryTooBroad`; approvals did not make execution succeed.
+The root-level `/main.cpp` writes failed. Another run exhausted native output
+(`finish_reason=length`); its incomplete response was correctly rejected. The
+classification HTTP 400 at 15:39:01 local time corresponds to the LM Studio server
+log rejecting the Qwen model load due to insufficient system resources. This is
+not evidence of a malformed Sentinel classification request. No model loading
+protection or sandbox policy was changed.
+
+A contributing tool-discovery defect was fixed: focused local filesystem tool
+selection hid the read-only `system-info` tool even though the planner instructs
+models to use its OS-resolved known directories. It is now visible for inspection
+and mutation tasks, still subject to enabled/exposure/platform/profile filters.
+The existing profile-filter assertion continues to exclude it when not allowed.
+
+The sync and async repeated-call stop paths now retain `SecurityDenied` and the
+sandbox failure category, producing the existing `Blocked` completion projection
+instead of replacing the actual blocker with generic `ToolFailure`. The repeated
+call remains undispatched, and no accepted final or successful execution is
+invented. New sync/async regression rows verify one executor invocation, empty
+final, preserved `WorkingDirectoryTooBroad`, and `Blocked` projection.
+
+This improves discovery and diagnosis; it does not claim to fix all Qwen final
+repetition, truncated output, root-path planning, or resource exhaustion. Existing
+persisted runs are not rewritten, and the running release binary must be rebuilt
+to contain these source changes.
+
+
+Follow-up validation: tests preset configure and full build passed, and the release
+preset build passed. The full CTest run passed 179/180 targets in 308.86 seconds;
+`test_desktop_ipc` failed only because its cloud fixture socket path was 124 bytes
+against the macOS 103-byte limit. Re-running that target with `TMPDIR=/tmp` passed
+in 32.38 seconds. Thus every target passed, with the documented environment retry.
+The new security-denial rows and focused tool/profile regression passed. Changed
+C++ files passed clang-format verification and the diff passed whitespace checks.
+The release executable was rebuilt without terminating the user's running process;
+a restart is required to use the changes. No live LM Studio acceptance pass is
+claimed for these follow-up source fixes.
+
+
+### Post-restart workspace denial and malformed blocker response
+
+The user run shown in the 16:27 screenshot used `system-info` successfully, but its
+`run-command` result was `Blocked: workdir is outside the approved workspace`.
+The workspace was the Sentinel repository while the requested destination was
+Desktop. The LM Studio server log confirms the model then explained that scope
+mismatch in prose. Such prose is not an accepted final/giveup decision after tools.
+The native repair prompt nevertheless said to "give a specific final answer",
+contradicting the required explicit protocol. It now supplies final/giveup JSON
+examples, requires exact evidence claims, and explicitly forbids claiming completion
+after denial. The two-attempt limit, gateway and acceptance gate are unchanged.
+Exhausted response repair now identifies the missing accepted decision and refers
+to recorded tool denials/workspace scope when present, without inventing success
+or implying that mutations occurred. All 70 LlmAgentRuntime test cases passed;
+release daemon and desktop rebuilt. No real model acceptance pass is inferred.

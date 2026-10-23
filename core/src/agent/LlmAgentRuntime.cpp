@@ -221,13 +221,15 @@ QList<ToolDescriptor> LlmAgentRuntime::availableTools() const {
         if (localCoding && tool.source == ToolSource::BuiltIn) {
             const bool filesystem = tool.category == QLatin1String("Filesystem");
             const bool git = tool.category == QLatin1String("Git");
+            // Named user folders must remain resolvable without shell probes.
+            const bool directoryMetadata = tool.id == QLatin1String("system-info");
             const bool codingSupport =
                 tool.id == QLatin1String("run-command") || tool.id == QLatin1String("todo-write") ||
                 tool.id == QLatin1String("todo-read") || tool.id == QLatin1String("spawn-agent");
-            if (!filesystem && !git && !codingSupport)
+            if (!filesystem && !git && !codingSupport && !directoryMetadata)
                 continue;
-            if (inspectionOnly &&
-                ((!filesystem && !git) || (filesystem && tool.riskLevel != ToolRiskLevel::Low)))
+            if (inspectionOnly && ((!filesystem && !git && !directoryMetadata) ||
+                                   (filesystem && tool.riskLevel != ToolRiskLevel::Low)))
                 continue;
         }
         visible.append(tool);
@@ -826,19 +828,37 @@ AgentStepDecision LlmAgentRuntime::nextStep(const QString& goal,
                                  .arg(repairReason);
             return failure;
         }
-        repair = QStringLiteral("\nREPAIR: %1 %2")
-                     .arg(repairReason,
-                          options.nativeToolCalling
-                              ? QStringLiteral("No rejected call was executed. Use the native "
-                                               "tool protocol or give a specific final answer.")
-                              : QStringLiteral("Return exactly one JSON object."));
+        repair =
+            QStringLiteral("\nREPAIR: %1 %2")
+                .arg(repairReason,
+                     options.nativeToolCalling
+                         ? QStringLiteral("No rejected call was executed. Use native functions for "
+                                          "tools. Otherwise return visible JSON only: "
+                                          "{\"action\":\"giveup\",\"reason\":\"specific blocker\"} "
+                                          "when blocked, or {\"action\":\"final\","
+                                          "\"grounding\":\"verified\",\"claims\":[],"
+                                          "\"answer\":\"specific answer\"} with observed evidence "
+                                          "and exact required claims. Plain prose is not a valid "
+                                          "final/giveup decision after tool use. Do not claim "
+                                          "completion when an action was denied.")
+                         : QStringLiteral("Return exactly one JSON object."));
     }
     AgentStepDecision failure;
     failure.kind = AgentStepDecision::Kind::GiveUp;
     failure.failure = AgentStepFailure::CompletionIndeterminate;
-    failure.reason =
-        QStringLiteral("Agent could not determine a valid next action. Completion is "
-                       "indeterminate; previously applied tool effects remain in place.");
+    failure.reason = QStringLiteral(
+        "Model response remained invalid after bounded repair; no final/giveup decision was "
+        "accepted. Completion is indeterminate; no rollback was performed.");
+    if (std::any_of(history.cbegin(), history.cend(), [](const auto& record) {
+            return record.failureCategory == ToolFailureCategory::SecurityDenied ||
+                   record.statusText == QLatin1String("Denied") ||
+                   record.statusText == QLatin1String("Blocked");
+        })) {
+        failure.reason += QStringLiteral(
+            " An earlier tool call was denied or blocked. Check its recorded reason and the "
+            "active workspace scope; approval does not override workspace or sandbox "
+            "restrictions.");
+    }
     return failure;
 }
 

@@ -1,0 +1,71 @@
+{
+  "provider": "lm-studio",
+  "model": "qwen/qwen3.5-9b",
+  "loaded_context_length": 262144,
+  "mode": "full-daemon-completion-only",
+  "acceptance_passed": false,
+  "first_attempt": {
+    "timeout_seconds": 300,
+    "terminal_received": false,
+    "last_stage": "final planner repair after successful read/edit/read",
+    "independent_verification": {
+      "returncode": 0,
+      "stdout": "ALL_TESTS_PASSED\n",
+      "stderr": "",
+      "source_ast_verified": true,
+      "code_matches_expected": true
+    }
+  },
+  "diagnostic_attempt": {
+    "timeout_seconds": 600,
+    "terminal": {
+      "id": "",
+      "name": "run.failed",
+      "payload": {
+        "completion_status": "Completion Indeterminate",
+        "detail": "Agent repeated the same tool call without a changed argument or intervening observation.",
+        "event_sequence": 57,
+        "run_id": "96325e45-50ea-41a1-89a1-14a797e9d575",
+        "server_generation": "05f1f7d3-cbd6-4680-979c-3f0e0532b4f7",
+        "session_id": "3731b537-f62b-4bc0-accd-4fffd0b62ab1",
+        "state": "failed",
+        "terminal_reason": "CompletionIndeterminate",
+        "text": ""
+      },
+      "type": "event",
+      "version": {
+        "major": 1,
+        "minor": 1
+      }
+    },
+    "independent_verification": {
+      "returncode": 0,
+      "stdout": "ALL_TESTS_PASSED\n",
+      "stderr": "",
+      "source_ast_verified": true,
+      "code_matches_expected": true
+    },
+    "only_expected_source_changed": true,
+    "unrelated_preserved": true,
+    "test_preserved": true,
+    "tool_results": [
+      {
+        "tool": "read-file",
+        "state": "completed"
+      },
+      {
+        "tool": "edit-file",
+        "state": "completed"
+      },
+      {
+        "tool": "read-file",
+        "state": "completed"
+      },
+      {
+        "tool": "todo-read",
+        "state": "completed"
+      }
+    ]
+  },
+  "scope": "Real LM Studio transport, isolated daemon profile and fixture; no model loading or configuration changes. Ollama deferred."
+}

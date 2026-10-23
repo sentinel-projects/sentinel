@@ -10235,7 +10235,7 @@ RuntimeProviderRegistry ApplicationController::currentRuntimeProviderRegistry() 
                                selectedRuntimeProvider() == QStringLiteral("deepseek") ||
                                selectedRuntimeProvider() == QStringLiteral("groq") ||
                                selectedRuntimeProvider() == QStringLiteral("mistral");
-    const auto cloudStatus = modelService_->providerStatus(
+    const auto cloudStatus = modelService_->providerStatusSnapshot(
         cloudSelected ? selectedRuntimeProvider() : cloudProvider);
     const bool hasCloudKey = cloudStatus.catalog != ProviderCatalogState::AuthenticationRequired;
     const bool hasCatalog = cloudStatus.catalog == ProviderCatalogState::Available;
