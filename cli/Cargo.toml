@@ -13,6 +13,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sentinel-ipc = { path = "crates/sentinel-ipc" }
 sentinel-tui = { path = "crates/sentinel-tui" }
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.28"
 ctrlc = "3"
