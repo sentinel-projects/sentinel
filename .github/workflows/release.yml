@@ -78,7 +78,7 @@ jobs:
         run: |
           set -euo pipefail
           (cd artifacts && sha256sum ./* > SHA256SUMS-Linux.txt)
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-release
           path: artifacts/
@@ -152,7 +152,7 @@ jobs:
         run: |
           set -euo pipefail
           (cd artifacts && shasum -a 256 ./* > SHA256SUMS-macOS.txt)
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-release
           path: artifacts/
@@ -170,7 +170,7 @@ jobs:
         shell: pwsh
         run: choco install ninja wixtoolset --no-progress --yes
       - name: Set up MSVC x64 environment
-        uses: ilammy/msvc-dev-cmd@7defe9254715b088f12dddd9942945a3d75cdad5 # v1.9.0
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: x64
       - name: Install Qt
@@ -241,7 +241,7 @@ jobs:
       - name: Generate checksums
         shell: pwsh
         run: Get-FileHash artifacts/* -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $($_.Path | Split-Path -Leaf)" } | Set-Content -Encoding ascii artifacts/SHA256SUMS-Windows.txt
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-release
           path: artifacts/
@@ -259,7 +259,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: "*-release"
           path: release-artifacts

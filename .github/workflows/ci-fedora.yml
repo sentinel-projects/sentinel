@@ -125,7 +125,7 @@ jobs:
           canonical="$(sed -n 's/^set(SENTINEL_APP_VERSION "\([^"]*\)".*/\1/p' CMakeLists.txt)"
           "$image/usr/bin/sentinel-daemon" --version | grep -F "$canonical"
       - name: Preserve unsigned RPM build evidence
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: fedora-44-rpm-evidence
           path: |
