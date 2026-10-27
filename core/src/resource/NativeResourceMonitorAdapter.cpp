@@ -20,9 +20,10 @@
 #elif defined(Q_OS_LINUX)
 #include <unistd.h>
 #elif defined(Q_OS_WIN)
+#include <windows.h>
+
 #include <psapi.h>
 #include <tlhelp32.h>
-#include <windows.h>
 #endif
 
 namespace sentinel::core {
