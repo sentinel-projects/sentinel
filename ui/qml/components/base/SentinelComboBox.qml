@@ -24,11 +24,11 @@ ComboBox {
     // Accessibility contract: exposed as a combo box whose expanded state tracks the
     // popup. The usage site must supply Accessible.name (e.g. "Provider") because a
     // combo box has no intrinsic label; the placeholder is used only as a fallback.
+    // Accessible.expandable/expanded only exist since Qt 6.11, so the popup state is not
+    // reported on older Qt versions.
     Accessible.role: Accessible.ComboBox
     Accessible.name: control.placeholderText
     Accessible.description: control.accessibleDescription
-    Accessible.expandable: true
-    Accessible.expanded: control.popup.visible
 
     implicitHeight: SentinelTheme.controlHeight
     font.pixelSize: SentinelTheme.fontBody

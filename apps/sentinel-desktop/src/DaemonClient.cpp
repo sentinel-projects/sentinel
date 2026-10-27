@@ -30,7 +30,10 @@ bool validPayload(const QJsonObject& fields, const QJsonObject& payload) {
 
 QString DaemonClient::defaultSocketPath() {
 #ifdef Q_OS_WIN
-    return QStringLiteral("sentinel-daemon-%1").arg(qEnvironmentVariable("USERNAME"));
+    // DaemonIpcServer resolves its relative endpoint name under the temporary
+    // directory, so the client must resolve it the same way to reach the pipe.
+    return QDir::tempPath() +
+           QStringLiteral("/sentinel-daemon-%1").arg(qEnvironmentVariable("USERNAME"));
 #else
     return QDir::homePath() + QStringLiteral("/.sentinel/run/daemon.sock");
 #endif

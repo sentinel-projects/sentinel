@@ -523,7 +523,14 @@ int main(int argc, char** argv) {
                 fail(207, "combo role/name");
                 return;
             }
-            if (roleOf("a11ySwitch") != int(QAccessible::Switch) ||
+            // QAccessible::Switch only exists since Qt 6.11; older Qt versions
+            // expose the QML Switch control with the CheckBox role.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 11, 0)
+            constexpr int expectedSwitchRole = int(QAccessible::Switch);
+#else
+            constexpr int expectedSwitchRole = int(QAccessible::CheckBox);
+#endif
+            if (roleOf("a11ySwitch") != expectedSwitchRole ||
                 nameOf("a11ySwitch") != QStringLiteral("Enable notifications")) {
                 fail(208, "switch role/name");
                 return;
@@ -634,10 +641,14 @@ int main(int argc, char** argv) {
                 fail(221, "combo popup opens");
                 return;
             }
+            // Accessible.expandable/expanded only exist since Qt 6.11, so older Qt
+            // versions cannot report the popup state.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 11, 0)
             if (!QAccessible::queryAccessibleInterface(combo)->state().expanded) {
                 fail(222, "combo expanded state");
                 return;
             }
+#endif
             QTest::keyClick(window, Qt::Key_Escape);
             QTest::qWait(60);
 

@@ -14,7 +14,9 @@ Switch {
     // Accessibility contract: switches are On/Off toggles. The checked state is exposed
     // so assistive technology announces the current value; a label (Accessible.name)
     // must be supplied at the usage site, as for a visual switch label.
-    Accessible.role: Accessible.Switch
+    // Accessible.Switch exists since Qt 6.11; older versions fall back to the check box
+    // role so the checked state is still announced.
+    Accessible.role: (Accessible.Switch !== undefined ? Accessible.Switch : Accessible.CheckBox)
     Accessible.checkable: true
     Accessible.checked: control.checked
     Accessible.pressed: control.pressed
