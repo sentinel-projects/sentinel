@@ -4,6 +4,8 @@ Sentinel is a C++20, Qt 6, QML, CMake, and SQLite agent platform. Start with the
 
 ## Development Rules
 
+Use the [engineering standard](docs/development/ENGINEERING_STANDARD.md) and the affected row of the [P0–P12 module quality matrix](docs/roadmaps/MODULE_QUALITY_MATRIX.md). Substantive changes should describe concrete operating conditions, failure consequences, evidence and acceptance oracles, including relevant positive/negative/boundary/regression cases. Keep implemented work separate from proposed follow-ups. Trivial documentation/comment changes use the lightweight path; unrelated project defects do not block safe scoped work.
+
 - Preserve MVVM boundaries: QML presents state and calls view-model actions; C++ owns logic.
 - Keep provider behavior behind `IChatProvider`.
 - Keep memory, settings, and chat history persistence separate.
