@@ -304,7 +304,7 @@ private slots:
     void cloudSettingsUseTheSameGatewayForDiscoveryAndRequests() {
         using namespace sentinel::core;
         sentinel::test::ScopedOnlineNetworkMode network;
-        QTemporaryDir profile;
+        QTemporaryDir profile{shortSocketDirTemplate("cloud")};
         AppSettings settings(std::make_unique<InMemorySettingsStore>(),
                              inMemoryTestCredentialStore());
         settings.setSelectedRuntimeProvider("cloud-api");
