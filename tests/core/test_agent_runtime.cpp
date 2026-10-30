@@ -14,9 +14,13 @@
 #include "sentinel/core/security/StaticSandboxPolicy.h"
 
 #include <QFile>
+#include <QJsonDocument>
 #include <QScopeGuard>
 #include <QSemaphore>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QTemporaryDir>
+#include <QUuid>
 #include <atomic>
 #include <chrono>
 #include <future>
@@ -25,6 +29,34 @@
 using namespace sentinel::core;
 
 namespace {
+
+class ClassificationTimeoutProvider final : public IChatProvider {
+public:
+    int calls = 0;
+    int deadlineMs = 0;
+    QString requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QString name() const override {
+        return "fixture-timeout";
+    }
+    ChatProviderStatus status() const override {
+        return ChatProviderStatus::Ready;
+    }
+    ChatProviderReply sendRequest(const QString& message,
+                                  const ChatRequestOptions& options) override {
+        deadlineMs = options.deadlineMs;
+        return sendMessage(message);
+    }
+    ChatProviderReply sendMessage(const QString&) override {
+        ++calls;
+        ChatProviderReply reply;
+        reply.lifecycle = ChatRequestLifecycle::TimedOut;
+        reply.category = ChatProviderErrorCategory::Timeout;
+        reply.httpStatus = 200;
+        reply.requestId = requestId;
+        reply.errorMessage = "Synthetic deadline";
+        return reply;
+    }
+};
 
 class SuccessfulFixtureExecutor final : public IToolExecutor {
 public:
@@ -186,6 +218,164 @@ class AgentRuntimeTest final : public QObject {
     Q_OBJECT
 
 private slots:
+    void classificationFailurePersistsThroughProductionRuntime() {
+        QTemporaryDir profile;
+        SQLiteAgentRunStore store(profile.filePath("runs.sqlite"));
+        auto provider = std::make_shared<ClassificationTimeoutProvider>();
+        LlmAgentRuntime planner(NullAgentRuntime::standardTools(), provider.get());
+        planner.bindModel(ModelBinding{"cloud-api", "fixture-model"}, provider);
+        RecordingExecutor executor;
+        StaticApprovalPolicy approval;
+        StaticSandboxPolicy sandbox;
+        AgentRuntime runtime(std::make_unique<NullAgentRuntime>(NullAgentRuntime::standardTools()),
+                             &planner, executor, approval, sandbox, nullptr, nullptr, &store);
+        const auto session = runtime.createSession();
+        const auto result = runtime.submit(session, "Compile fixture");
+        QCOMPARE(result.phase, AgentLoopPhase::Failed);
+        QCOMPARE(result.terminalReason, AgentTerminalReason::ObservationIndeterminate);
+        QCOMPARE(provider->calls, 1);
+        QVERIFY(provider->deadlineMs > 0 && provider->deadlineMs <= 60000);
+        QCOMPARE(executor.calls, 0);
+        QVERIFY(result.steps.isEmpty());
+        const auto runs = store.recentRuns(10);
+        QCOMPARE(runs.size(), 1);
+        const auto& stored = runs.first();
+        QCOMPARE(stored.state, QString("Failed"));
+        QCOMPARE(stored.providerErrorCategory, QString("Timeout"));
+        QCOMPARE(stored.providerHttpStatus, 200);
+        QCOMPARE(stored.providerRequestLifecycle, QString("TimedOut"));
+        const auto records = stored.classificationDiagnostics.value("attempts").toArray();
+        QCOMPARE(records.size(), 1);
+        QCOMPARE(records.first().toObject().value("request_id").toString(), provider->requestId);
+        QVERIFY(!records.first().toObject().contains("total_tokens"));
+        int failed = 0, completed = 0;
+        for (const auto& event : runtime.eventHistory(session)) {
+            failed += event.type == AgentEventType::AgentFailed;
+            completed += event.type == AgentEventType::AgentCompleted;
+        }
+        QCOMPARE(failed, 1);
+        QCOMPARE(completed, 0);
+    }
+
+    void classificationDiagnosticsPersistWithBoundedRetention() {
+        QTemporaryDir profile;
+        const auto path = profile.filePath("runs.sqlite");
+        SQLiteAgentRunStore store(path);
+        const auto now = QDateTime::currentDateTimeUtc();
+        const auto traceId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QJsonObject phase{{"attempt_id", traceId},
+                                {"request_created_ms", 0},
+                                {"first_body_ms", -1},
+                                {"http_status", 200},
+                                {"qt_network_error", 5},
+                                {"request_sent_ms", "PRIVATE_TIMING"},
+                                {"connection_reuse", "PRIVATE_REUSE"},
+                                {"headers", "PRIVATE_HEADER"},
+                                {"body", "PRIVATE_BODY"}};
+        const QJsonObject attempt{{"trace_id", traceId},
+                                  {"request_id", traceId},
+                                  {"started_at_utc", now.toString(Qt::ISODateWithMs)},
+                                  {"attempt", 1},
+                                  {"category", "Timeout"},
+                                  {"timed_out", true},
+                                  {"elapsed_ms", 25},
+                                  {"deadline_ms", 60000},
+                                  {"transport_attempts", QJsonArray{phase, phase, phase, phase}},
+                                  {"total_tokens", "PRIVATE_TOKEN_STRING"},
+                                  {"Authorization", "PRIVATE_HEADER"},
+                                  {"url", "https://user:PRIVATE_PASSWORD@fixture.invalid"}};
+        const auto recordRun = [&](const QString& id, const QDateTime& at) {
+            AgentEvent event;
+            event.turnId = id;
+            event.sessionId = "fixture";
+            event.timestamp = at;
+            event.type = AgentEventType::RunStarted;
+            event.payload = AgentRunStartedEvent{"fixture diagnostics"};
+            if (!store.record(event))
+                return false;
+            event.type = AgentEventType::AgentFailed;
+            event.payload = AgentTextEvent{"Synthetic timeout"};
+            if (!store.record(event))
+                return false;
+            AgentRunEvent run;
+            run.phase = AgentLoopPhase::Failed;
+            run.terminalReason = AgentTerminalReason::ObservationIndeterminate;
+            run.providerFailure =
+                ProviderFailureMetadata{ChatRequestLifecycle::TimedOut,
+                                        ChatProviderErrorCategory::Timeout, 200, 2, traceId};
+            run.observationIntent.indeterminate = true;
+            run.observationIntent.failure = ObservationClassificationFailure::ProviderFailure;
+            run.observationIntent.requestDiagnostics = {attempt, attempt, attempt};
+            event.type = AgentEventType::RuntimeStateChanged;
+            event.payload = run;
+            return store.record(event);
+        };
+        QVERIFY(recordRun("expired", now.addDays(-31)));
+        QVERIFY(store.runById("expired").classificationDiagnostics.isEmpty());
+        QVERIFY(recordRun("current", now));
+        const auto stored = store.runById("current");
+        QCOMPARE(stored.providerErrorCategory, QString("Timeout"));
+        QCOMPARE(stored.providerHttpStatus, 200);
+        QCOMPARE(stored.providerAttempts, 2);
+        QVERIFY(stored.providerRetryOccurred);
+        const auto records = stored.classificationDiagnostics.value("attempts").toArray();
+        QCOMPARE(records.size(), 2);
+        const auto phases = records.first().toObject().value("transport_attempts").toArray();
+        QCOMPARE(phases.size(), 3);
+        const auto sanitized = phases.first().toObject();
+        QCOMPARE(sanitized.value("attempt_id").toString(), traceId);
+        QCOMPARE(sanitized.value("http_status").toInt(), 200);
+        QVERIFY(sanitized.value("first_body_ms").isNull());
+        QVERIFY(sanitized.value("request_sent_ms").isNull());
+        QCOMPARE(sanitized.value("connection_reuse").toString(), QString("unknown"));
+        QVERIFY(!records.first().toObject().contains("total_tokens"));
+        const auto json = QJsonDocument(stored.classificationDiagnostics).toJson();
+        QVERIFY(!json.contains("PRIVATE_"));
+        QVERIFY(!json.contains("fixture.invalid"));
+        QVERIFY(json.size() < 8192);
+        for (int i = 0; i < 256; ++i)
+            QVERIFY(recordRun(QString("recent-%1").arg(i), now.addMSecs(i + 1)));
+        QVERIFY(store.runById("current").classificationDiagnostics.isEmpty());
+        QCOMPARE(store.runById("current").state, QString("Failed"));
+        // Only diagnostic retention expired; run history is still present.
+        QCOMPARE(store.runById("expired").state, QString("Failed"));
+        QCOMPARE(store.pruneCompletedBefore(now.addDays(1), 100), 100);
+        QVERIFY(store.clearHistory());
+        QVERIFY(store.recentRuns(10).isEmpty());
+    }
+
+    void classificationDiagnosticSchemaMigration() {
+        QTemporaryDir profile;
+        const auto path = profile.filePath("runs.sqlite");
+        SQLiteAgentRunStore store(path);
+        AgentEvent event;
+        event.turnId = "preserved";
+        event.sessionId = "fixture";
+        event.timestamp = QDateTime::currentDateTimeUtc();
+        event.type = AgentEventType::RunStarted;
+        event.payload = AgentRunStartedEvent{"preserve old run"};
+        QVERIFY(store.record(event));
+        event.type = AgentEventType::AgentFailed;
+        event.payload = AgentTextEvent{"old failure"};
+        QVERIFY(store.record(event));
+        const auto connection = QUuid::createUuid().toString();
+        {
+            auto db = QSqlDatabase::addDatabase("QSQLITE", connection);
+            db.setDatabaseName(path);
+            QVERIFY(db.open());
+            QSqlQuery query(db);
+            QVERIFY(query.exec("ALTER TABLE agent_runs DROP COLUMN classification_diagnostics"));
+            QVERIFY(query.exec(
+                "UPDATE agent_run_schema_metadata SET value=7 WHERE key='schema_version'"));
+        }
+        QSqlDatabase::removeDatabase(connection);
+        SQLiteAgentRunStore migrated(path);
+        const auto preserved = migrated.runById("preserved");
+        QCOMPARE(preserved.state, QString("Failed"));
+        QCOMPARE(preserved.failure, QString("old failure"));
+        QVERIFY(preserved.classificationDiagnostics.isEmpty());
+    }
+
     void runCreationRefusalDoesNotStartPlanner() {
         QTemporaryDir profile;
         auto authority = std::make_shared<StorageAdmission>();

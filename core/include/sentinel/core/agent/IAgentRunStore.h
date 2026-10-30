@@ -44,6 +44,7 @@ struct StoredAgentRun {
     QString workspaceName;
     QString presetId;
     QString profileVersion;
+    QJsonObject classificationDiagnostics;
 };
 
 struct StoredAgentStep {

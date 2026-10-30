@@ -3,19 +3,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <QtTest>
+#ifndef Q_MOC_RUN
+#include "../support/ScriptedProviderTransport.h"
+#endif
 
 #include "sentinel/core/agent/ClaimGroundingResolver.h"
 #include "sentinel/core/agent/ObservationPolicy.h"
 #include "sentinel/core/interfaces/IChatProvider.h"
 #include "sentinel/core/model/ModelService.h"
 #include "sentinel/core/platform/UserDirectories.h"
+#include "sentinel/core/provider/SelectedEndpointChatProvider.h"
 #include "sentinel/core/runtime/BuiltInToolProvider.h"
 #include "sentinel/core/runtime/IFileSystemService.h"
+#include "sentinel/core/runtime/LocalInference.h"
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QTemporaryDir>
+#include <QUuid>
 #include <algorithm>
 
 using namespace sentinel::core;
@@ -55,6 +61,10 @@ public:
             result.errorMessage = QStringLiteral("Cancelled");
             return result;
         }
+        if (!responses.isEmpty())
+            return responses.takeFirst();
+        if (onRequest)
+            return onRequest(message, options);
         return sendMessage(message);
     }
 
@@ -63,6 +73,8 @@ public:
     ChatRequestOptions request;
     int calls = 0;
     int failures = 0;
+    QList<ChatProviderReply> responses;
+    std::function<ChatProviderReply(const QString&, const ChatRequestOptions&)> onRequest;
 };
 
 } // namespace
@@ -71,6 +83,374 @@ class ObservationPolicyTest final : public QObject {
     Q_OBJECT
 
 private slots:
+    void preCancelledOversizeClassificationDoesNotBecomeBudgetFailure() {
+        FixedReplyProvider provider;
+        auto token = std::make_shared<std::atomic_bool>(true);
+        ObservationIntentPolicy policy(&provider, token, {"cloud-api", "fixture"});
+        const auto result = policy.classify(QString(100000, 'x'), {}, {});
+        QCOMPARE(result.failure, ObservationClassificationFailure::Cancelled);
+        QCOMPARE(provider.calls, 0);
+        QVERIFY(result.providerFailure);
+        QCOMPARE(result.providerFailure->attempts, 0);
+    }
+
+    void classifierParentDeadline_data() {
+        QTest::addColumn<QString>("scenario");
+        for (const auto* name :
+             {"remaining", "at-expiry", "after-expiry", "cancel", "late-success", "local-long"})
+            QTest::newRow(name) << QString(name);
+    }
+    void classifierParentDeadline() {
+        QFETCH(QString, scenario);
+        qint64 now = 0;
+        auto token = std::make_shared<std::atomic_bool>(false);
+        FixedReplyProvider provider;
+        QList<int> deadlines;
+        provider.onRequest = [&](const auto&, const auto& options) {
+            deadlines.append(options.deadlineMs);
+            if (provider.calls == 1) {
+                now = scenario == "remaining"      ? 59000
+                      : scenario == "after-expiry" ? 60001
+                      : scenario == "local-long"   ? 900000
+                                                   : 60000;
+                if (scenario == "cancel")
+                    token->store(true);
+                ChatProviderReply reply;
+                reply.completion = ResponseCompletion::Truncated;
+                if (scenario == "late-success") {
+                    reply.success = true;
+                    reply.completion = ResponseCompletion::Complete;
+                    reply.message = R"({"requirements":[]})";
+                }
+                return reply;
+            }
+            return ChatProviderReply{true, R"({"requirements":[]})", {}};
+        };
+        ModelBinding binding{scenario == "local-long" ? "lm-studio" : "cloud-api", "fixture"};
+        ObservationIntentPolicy policy(&provider, token, binding, [&] { return now; });
+        const auto intent = policy.classify("Explain this fictional scenario", {}, {});
+        const bool complete = scenario == "remaining" || scenario == "local-long";
+        QCOMPARE(provider.calls, complete ? 2 : 1);
+        QCOMPARE(intent.indeterminate, !complete);
+        if (scenario == "remaining")
+            QCOMPARE(deadlines, QList<int>({60000, 1000}));
+        if (scenario == "local-long")
+            QCOMPARE(deadlines, QList<int>({0, 0}));
+        if (!complete) {
+            QVERIFY(intent.providerFailure);
+            QCOMPARE(intent.providerFailure->category, scenario == "cancel"
+                                                           ? ChatProviderErrorCategory::Cancelled
+                                                           : ChatProviderErrorCategory::Timeout);
+        }
+    }
+    void classifierReadmitsOutputReserve_data() {
+        QTest::addColumn<QString>("scenario");
+        for (const auto* name : {"small-known", "exact-known", "unknown-fallback-refusal",
+                                 "unknown-output", "unknown-fits", "known-output-ceiling"})
+            QTest::newRow(name) << QString(name);
+    }
+    void classifierReadmitsOutputReserve() {
+        QFETCH(QString, scenario);
+        const QString goal = scenario == "unknown-fallback-refusal"
+                                 ? QString(9000, 'x')
+                                 : QString("Explain a fictional scenario");
+        FixedReplyProvider probe;
+        probe.reply = R"({"requirements":[]})";
+        ObservationIntentPolicy initial(&probe, {}, {"cloud-api", "fixture"}, [] { return 0; });
+        const auto admitted = initial.classify(goal, {}, {});
+        QVERIFY(!admitted.indeterminate);
+        const int input =
+            admitted.requestDiagnostics.first().toObject().value("estimated_input_tokens").toInt();
+        ModelBinding binding{"cloud-api", "fixture"};
+        if (scenario == "small-known" || scenario == "known-output-ceiling")
+            binding.capabilities.contextWindow = input + 2048;
+        else if (scenario == "exact-known" || scenario == "unknown-output")
+            binding.capabilities.contextWindow = input + 4096;
+        if (scenario == "known-output-ceiling")
+            binding.capabilities.maxOutputTokens = 2048;
+        FixedReplyProvider provider;
+        provider.failures = 1;
+        provider.reply = R"({"requirements":[]})";
+        ObservationIntentPolicy policy(&provider, {}, binding, [] { return 0; });
+        const auto result = policy.classify(goal, {}, {});
+        const bool refused = scenario == "small-known" || scenario == "unknown-fallback-refusal";
+        const bool capped = scenario == "known-output-ceiling";
+        QCOMPARE(provider.calls, refused || capped ? 1 : 2);
+        QCOMPARE(result.indeterminate, refused || capped);
+        if (refused) {
+            QCOMPARE(result.failure, ObservationClassificationFailure::BudgetRefused);
+            QCOMPARE(result.requestDiagnostics.last().toObject().value("provider_invoked").toBool(),
+                     false);
+        } else if (capped) {
+            QCOMPARE(result.failure, ObservationClassificationFailure::OutputTruncated);
+        } else {
+            QCOMPARE(provider.request.maxOutputTokens, 4096);
+        }
+        QVERIFY(!QJsonDocument(result.requestDiagnostics).toJson().contains("total_tokens"));
+    }
+    void transportPolicyRefusalDoesNotCreateReply() {
+        sentinel::test::ScopedOnlineNetworkMode restoreMode;
+        NetworkPolicyService::instance().setMode(NetworkMode::Offline);
+        auto transport = std::make_shared<sentinel::test::ScriptedTransportState>();
+        LMStudioConfig config;
+        config.endpoint = QUrl("https://fixture.invalid/v1");
+        config.apiKey = "PRIVATE_KEY";
+        config.networkFactory = std::make_shared<sentinel::test::ScriptedNetworkFactory>(transport);
+        auto endpoint = makeSelectedEndpointChatProvider({"cloud-api", "fixture-model"}, config, 0);
+        const auto reply = endpoint->sendMessage("PRIVATE_PROMPT");
+        QVERIFY(!reply.success);
+        QCOMPARE(reply.category, ChatProviderErrorCategory::Offline);
+        QVERIFY(transport->requests.isEmpty());
+        const auto frames = reply.diagnostics.value("transport_attempts").toArray();
+        QCOMPARE(frames.size(), 1);
+        const auto frame = frames.first().toObject();
+        QCOMPARE(frame.value("policy_allowed").toBool(), false);
+        QVERIFY(frame.value("policy_admitted_ms").isNull());
+        QVERIFY(frame.value("reply_created_ms").isNull());
+        QVERIFY(frame.value("http_status").isNull());
+        QVERIFY(frame.value("qt_network_error").isNull());
+        QCOMPARE(frame.value("response_completed").toBool(), false);
+    }
+    void transportRetriesOnlyWhenAllowed_data() {
+        QTest::addColumn<QString>("scenario");
+        QTest::newRow("allowed-transient") << QString("transient");
+        QTest::newRow("deadline-bounded-no-retry") << QString("bounded");
+        QTest::newRow("authentication-no-retry") << QString("auth");
+    }
+    void transportRetriesOnlyWhenAllowed() {
+        QFETCH(QString, scenario);
+        sentinel::test::ScopedOnlineNetworkMode online;
+        auto transport = std::make_shared<sentinel::test::ScriptedTransportState>();
+        int calls = 0;
+        transport->responder = [&](const auto&) {
+            ++calls;
+            auto response = sentinel::test::ScriptedHttpResponse::body(
+                R"({"choices":[{"message":{"content":"done"}}]})");
+            if (scenario == "auth") {
+                response.status = 401;
+            } else if (calls < 3) {
+                response.status = 0;
+                response.error = QNetworkReply::ConnectionRefusedError;
+            }
+            return response;
+        };
+        ModelBinding binding{"cloud-api", "fixture-model"};
+        LMStudioConfig config;
+        config.endpoint = QUrl("https://fixture.invalid/v1");
+        config.apiKey = "PRIVATE_KEY";
+        config.networkFactory = std::make_shared<sentinel::test::ScriptedNetworkFactory>(transport);
+        auto endpoint = makeSelectedEndpointChatProvider(binding, config, 0);
+        ChatRequestOptions options;
+        options.deadlineMs = scenario == "bounded" ? 25 : 0;
+        const auto reply = endpoint->sendRequest("PRIVATE_PROMPT", options);
+        QCOMPARE(reply.success, scenario == "transient");
+        const int expected = scenario == "transient" ? 3 : 1;
+        QCOMPARE(calls, expected);
+        QCOMPARE(reply.attempts, expected);
+        const auto attempts = reply.diagnostics.value("transport_attempts").toArray();
+        QCOMPARE(attempts.size(), expected);
+        QSet<QString> ids;
+        for (const auto& item : attempts) {
+            const auto id = item.toObject().value("attempt_id").toString();
+            QVERIFY(!QUuid(id).isNull());
+            ids.insert(id);
+        }
+        QCOMPARE(ids.size(), expected);
+        QVERIFY(!QJsonDocument(attempts).toJson().contains("PRIVATE_"));
+    }
+    void classificationInjectedTransportDiagnostics_data() {
+        QTest::addColumn<QString>("scenario");
+        for (const auto* name :
+             {"success", "timeout", "cancel", "transport", "missing-usage", "malformed",
+              "connection-no-response", "metadata-stall", "partial-body", "refused",
+              "reused-connection", "immediate-success"})
+            QTest::newRow(name) << QString(name);
+    }
+    void classificationInjectedTransportDiagnostics() {
+        QFETCH(QString, scenario);
+        sentinel::test::ScopedOnlineNetworkMode online;
+        auto transport = std::make_shared<sentinel::test::ScriptedTransportState>();
+        transport->responder = [scenario](const auto&) {
+            auto body = QJsonObject{
+                {"choices",
+                 QJsonArray{QJsonObject{
+                     {"message", QJsonObject{{"content", scenario == "malformed"
+                                                             ? "PRIVATE_OUTPUT"
+                                                             : "{\"requirements\":[]}"}}}}}}};
+            if (scenario == "success")
+                body.insert("usage", QJsonObject{{"prompt_tokens", 20},
+                                                 {"completion_tokens", 4},
+                                                 {"total_tokens", 24}});
+            auto response =
+                sentinel::test::ScriptedHttpResponse::body(QJsonDocument(body).toJson());
+            if (scenario == "timeout" || scenario == "cancel") {
+                response.frames.clear();
+                response.finish = false;
+            }
+            if (scenario == "transport") {
+                response.status = 0;
+                response.error = QNetworkReply::SslHandshakeFailedError;
+                response.errorString = "PRIVATE_TRANSPORT";
+            }
+            if (scenario == "connection-no-response" || scenario == "metadata-stall" ||
+                scenario == "partial-body") {
+                response.finish = false;
+                response.frames = scenario == "partial-body" ? QList<QByteArray>{"PRIVATE_PARTIAL"}
+                                                             : QList<QByteArray>{};
+                response.status = scenario == "connection-no-response" ? 0 : 200;
+                response.emitConnectionSignals = true;
+                response.emitRequestSentSignal = true;
+                response.emitMetadataSignal = scenario != "connection-no-response";
+            }
+            if (scenario == "refused") {
+                response.status = 0;
+                response.error = QNetworkReply::ConnectionRefusedError;
+                response.errorString = "PRIVATE_CONNECTION";
+            }
+            if (scenario == "reused-connection") {
+                // A reused socket has no new connect/encrypted signals. Do not
+                // infer reuse from their absence in production diagnostics.
+                response.emitRequestSentSignal = true;
+                response.emitMetadataSignal = true;
+            }
+            response.immediateFinish = scenario == "immediate-success";
+            return response;
+        };
+        ModelBinding binding{"cloud-api", "fixture-model"};
+        LMStudioConfig config;
+        config.endpoint = QUrl("https://fixture.invalid/v1");
+        config.apiKey = "PRIVATE_KEY";
+        config.networkFactory = std::make_shared<sentinel::test::ScriptedNetworkFactory>(transport);
+        auto endpoint = makeSelectedEndpointChatProvider(binding, config, 0);
+        FixedReplyProvider provider;
+        provider.onRequest = [&](const auto& prompt, const auto& options) {
+            auto fixtureOptions = options;
+            // Exercise real timeout/abort through an injected reply in milliseconds,
+            // while separately asserting the unchanged production policy deadline.
+            fixtureOptions.deadlineMs = 25;
+            return endpoint->sendRequest(prompt, fixtureOptions);
+        };
+        auto token = std::make_shared<std::atomic_bool>(false);
+        if (scenario == "cancel")
+            QTimer::singleShot(2, [&] { token->store(true); });
+        ObservationIntentPolicy policy(&provider, token, binding);
+        const auto intent = policy.classify("PRIVATE_GOAL", "PRIVATE_CONTEXT", {});
+        QVERIFY(provider.request.deadlineMs > 0 && provider.request.deadlineMs <= 60000);
+        QCOMPARE(transport->requests.size(), 1);
+        QCOMPARE(intent.requestDiagnostics.size(), 1);
+        const auto record = intent.requestDiagnostics.first().toObject();
+        const auto phases = record.value("transport_attempts").toArray();
+        QCOMPARE(phases.size(), 1);
+        const auto phase = phases.first().toObject();
+        QVERIFY(!QUuid(phase.value("attempt_id").toString()).isNull());
+        QCOMPARE(phase.value("policy_allowed").toBool(), true);
+        QCOMPARE(phase.value("connection_reuse").toString(), QString("unknown"));
+        QVERIFY(phase.value("dns_started_ms").isNull());
+        QVERIFY(phase.value("tcp_connected_ms").isNull());
+        for (const auto* key : {"request_created_ms", "policy_admitted_ms", "reply_created_ms",
+                                "socket_connect_started_ms", "tls_encrypted_ms", "request_sent_ms",
+                                "metadata_received_ms", "first_body_ms", "qt_finished_ms"}) {
+            const auto observed = phase.value(QLatin1String(key));
+            QVERIFY(observed.isNull() ||
+                    observed.toDouble() <= phase.value("observation_finished_ms").toDouble());
+        }
+        if (scenario == "connection-no-response" || scenario == "metadata-stall" ||
+            scenario == "partial-body") {
+            QVERIFY(intent.indeterminate);
+            QVERIFY(phase.value("socket_connect_started_ms").isDouble());
+            QVERIFY(phase.value("tls_encrypted_ms").isDouble());
+            QVERIFY(phase.value("request_sent_ms").isDouble());
+            QVERIFY(phase.value("deadline_expired_ms").isDouble());
+            QCOMPARE(phase.value("response_completed").toBool(), false);
+            QCOMPARE(phase.value("partial_body").toBool(), scenario == "partial-body");
+            QCOMPARE(phase.value("metadata_received_ms").isDouble(),
+                     scenario != "connection-no-response");
+            QCOMPARE(phase.value("http_status").isNull(), scenario == "connection-no-response");
+        }
+        if (scenario == "transport" || scenario == "refused")
+            QCOMPARE(phase.value("qt_network_error").toInt(),
+                     int(scenario == "transport" ? QNetworkReply::SslHandshakeFailedError
+                                                 : QNetworkReply::ConnectionRefusedError));
+        if (scenario == "cancel")
+            QVERIFY(phase.value("cancelled_ms").isDouble());
+        if (scenario == "cancel")
+            QVERIFY(record.value("elapsed_ms").toDouble() < 1000);
+        if (scenario == "reused-connection") {
+            QVERIFY(phase.value("socket_connect_started_ms").isNull());
+            QVERIFY(phase.value("tls_encrypted_ms").isNull());
+            QVERIFY(phase.value("request_sent_ms").isDouble());
+            QVERIFY(phase.value("metadata_received_ms").isDouble());
+        }
+        if (scenario == "immediate-success") {
+            QVERIFY(phase.value("qt_finished_ms").isNull());
+            QVERIFY(phase.value("first_body_ms").isNull());
+            QVERIFY(phase.value("response_completed").toBool());
+        }
+        const auto json = QJsonDocument(intent.requestDiagnostics).toJson();
+        QVERIFY(!json.contains("PRIVATE_"));
+        QVERIFY(!json.contains("fixture.invalid"));
+        QVERIFY(!json.contains("Authorization"));
+        QVERIFY(record.value("elapsed_ms").isDouble());
+        if (scenario == "success" || scenario == "missing-usage" ||
+            scenario == "reused-connection" || scenario == "immediate-success") {
+            QVERIFY(!intent.indeterminate);
+            QCOMPARE(record.value("http_status").toInt(), 200);
+            QCOMPARE(record.contains("total_tokens"), scenario == "success");
+            QVERIFY(phase.value("response_completed").toBool());
+        } else {
+            QVERIFY(intent.indeterminate);
+            if (scenario == "timeout") {
+                QVERIFY(intent.providerFailure);
+                QCOMPARE(intent.providerFailure->category, ChatProviderErrorCategory::Timeout);
+                // Response headers already arrived; timeout must not erase them.
+                QCOMPARE(intent.providerFailure->httpStatus, 200);
+                QVERIFY(record.value("timed_out").toBool());
+            } else if (scenario == "cancel") {
+                QVERIFY(record.value("cancelled").toBool());
+            } else if (scenario == "transport") {
+                QCOMPARE(record.value("category").toString(), QString("ConnectionFailed"));
+            } else if (scenario == "malformed") {
+                QCOMPARE(intent.failure, ObservationClassificationFailure::InvalidJson);
+            } else {
+                QCOMPARE(intent.failure, ObservationClassificationFailure::ProviderFailure);
+            }
+        }
+    }
+    void classificationFailureRetainsSafeRequestEvidence() {
+        FixedReplyProvider provider;
+        ChatProviderReply reply;
+        reply.lifecycle = ChatRequestLifecycle::TimedOut;
+        reply.category = ChatProviderErrorCategory::Timeout;
+        reply.requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        reply.errorMessage = "Synthetic deadline";
+        reply.diagnostics = {{"prompt_tokens", 31},
+                             {"completion_tokens", 7},
+                             {"total_tokens", 38},
+                             {"Authorization", "PRIVATE_HEADER"},
+                             {"finish_reason", "PRIVATE_OUTPUT"},
+                             {"prompt", "PRIVATE_PROMPT"}};
+        provider.responses = {reply};
+        ModelBinding binding{"cloud-api", "fixture-model"};
+        ObservationIntentPolicy policy(&provider, {}, binding);
+        const auto intent = policy.classify("PRIVATE_GOAL", "PRIVATE_CONTEXT", {});
+        QVERIFY(intent.indeterminate);
+        QCOMPARE(provider.calls, 1);
+        QVERIFY(intent.providerFailure);
+        QCOMPARE(intent.providerFailure->category, ChatProviderErrorCategory::Timeout);
+        QCOMPARE(intent.providerFailure->lifecycle, ChatRequestLifecycle::TimedOut);
+        QCOMPARE(intent.requestDiagnostics.size(), 1);
+        const auto diagnostic = intent.requestDiagnostics.first().toObject();
+        QCOMPARE(diagnostic.value("request_id").toString(), reply.requestId);
+        QCOMPARE(diagnostic.value("deadline_ms").toInt(), 60000);
+        QCOMPARE(diagnostic.value("category").toString(), QString("Timeout"));
+        QCOMPARE(diagnostic.value("total_tokens").toInt(), 38);
+        QVERIFY(diagnostic.value("timed_out").toBool());
+        QVERIFY(diagnostic.value("provider_invoked").toBool());
+        QVERIFY(!QUuid(diagnostic.value("trace_id").toString()).isNull());
+        const auto json = QJsonDocument(intent.requestDiagnostics).toJson();
+        QVERIFY(!json.contains("PRIVATE_"));
+        QVERIFY(!json.contains("Authorization"));
+    }
     void localizedDesktopClassificationUsesObservedStandardDirectory() {
         FixedReplyProvider provider;
         const auto target =
@@ -103,6 +483,8 @@ private slots:
         QVERIFY(intent.indeterminate);
         QVERIFY(intent.error.startsWith("Context budget refused"));
         QVERIFY(provider.prompt.isEmpty());
+        QCOMPARE(intent.requestDiagnostics.size(), 1);
+        QVERIFY(!intent.requestDiagnostics.first().toObject().value("provider_invoked").toBool());
     }
     void relativeRequirementsUseFrozenWorkspace() {
         QTemporaryDir workspace;
@@ -640,19 +1022,24 @@ private slots:
             operation);
     }
     void localClassificationHasNoDeadlineAndRemainsCancellable() {
-        for (const auto& id : {"lm-studio", "ollama", "llama-cpp-server", "openai-compatible-local",
+        for (const auto* id : {"lm-studio", "ollama", "llama-cpp-server", "openai-compatible-local",
                                "cloud-api", "unknown"}) {
             FixedReplyProvider provider;
-            auto token = std::make_shared<std::atomic_bool>(true);
-            ModelBinding binding;
-            binding.providerId = id;
-            ObservationIntentPolicy policy(&provider, token, binding);
+            auto token = std::make_shared<std::atomic_bool>(false);
+            provider.onRequest = [&](const auto&, const auto&) {
+                token->store(true);
+                ChatProviderReply reply;
+                reply.category = ChatProviderErrorCategory::Cancelled;
+                reply.errorMessage = "Cancelled";
+                return reply;
+            };
+            ObservationIntentPolicy policy(&provider, token, {id, "fixture"}, [] { return 0; });
             const auto intent = policy.classify("List the workspace", {}, {});
+            QCOMPARE(provider.calls, 1);
             QCOMPARE(provider.request.deadlineMs,
                      QString(id) == "cloud-api" || QString(id) == "unknown" ? 60000 : 0);
             QCOMPARE(provider.request.cancellationToken, token);
-            QCOMPARE(provider.request.maxOutputTokens, 2048);
-            QCOMPARE(intent.error, QStringLiteral("Cancelled"));
+            QCOMPARE(intent.error, QString("Cancelled"));
         }
     }
     void classificationRetriesOnceAfterTypedTruncation() {
@@ -664,6 +1051,11 @@ private slots:
         QCOMPARE(provider.calls, 2);
         QVERIFY(!intent.indeterminate);
         QVERIFY(intent.requirements.isEmpty());
+        QCOMPARE(intent.requestDiagnostics.size(), 2);
+        QCOMPARE(intent.requestDiagnostics.at(0).toObject().value("trace_id"),
+                 intent.requestDiagnostics.at(1).toObject().value("trace_id"));
+        QCOMPARE(intent.requestDiagnostics.at(1).toObject().value("output_budget_tokens").toInt(),
+                 4096);
     }
     void classificationStopsAfterTheSingleRetry() {
         FixedReplyProvider provider;
@@ -680,7 +1072,7 @@ private slots:
         auto token = std::make_shared<std::atomic_bool>(true);
         ObservationIntentPolicy policy(&provider, token);
         const auto intent = policy.classify("List the workspace", {}, {});
-        QCOMPARE(provider.calls, 1);
+        QCOMPARE(provider.calls, 0);
         QVERIFY(intent.indeterminate);
         QCOMPARE(intent.error, QStringLiteral("Cancelled"));
     }
@@ -688,18 +1080,11 @@ private slots:
         FixedReplyProvider provider;
         auto token = std::make_shared<std::atomic_bool>(true);
         ObservationIntentPolicy policy(&provider, token);
-        const auto intent = policy.classify(QStringLiteral("List the workspace"), {}, {});
-        QCOMPARE(provider.request.cancellationToken, token);
-        QCOMPARE(provider.request.deadlineMs, 60000);
-        QCOMPARE(provider.request.maxOutputTokens, 2048);
+        const auto intent = policy.classify("List the workspace", {}, {});
+        QCOMPARE(provider.calls, 0);
+        QVERIFY(provider.prompt.isEmpty());
         QVERIFY(intent.indeterminate);
-        QCOMPARE(intent.error, QStringLiteral("Cancelled"));
-        QVERIFY(provider.request.tools.isEmpty());
-        QVERIFY(!provider.request.nativeToolCalling);
-        QVERIFY(!provider.request.structuredOutput);
-        QVERIFY(provider.request.priorToolCalls.isEmpty());
-        QVERIFY(provider.request.toolResults.isEmpty());
-        QVERIFY(provider.prompt.contains(QStringLiteral("Return ONLY JSON")));
+        QCOMPARE(intent.error, QString("Cancelled"));
     }
 
     void classifierPreservesWorkspaceAfterLongConversation() {

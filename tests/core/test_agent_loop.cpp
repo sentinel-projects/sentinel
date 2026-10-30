@@ -26,6 +26,34 @@
 using namespace sentinel::core;
 
 namespace {
+
+class ControlledClassificationProvider final : public IChatProvider {
+public:
+    qint64 now = 0;
+    int calls = 0;
+    bool truncate = false;
+    QString name() const override {
+        return "fixture";
+    }
+    ChatProviderStatus status() const override {
+        return ChatProviderStatus::Ready;
+    }
+    ChatProviderReply sendMessage(const QString&) override {
+        return {};
+    }
+    ChatProviderReply sendRequest(const QString&, const ChatRequestOptions&) override {
+        ++calls;
+        if (truncate) {
+            ChatProviderReply reply;
+            reply.completion = ResponseCompletion::Truncated;
+            return reply;
+        }
+        now = 60000;
+        ChatProviderReply reply{true, R"({"requirements":[]})", {}};
+        reply.httpStatus = 200;
+        return reply;
+    }
+};
 class CallbackIntentPolicy final : public IObservationIntentPolicy {
 public:
     std::function<void()> onClassify;
@@ -224,6 +252,52 @@ class AgentLoopTest final : public QObject {
     Q_OBJECT
 
 private slots:
+
+    void actualClassificationStopNeverDispatches_data() {
+        QTest::addColumn<bool>("async");
+        QTest::addColumn<bool>("refusal");
+        QTest::newRow("sync-late") << false << false;
+        QTest::newRow("async-late") << true << false;
+        QTest::newRow("sync-re-admission") << false << true;
+        QTest::newRow("async-re-admission") << true << true;
+    }
+    void actualClassificationStopNeverDispatches() {
+        QFETCH(bool, async);
+        QFETCH(bool, refusal);
+        ControlledClassificationProvider provider;
+        provider.truncate = refusal;
+        ScriptedPlanner planner;
+        RecordingExecutor executor;
+        StaticApprovalPolicy approval;
+        auto sandbox = permissiveSandbox();
+        AgentLoop loop(planner, executor, approval, sandbox, QStringList{});
+        auto policy = std::make_shared<ObservationIntentPolicy>(
+            &provider, nullptr, ModelBinding{"cloud-api", "fixture"}, [&] { return provider.now; });
+        loop.setObservationIntentPolicy(policy);
+        const QString goal = refusal ? QString(9000, 'x') : QString("Explain a fictional scenario");
+        AgentLoopState result;
+        int terminals = 0;
+        if (async) {
+            loop.runAsync(goal, "fixture", this, [&](const auto& state) {
+                result = state;
+                ++terminals;
+            });
+            QTRY_COMPARE(terminals, 1);
+            QCoreApplication::processEvents();
+            QCOMPARE(terminals, 1);
+        } else
+            result = loop.run(goal, "fixture");
+        QCOMPARE(provider.calls, 1);
+        QCOMPARE(result.phase, AgentLoopPhase::Failed);
+        QCOMPARE(result.terminalReason, AgentTerminalReason::ObservationIndeterminate);
+        QCOMPARE(planner.calls, 0);
+        QVERIFY(executor.requests.isEmpty());
+        if (!refusal) {
+            QVERIFY(result.providerFailure);
+            QCOMPARE(result.providerFailure->category, ChatProviderErrorCategory::Timeout);
+            QCOMPARE(result.providerFailure->httpStatus, 200);
+        }
+    }
     void finalDecisionAtToolBudget_data() {
         QTest::addColumn<bool>("async");
         QTest::newRow("sync") << false;
@@ -503,6 +577,10 @@ private slots:
         AgentLoop loop(planner, executor, approval, sandbox, QStringList{});
         auto policy = std::make_shared<FixedFilesystemIntent>();
         policy->intent.indeterminate = true;
+        policy->intent.failure = ObservationClassificationFailure::ProviderFailure;
+        policy->intent.providerFailure = std::make_shared<ProviderFailureMetadata>(
+            ProviderFailureMetadata{ChatRequestLifecycle::TimedOut,
+                                    ChatProviderErrorCategory::Timeout, 0, 1, "fixture-request"});
         policy->intent.error =
             QStringLiteral("Client deadline expired; upstream cancellation unconfirmed.");
         loop.setObservationIntentPolicy(policy);
@@ -520,6 +598,9 @@ private slots:
             result = loop.run(QStringLiteral("Inspect workspace"), QStringLiteral("bounded"));
         }
         QCOMPARE(result.phase, AgentLoopPhase::Failed);
+        QVERIFY(result.providerFailure);
+        QCOMPARE(result.providerFailure->category, ChatProviderErrorCategory::Timeout);
+        QCOMPARE(result.terminalReason, AgentTerminalReason::ObservationIndeterminate);
         QVERIFY(result.finalAnswer.isEmpty());
         QVERIFY(result.abortReason.contains(QStringLiteral("deadline")));
         QCOMPARE(planner.calls, 0);

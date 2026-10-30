@@ -45,6 +45,11 @@ Local (LM Studio, Ollama, llama.cpp and the local compatible endpoint). The gene
 request carries the run's cancellation token and remains interruptible through Stop.
 An explicitly configured provider timeout still applies; the default is zero (disabled).
 Cloud and unknown providers retain the classification/planning deadlines of 60/120 seconds.
+Each bounded classification or planner decision owns one monotonic operation budget;
+child attempts, transient backoff, provider serialization and repairs share its remaining
+time rather than restarting it. Expired/cancelled operations cannot dispatch a new
+request, and late replies cannot become accepted decisions. This is not a whole-run
+wall-clock cap or a new limit for registered local providers.
 Local planning uses the cancellable non-streaming request contract, rather than claiming
 that an unlimited request satisfies the bounded-streaming contract. A classification reply with typed output truncation may be retried once with a larger
 output budget, subject to fresh context admission and the same cancellation token. Other
