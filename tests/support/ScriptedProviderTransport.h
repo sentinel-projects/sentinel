@@ -41,6 +41,10 @@ struct ScriptedHttpResponse {
     QMap<QByteArray, QByteArray> rawHeaders;
     bool finish = true;
     int frameDelayMs = 0;
+    bool emitConnectionSignals = false;
+    bool emitRequestSentSignal = false;
+    bool emitMetadataSignal = false;
+    bool immediateFinish = false;
 
     static ScriptedHttpResponse body(const QByteArray& payload, int status = 200) {
         ScriptedHttpResponse response;
@@ -64,7 +68,8 @@ public:
         setRequest(request);
         setUrl(request.url());
         setOperation(operation);
-        setAttribute(QNetworkRequest::HttpStatusCodeAttribute, response_.status);
+        if (response_.status > 0)
+            setAttribute(QNetworkRequest::HttpStatusCodeAttribute, response_.status);
         for (auto it = response_.rawHeaders.constBegin(); it != response_.rawHeaders.constEnd();
              ++it) {
             setRawHeader(it.key(), it.value());
@@ -76,7 +81,10 @@ public:
         timer_.setSingleShot(true);
         timer_.setInterval(response_.frameDelayMs);
         connect(&timer_, &QTimer::timeout, this, [this] { deliverNext(); });
-        timer_.start();
+        if (response_.immediateFinish)
+            deliverNext();
+        else
+            timer_.start();
     }
 
     void abort() override {
@@ -114,6 +122,19 @@ private:
         if (finished_ || aborted_) {
             return;
         }
+        if (!signalsDelivered_) {
+            signalsDelivered_ = true;
+            if (response_.emitConnectionSignals) {
+                emit socketStartedConnecting();
+                emit encrypted();
+            }
+            if (response_.emitRequestSentSignal)
+                emit requestSent();
+            if (response_.emitMetadataSignal)
+                emit metaDataChanged();
+            if (response_.error != QNetworkReply::NoError)
+                emit errorOccurred(response_.error);
+        }
         if (frameIndex_ < response_.frames.size()) {
             buffer_.append(response_.frames.at(frameIndex_++));
             emit readyRead();
@@ -138,11 +159,13 @@ private:
     qint64 offset_ = 0;
     bool finished_ = false;
     bool aborted_ = false;
+    bool signalsDelivered_ = false;
 };
 
 struct ScriptedTransportState {
     QList<RecordedProviderRequest> requests;
     std::function<ScriptedHttpResponse(const RecordedProviderRequest&)> responder;
+    std::function<void()> onCreateManager;
 };
 
 class ScriptedNetworkAccessManager final : public QNetworkAccessManager {
@@ -187,6 +210,8 @@ public:
     explicit ScriptedNetworkFactory(std::shared_ptr<ScriptedTransportState> state)
         : state_(std::move(state)) {}
     std::unique_ptr<QNetworkAccessManager> createManager() const override {
+        if (state_->onCreateManager)
+            state_->onCreateManager();
         return std::make_unique<ScriptedNetworkAccessManager>(state_);
     }
     std::shared_ptr<ScriptedTransportState> state_;

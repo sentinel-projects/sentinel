@@ -70,6 +70,10 @@ NormalizedResponseOutcome normalizeOllamaOutcome(const QJsonObject& body);
 // diagnostics object. Never invents usage numbers the provider omitted.
 void applyOutcomeToDiagnostics(const NormalizedResponseOutcome& outcome, QJsonObject& diagnostics);
 
+// Merge only actual numeric usage, including usage-only stream frames. Missing
+// values never erase prior observations and totals are never synthesized.
+void preserveReportedUsage(const QJsonObject& body, QJsonObject& diagnostics);
+
 // Maps a normalized outcome onto a reply's allowlisted diagnostics and typed
 // completion state.
 void applyOutcomeToReply(const NormalizedResponseOutcome& outcome, ChatProviderReply& reply);

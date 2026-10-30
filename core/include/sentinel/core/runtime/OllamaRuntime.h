@@ -85,6 +85,7 @@ struct OllamaConfig {
     int modelDiscoveryTimeoutMs = 1500;
     int generateTimeoutMs = 0;
     int streamTimeoutMs = 0;
+    std::shared_ptr<ILocalInferenceNetworkFactory> networkFactory;
 
     static OllamaConfig fromEndpoint(const QString& endpoint);
 };

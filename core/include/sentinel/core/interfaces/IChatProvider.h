@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "sentinel/core/runtime/OperationDeadline.h"
+
 #include "sentinel/core/runtime/ToolDescriptor.h"
 #include <QJsonObject>
 #include <QList>
@@ -183,7 +185,39 @@ struct ChatRequestOptions {
     bool requireBoundedStreaming = false;
     // Reasoning/thinking intent. Providers map it to their own documented field.
     ReasoningControl reasoning = ReasoningControl::Default;
+    std::shared_ptr<const OperationDeadline> operationDeadline;
 };
+
+inline std::optional<ChatProviderReply>
+stoppedProviderOperation(const std::shared_ptr<std::atomic_bool>& token,
+                         const std::shared_ptr<const OperationDeadline>& deadline) {
+    const bool cancelled = token && token->load();
+    if (!cancelled && (!deadline || !deadline->expired()))
+        return {};
+    ChatProviderReply reply;
+    reply.category =
+        cancelled ? ChatProviderErrorCategory::Cancelled : ChatProviderErrorCategory::Timeout;
+    reply.lifecycle = cancelled ? ChatRequestLifecycle::Cancelled : ChatRequestLifecycle::TimedOut;
+    reply.error = ChatProviderReply::Error::ProviderFailure;
+    reply.errorMessage =
+        cancelled ? QStringLiteral("Cancelled") : QStringLiteral("Operation deadline expired.");
+    reply.attempts = 0;
+    return reply;
+}
+
+inline ChatProviderReply
+enforceProviderOperationStop(ChatProviderReply reply,
+                             const std::shared_ptr<std::atomic_bool>& token,
+                             const std::shared_ptr<const OperationDeadline>& deadline) {
+    if (auto stopped = stoppedProviderOperation(token, deadline)) {
+        stopped->httpStatus = reply.httpStatus;
+        stopped->attempts = reply.attempts;
+        stopped->requestId = reply.requestId;
+        stopped->diagnostics = reply.diagnostics;
+        return *stopped;
+    }
+    return reply;
+}
 
 inline QString chatProviderStatusName(ChatProviderStatus status) {
     switch (status) {
@@ -209,8 +243,12 @@ public:
     virtual ChatProviderReply sendMessage(const QString& message) = 0;
     virtual ChatProviderReply sendRequest(const QString& message,
                                           const ChatRequestOptions& options) {
+        if (auto stopped =
+                stoppedProviderOperation(options.cancellationToken, options.operationDeadline))
+            return *stopped;
         if (options.deadlineMs > 0 || options.maxOutputTokens > 0 || options.structuredOutput ||
-            options.nativeToolCalling || !options.images.isEmpty()) {
+            options.nativeToolCalling || !options.images.isEmpty() ||
+            (options.operationDeadline && options.operationDeadline->bounded())) {
             ChatProviderReply reply;
             reply.errorMessage =
                 QStringLiteral("Requested model capability is unavailable through this provider.");

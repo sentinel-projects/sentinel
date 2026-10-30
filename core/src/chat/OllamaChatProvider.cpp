@@ -96,17 +96,21 @@ ChatProviderReply OllamaChatProvider::sendMessage(const QString& message) {
 
 ChatProviderReply OllamaChatProvider::sendRequest(const QString& message,
                                                   const ChatRequestOptions& options) {
+    if (auto stopped =
+            stoppedProviderOperation(options.cancellationToken, options.operationDeadline))
+        return *stopped;
     if (options.nativeToolCalling || options.structuredOutput)
         return IChatProvider::sendRequest(message, options);
-    return sendMessageWithToken(message, options.cancellationToken, options.images,
-                                options.deadlineMs, options.maxOutputTokens, options.reasoning);
+    return enforceProviderOperationStop(
+        sendMessageWithToken(message, options.cancellationToken, options.images, options.deadlineMs,
+                             options.maxOutputTokens, options.reasoning, options.operationDeadline),
+        options.cancellationToken, options.operationDeadline);
 }
 
-ChatProviderReply
-OllamaChatProvider::sendMessageWithToken(const QString& message,
-                                         const std::shared_ptr<std::atomic_bool>& cancellationToken,
-                                         const QList<ChatImage>& images, int deadlineMs,
-                                         int maxOutputTokens, ReasoningControl reasoning) {
+ChatProviderReply OllamaChatProvider::sendMessageWithToken(
+    const QString& message, const std::shared_ptr<std::atomic_bool>& cancellationToken,
+    const QList<ChatImage>& images, int deadlineMs, int maxOutputTokens, ReasoningControl reasoning,
+    std::shared_ptr<const OperationDeadline> operation) {
     const auto trimmed = message.trimmed();
     if (trimmed.isEmpty()) {
         return failureReply(QStringLiteral("Prompt is blank."),
@@ -147,6 +151,7 @@ OllamaChatProvider::sendMessageWithToken(const QString& message,
         request.options.modelValidation = *discoverySnapshot_;
     request.options.timeoutMs = deadlineMs > 0 ? deadlineMs : timeoutMs_;
     request.options.cancellationToken = cancellationToken;
+    request.options.operationDeadline = operation;
     request.options.temperature = 0.7;
     request.options.topP = 0.9;
     request.options.maxTokens = maxOutputTokens > 0 ? maxOutputTokens : 2048;
@@ -214,14 +219,18 @@ ChatProviderReply OllamaChatProvider::sendMessageStreaming(
     const auto token = cancellationToken ? cancellationToken : options.cancellationToken;
     const int deadlineMs = options.deadlineMs > 0 ? options.deadlineMs : timeoutMs_;
     const int maxOutputTokens = options.maxOutputTokens > 0 ? options.maxOutputTokens : 2048;
-    return streamMessage(message, onDelta, token, options.images, deadlineMs, maxOutputTokens,
-                         options.requireBoundedStreaming, options.reasoning);
+    return enforceProviderOperationStop(streamMessage(message, onDelta, token, options.images,
+                                                      deadlineMs, maxOutputTokens,
+                                                      options.requireBoundedStreaming,
+                                                      options.reasoning, options.operationDeadline),
+                                        token, options.operationDeadline);
 }
 
 ChatProviderReply OllamaChatProvider::streamMessage(
     const QString& message, const std::function<void(const QString&)>& onDelta,
     const std::shared_ptr<std::atomic_bool>& cancellationToken, const QList<ChatImage>& images,
-    int deadlineMs, int maxOutputTokens, bool requireBoundedStreaming, ReasoningControl reasoning) {
+    int deadlineMs, int maxOutputTokens, bool requireBoundedStreaming, ReasoningControl reasoning,
+    std::shared_ptr<const OperationDeadline> operation) {
     const auto trimmed = message.trimmed();
     if (trimmed.isEmpty())
         return failureReply(QStringLiteral("Prompt is blank."),
@@ -282,6 +291,7 @@ ChatProviderReply OllamaChatProvider::streamMessage(
     request.options.maxTokens = maxOutputTokens;
     request.options.streamingRequested = true;
     request.options.cancellationToken = cancellationToken;
+    request.options.operationDeadline = operation;
     request.options.reasoning = reasoning;
     request.options.reasoningEndpoint = ProviderEndpoint::Ollama;
 
@@ -299,6 +309,7 @@ ChatProviderReply OllamaChatProvider::streamMessage(
         reply.attempts = result.attempts;
         reply.retrySummary = result.retrySummary;
         reply.requestId = result.requestId;
+        reply.diagnostics = result.diagnostics;
         reply.diagnostics.insert(QStringLiteral("deadline_ms"), result.timeoutMs);
         reply.diagnostics.insert(QStringLiteral("bounded_streaming"), requireBoundedStreaming);
         return reply;
@@ -315,6 +326,7 @@ ChatProviderReply OllamaChatProvider::streamMessage(
     reply.attempts = result.attempts;
     reply.retrySummary = result.retrySummary;
     reply.requestId = result.requestId;
+    reply.diagnostics = result.diagnostics;
     reply.diagnostics.insert(QStringLiteral("deadline_ms"), result.timeoutMs);
     reply.diagnostics.insert(QStringLiteral("bounded_streaming"), requireBoundedStreaming);
     return reply;

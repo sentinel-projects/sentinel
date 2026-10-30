@@ -8,6 +8,7 @@
 #include <QJsonValue>
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <utility>
 
@@ -31,7 +32,8 @@ std::optional<int> nonNegativeInt(const QJsonValue& value) {
     if (!value.isDouble())
         return std::nullopt;
     const double number = value.toDouble();
-    if (number < 0 || number > static_cast<double>(std::numeric_limits<int>::max()))
+    if (!std::isfinite(number) || number < 0 || number != std::floor(number) ||
+        number > static_cast<double>(std::numeric_limits<int>::max()))
         return std::nullopt;
     return static_cast<int>(number);
 }
@@ -132,6 +134,33 @@ void applyOutcomeToDiagnostics(const NormalizedResponseOutcome& outcome, QJsonOb
     if (outcome.promptEvalCount >= 0)
         diagnostics.insert(QStringLiteral("prompt_eval_count"),
                            static_cast<qint64>(outcome.promptEvalCount));
+}
+
+void preserveReportedUsage(const QJsonObject& body, QJsonObject& diagnostics) {
+    const auto copy = [&](const QJsonObject& source, const char* from, const char* to) {
+        const auto value = source.value(QLatin1String(from));
+        const double n = value.toDouble(-1);
+        if (value.isDouble() && std::isfinite(n) && n >= 0 &&
+            n <= std::numeric_limits<int>::max() && n == std::floor(n))
+            diagnostics.insert(QLatin1String(to), int(n));
+    };
+    for (const auto& usage : {body.value("usage").toObject(),
+                              body.value("message").toObject().value("usage").toObject()}) {
+        copy(usage, "prompt_tokens", "prompt_tokens");
+        copy(usage, "completion_tokens", "completion_tokens");
+        copy(usage, "total_tokens", "total_tokens");
+        copy(usage, "input_tokens", "prompt_tokens");
+        copy(usage, "output_tokens", "completion_tokens");
+        copy(usage.value("completion_tokens_details").toObject(), "reasoning_tokens",
+             "reasoning_tokens");
+    }
+    const auto gemini = body.value("usageMetadata").toObject();
+    copy(gemini, "promptTokenCount", "prompt_tokens");
+    copy(gemini, "candidatesTokenCount", "completion_tokens");
+    copy(gemini, "totalTokenCount", "total_tokens");
+    copy(gemini, "thoughtsTokenCount", "reasoning_tokens");
+    copy(body, "prompt_eval_count", "prompt_tokens");
+    copy(body, "eval_count", "completion_tokens");
 }
 
 void applyOutcomeToReply(const NormalizedResponseOutcome& outcome, ChatProviderReply& reply) {
