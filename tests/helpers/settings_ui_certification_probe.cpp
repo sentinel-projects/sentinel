@@ -33,6 +33,7 @@ void qml_register_types_Sentinel_Warden();
 #include <QQmlApplicationEngine>
 #include <QQmlComponent>
 #include <QQmlContext>
+#include <QQmlProperty>
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QStandardPaths>
@@ -70,7 +71,8 @@ class CatalogUiFixture final : public QObject {
     Q_PROPERTY(double progress MEMBER progress NOTIFY changed)
 public:
     QVariantList models, catalog, tags;
-    bool fetching = false, pulling = false, daemonReachable = false, hasMore = false, hasPrevious = false;
+    bool fetching = false, pulling = false, daemonReachable = false, hasMore = false,
+         hasPrevious = false;
     QString errorText, statusText, activeModel, readme, catalogStatus, query, setupStatus;
     int installedCount = 0;
     bool setupBusy = false, runtimeInstalled = true;
@@ -79,13 +81,16 @@ public:
     Q_INVOKABLE void refreshCatalog(const QString&) {}
     Q_INVOKABLE void fetchDetails(const QString&) {}
     Q_INVOKABLE void cancel() {}
-    void notify() { emit changed(); }
+    void notify() {
+        emit changed();
+    }
 signals:
     void changed();
 };
 
 QVariant qmlVariant(const QVariant& value) {
-    return value.metaType() == QMetaType::fromType<QJSValue>() ? value.value<QJSValue>().toVariant() : value;
+    return value.metaType() == QMetaType::fromType<QJSValue>() ? value.value<QJSValue>().toVariant()
+                                                               : value;
 }
 
 namespace {
@@ -132,14 +137,16 @@ int main(int argc, char** argv) {
         }
     }
     const bool shellSmoke = argc == 2 && QString::fromLocal8Bit(argv[1]) == "--shell-smoke";
-    const bool extensionsSmoke = argc == 2 && QString::fromLocal8Bit(argv[1]) == "--extensions-smoke";
+    const bool extensionsSmoke =
+        argc == 2 && QString::fromLocal8Bit(argv[1]) == "--extensions-smoke";
     const bool phase1FailureSmoke =
         argc == 2 && QString::fromLocal8Bit(argv[1]) == "--phase1-failure-smoke";
     const bool phase1Smoke =
         phase1FailureSmoke || (argc == 2 && QString::fromLocal8Bit(argv[1]) == "--phase1-smoke");
     const bool traySmoke = argc == 2 && QString::fromLocal8Bit(argv[1]) == "--tray-smoke";
     const bool focusSmoke = argc == 2 && QString::fromLocal8Bit(argv[1]) == "--focus-smoke";
-    const bool navigationSmoke = argc == 2 && QString::fromLocal8Bit(argv[1]) == "--navigation-smoke";
+    const bool navigationSmoke =
+        argc == 2 && QString::fromLocal8Bit(argv[1]) == "--navigation-smoke";
     const bool chatSmoke = argc == 2 && QString::fromLocal8Bit(argv[1]) == "--chat-smoke";
     const bool settingsSmoke = argc == 2 && QString::fromLocal8Bit(argv[1]) == "--settings-smoke";
     const bool modelsSmoke = argc == 2 && QString::fromLocal8Bit(argv[1]) == "--models-smoke";
@@ -228,15 +235,30 @@ int main(int argc, char** argv) {
     engine.rootContext()->setContextProperty("shellViewModel", &viewModel);
     if (qEnvironmentVariableIsSet("SENTINEL_UI_NOTIFICATION_FIXTURE")) {
         viewModel.setDndEnabled(true); // Synthetic history only; do not request an OS banner.
-        viewModel.addNotificationWithPriority("Security", "Disposable test notice", "Synthetic content for notification UI verification.", "High");
+        viewModel.addNotificationWithPriority("Security", "Disposable test notice",
+                                              "Synthetic content for notification UI verification.",
+                                              "High");
     }
     CatalogUiFixture library, emptyLibrary;
-    library.models = {
-        QVariantMap{{"id", "qwen-small"}, {"name", "Qwen 2.5 7B"}, {"ollamaId", "qwen2.5:7b"}, {"category", "LLM"}, {"provider", "Ollama"}, {"description", "Small variant"}, {"badge", "Open"}, {"badgeColor", "#4f8ef7"}},
-        QVariantMap{{"id", "qwen-large"}, {"name", "Qwen 2.5 14B"}, {"ollamaId", "qwen2.5:14b"}, {"category", "LLM"}, {"provider", "Ollama"}, {"description", "Large variant"}, {"badge", "Open"}, {"badgeColor", "#4f8ef7"}}
-    };
+    library.models = {QVariantMap{{"id", "qwen-small"},
+                                  {"name", "Qwen 2.5 7B"},
+                                  {"ollamaId", "qwen2.5:7b"},
+                                  {"category", "LLM"},
+                                  {"provider", "Ollama"},
+                                  {"description", "Small variant"},
+                                  {"badge", "Open"},
+                                  {"badgeColor", "#4f8ef7"}},
+                      QVariantMap{{"id", "qwen-large"},
+                                  {"name", "Qwen 2.5 14B"},
+                                  {"ollamaId", "qwen2.5:14b"},
+                                  {"category", "LLM"},
+                                  {"provider", "Ollama"},
+                                  {"description", "Large variant"},
+                                  {"badge", "Open"},
+                                  {"badgeColor", "#4f8ef7"}}};
     engine.rootContext()->setContextProperty("ollamaLibraryFetcher", &library);
-    for (const auto* name : {"ggufLibraryFetcher", "lmStudioLibraryFetcher", "ollamaModelDetailFetcher", "ollamaPuller", "daemonClient"})
+    for (const auto* name : {"ggufLibraryFetcher", "lmStudioLibraryFetcher",
+                             "ollamaModelDetailFetcher", "ollamaPuller", "daemonClient"})
         engine.rootContext()->setContextProperty(name, &emptyLibrary);
     diagnostic.stage("qml-engine-load");
     if (shellSmoke || daemonE2e) {
@@ -336,11 +358,17 @@ int main(int argc, char** argv) {
         auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().first());
         QTimer::singleShot(200, &app, [&, window] {
             auto find = [](auto&& self, QQuickItem* item, const QString& name) -> QQuickItem* {
-                if (item->objectName() == name) return item;
-                for (auto* child : item->childItems()) if (auto* result = self(self, child, name)) return result;
+                if (item->objectName() == name)
+                    return item;
+                for (auto* child : item->childItems())
+                    if (auto* result = self(self, child, name))
+                        return result;
                 return nullptr;
             };
-            auto check = [](bool ok, const char* message) { if (!ok) qFatal("Extensions acceptance: %s", message); };
+            auto check = [](bool ok, const char* message) {
+                if (!ok)
+                    qFatal("Extensions acceptance: %s", message);
+            };
             auto* hub = find(find, window->contentItem(), "extensionsHubPage");
             auto* fixture = window->findChild<QObject*>("extensionsFixture");
             auto* search = find(find, hub, "extensionsSearch");
@@ -351,19 +379,40 @@ int main(int argc, char** argv) {
             auto* extensions = find(find, window->contentItem(), "ExtensionsNavigationButton");
             auto* settingsNav = find(find, window->contentItem(), "settingsNavigationButton");
             check(tools && extensions && settingsNav, "rail destinations");
-            check(tools->y() < extensions->y() && extensions->mapToScene(QPointF()).y() < settingsNav->mapToScene(QPointF()).y(), "Tools Extensions Settings order");
+            check(tools->y() < extensions->y() && extensions->mapToScene(QPointF()).y() <
+                                                      settingsNav->mapToScene(QPointF()).y(),
+                  "Tools Extensions Settings order");
             tools->forceActiveFocus();
             QTest::keyClick(window, Qt::Key_Space);
             QTest::qWait(30);
-            check(hub->property("section").toString() == "tools" && window->property("currentPage").toString() == "Tools", "keyboard Tools route");
+            check(hub->property("section").toString() == "tools" &&
+                      window->property("currentPage").toString() == "Tools",
+                  "keyboard Tools route");
             extensions->forceActiveFocus();
             QTest::keyClick(window, Qt::Key_Space);
             QTest::qWait(30);
             check(hub->property("section").toString() == "plugins", "keyboard Extensions route");
-            QVariantList entries{QVariantMap{{"id", "plugin:fixture"}, {"name", "Synthetic plugin metadata"}, {"type", "plugins"}, {"enabledKnown", true}, {"enabled", false}},
-                QVariantMap{{"id", "mcp:fixture"}, {"name", "Synthetic configured server"}, {"type", "mcp"}, {"enabledKnown", true}, {"enabled", true}},
-                QVariantMap{{"id", "skill:fixture"}, {"name", "Synthetic discovered skill"}, {"type", "skills"}, {"enabledKnown", false}}};
-            QVariantMap data{{"phase", "ready"}, {"message", "Synthetic UI fixture — no plugin, MCP server, skill or tool executed."}, {"entries", entries}, {"tools", QStringList{"fixture.read", "fixture.refused"}}, {"policy", QStringList{"Synthetic policy: execution permission not granted"}}};
+            QVariantList entries{QVariantMap{{"id", "plugin:fixture"},
+                                             {"name", "Synthetic plugin metadata"},
+                                             {"type", "plugins"},
+                                             {"enabledKnown", true},
+                                             {"enabled", false}},
+                                 QVariantMap{{"id", "mcp:fixture"},
+                                             {"name", "Synthetic configured server"},
+                                             {"type", "mcp"},
+                                             {"enabledKnown", true},
+                                             {"enabled", true}},
+                                 QVariantMap{{"id", "skill:fixture"},
+                                             {"name", "Synthetic discovered skill"},
+                                             {"type", "skills"},
+                                             {"enabledKnown", false}}};
+            QVariantMap data{
+                {"phase", "ready"},
+                {"message",
+                 "Synthetic UI fixture — no plugin, MCP server, skill or tool executed."},
+                {"entries", entries},
+                {"tools", QStringList{"fixture.read", "fixture.refused"}},
+                {"policy", QStringList{"Synthetic policy: execution permission not granted"}}};
             fixture->setProperty("daemonConnected", true);
             fixture->setProperty("data", data);
             QTest::qWait(40);
@@ -374,14 +423,18 @@ int main(int argc, char** argv) {
                 button->forceActiveFocus();
                 QTest::keyClick(window, Qt::Key_Space);
                 QTest::qWait(30);
-                check(hub->property("section").toString() == key && window->activeFocusItem()->isVisible(), "section keyboard/focus");
+                check(hub->property("section").toString() == key &&
+                          window->activeFocusItem()->isVisible(),
+                      "section keyboard/focus");
                 const auto evidence = qEnvironmentVariable("SENTINEL_EXTENSIONS_EVIDENCE_DIR");
                 if (!evidence.isEmpty()) {
                     QDir().mkpath(evidence);
-                    for (const auto& theme : {QStringLiteral("Paper"), QStringLiteral("Liquid Glass Dark")}) {
+                    for (const auto& theme :
+                         {QStringLiteral("Paper"), QStringLiteral("Liquid Glass Dark")}) {
                         viewModel.setThemeName(theme);
                         QTest::qWait(80);
-                        window->grabWindow().save(evidence + "/" + key + (theme == "Paper" ? "-light.png" : "-dark.png"));
+                        window->grabWindow().save(evidence + "/" + key +
+                                                  (theme == "Paper" ? "-light.png" : "-dark.png"));
                     }
                 }
             }
@@ -405,16 +458,19 @@ int main(int argc, char** argv) {
             QTest::keyClick(window, Qt::Key_Space);
             QCoreApplication::processEvents();
             check(fixture->property("actionCalls").toInt() == 1, "one management request");
-            check(!disable->isEnabled() && !refresh->isEnabled(), "pending action prevents duplicate and refresh");
+            check(!disable->isEnabled() && !refresh->isEnabled(),
+                  "pending action prevents duplicate and refresh");
             auto* actionStatus = find(find, hub, "extensionsActionStatus");
             check(actionStatus && actionStatus->isVisible(), "pending status visible");
-            const auto managementEvidence = qEnvironmentVariable("SENTINEL_EXTENSIONS_EVIDENCE_DIR");
+            const auto managementEvidence =
+                qEnvironmentVariable("SENTINEL_EXTENSIONS_EVIDENCE_DIR");
             if (!managementEvidence.isEmpty()) {
                 window->grabWindow().save(managementEvidence + "/management-pending.png");
             }
             fixture->setProperty("actionData", QVariantMap{{"phase", "unconfirmed"}});
             QCoreApplication::processEvents();
-            check(actionStatus->property("text").toString().contains("could not be confirmed"), "timeout is not success");
+            check(actionStatus->property("text").toString().contains("could not be confirmed"),
+                  "timeout is not success");
             if (!managementEvidence.isEmpty()) {
                 window->grabWindow().save(managementEvidence + "/management-unconfirmed.png");
             }
@@ -444,14 +500,18 @@ int main(int argc, char** argv) {
             check(!refresh->isEnabled(), "disconnect disables refresh");
             window->resize(780, 640);
             QTest::qWait(40);
-            check(search->width() > 100 && refresh->mapToScene(QPointF()).x() + refresh->width() <= window->width(), "compact layout fits");
+            check(search->width() > 100 &&
+                      refresh->mapToScene(QPointF()).x() + refresh->width() <= window->width(),
+                  "compact layout fits");
             const auto evidence = qEnvironmentVariable("SENTINEL_EXTENSIONS_EVIDENCE_DIR");
             if (!evidence.isEmpty())
                 window->grabWindow().save(evidence + "/compact-disconnected.png");
             QTest::keyClick(window, Qt::Key_Tab);
             check(window->activeFocusItem() && window->activeFocusItem()->isVisible(),
                   "Tab remains visible");
-            qInfo("Extensions routing, rail order, four sections, filter, loading/error/disconnected/unsupported and keyboard/compact checks passed; synthetic data only");
+            qInfo("Extensions routing, rail order, four sections, filter, "
+                  "loading/error/disconnected/unsupported and keyboard/compact checks passed; "
+                  "synthetic data only");
             app.exit(0);
         });
     }
@@ -633,6 +693,11 @@ int main(int argc, char** argv) {
 
             // Combo box expands and reports the expanded accessible state.
             auto* combo = itemOf("a11yComboBox");
+            const bool expandedStateAvailable =
+                QQmlProperty(combo, QStringLiteral("Accessible.expanded"), qmlContext(combo))
+                    .isValid();
+            qInfo("Combo expanded-state capability: %s",
+                  expandedStateAvailable ? "available" : "unavailable");
             combo->forceActiveFocus(Qt::TabFocusReason);
             QTest::keyClick(window, Qt::Key_Space);
             QTest::qWait(60);
@@ -641,25 +706,26 @@ int main(int argc, char** argv) {
                 fail(221, "combo popup opens");
                 return;
             }
-            // Accessible.expandable/expanded only exist since Qt 6.11, so older Qt
-            // versions cannot report the popup state.
-#if QT_VERSION >= QT_VERSION_CHECK(6, 11, 0)
-            if (!QAccessible::queryAccessibleInterface(combo)->state().expanded) {
+            // Qt 6.11.3 does not expose this attached property. Query the actual
+            // QML contract rather than guessing support from a version number.
+            if (expandedStateAvailable &&
+                !QAccessible::queryAccessibleInterface(combo)->state().expanded) {
                 fail(222, "combo expanded state");
                 return;
             }
-#endif
+            if (!expandedStateAvailable)
+                qInfo("Expanded accessible state is unavailable in this Qt Quick; keyboard popup "
+                      "behavior remains verified.");
             QTest::keyClick(window, Qt::Key_Escape);
             if (!waitHidden(combo->property("popup").value<QObject*>())) {
                 fail(222, "combo popup closes on Escape");
                 return;
             }
-#if QT_VERSION >= QT_VERSION_CHECK(6, 11, 0)
-            if (QAccessible::queryAccessibleInterface(combo)->state().expanded) {
+            if (expandedStateAvailable &&
+                QAccessible::queryAccessibleInterface(combo)->state().expanded) {
                 fail(222, "combo collapsed state after Escape");
                 return;
             }
-#endif
 
             // Tab navigation reaches the next visible focusable control.
             button->forceActiveFocus(Qt::TabFocusReason);
@@ -770,8 +836,11 @@ int main(int argc, char** argv) {
         struct AcceptanceFailure {};
         const auto exercise = [&, window] {
             auto find = [](auto&& self, QQuickItem* item, const QString& name) -> QQuickItem* {
-                if (item->objectName() == name) return item;
-                for (auto* child : item->childItems()) if (auto* found = self(self, child, name)) return found;
+                if (item->objectName() == name)
+                    return item;
+                for (auto* child : item->childItems())
+                    if (auto* found = self(self, child, name))
+                        return found;
                 return nullptr;
             };
             diagnostic.stage("phase1-callback-enter");
@@ -803,14 +872,17 @@ int main(int argc, char** argv) {
             check(empty && empty->isVisible(), "empty history");
             QTest::keyClick(window, Qt::Key_Escape);
             QTest::qWait(100);
-            check(!viewModel.notificationCenterVisible() && !popup->property("visible").toBool(), "Escape synchronizes visibility");
+            check(!viewModel.notificationCenterVisible() && !popup->property("visible").toBool(),
+                  "Escape synchronizes visibility");
             check(history->hasActiveFocus(), "focus returns to history entry");
             diagnostic.stage("notification-create");
-            viewModel.addNotificationWithPriority("Security", "Disposable phase 1 notice", "Synthetic test content", "High");
+            viewModel.addNotificationWithPriority("Security", "Disposable phase 1 notice",
+                                                  "Synthetic test content", "High");
             viewModel.setNotificationCenterVisible(true);
             QTest::qWait(100);
             auto* list = find(find, window->contentItem(), "notificationHistoryList");
-            check(list && list->property("count").toInt() == 2 && !empty->isVisible(), "group and populated history");
+            check(list && list->property("count").toInt() == 2 && !empty->isVisible(),
+                  "group and populated history");
             viewModel.setDndEnabled(true);
             QApplication::processEvents();
             check(list->property("count").toInt() == 2, "DND retains history");
@@ -820,25 +892,36 @@ int main(int argc, char** argv) {
             diagnostic.stage("notification-mark-read");
             QMetaObject::invokeMethod(markRead, "clicked");
             QApplication::processEvents();
-            const auto readRow = QJsonDocument::fromJson(viewModel.notificationFilteredSummaries().first().toUtf8()).object();
+            const auto readRow =
+                QJsonDocument::fromJson(viewModel.notificationFilteredSummaries().first().toUtf8())
+                    .object();
             check(readRow.value("read").toBool(), "row marks notification read");
             archive = find(find, window->contentItem(), "notificationArchiveButton");
             check(archive, "archive action survives refresh");
             diagnostic.stage("notification-archive");
             QMetaObject::invokeMethod(archive, "clicked");
             QApplication::processEvents();
-            check(QJsonDocument::fromJson(viewModel.notificationFilteredSummaries().first().toUtf8()).object().value("archived").toBool(), "row archives notification");
-            check(viewModel.notificationFilteredSummaries().join(" ").contains("Disposable phase 1 notice"), "archive remains in history");
+            check(
+                QJsonDocument::fromJson(viewModel.notificationFilteredSummaries().first().toUtf8())
+                    .object()
+                    .value("archived")
+                    .toBool(),
+                "row archives notification");
+            check(viewModel.notificationFilteredSummaries().join(" ").contains(
+                      "Disposable phase 1 notice"),
+                  "archive remains in history");
             QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, QPoint(5, 5));
             QTest::qWait(100);
-            check(!popup->property("visible").toBool() && !viewModel.notificationCenterVisible(), "outside dismissal");
+            check(!popup->property("visible").toBool() && !viewModel.notificationCenterVisible(),
+                  "outside dismissal");
             check(viewModel.clearArchivedNotifications(), "clear archived");
             viewModel.setDndEnabled(false);
             const auto actions = qmlVariant(palette->property("actions")).toList();
             for (const auto& value : actions) {
                 const auto action = value.toMap();
                 const auto name = action.value("action").toString();
-                if (name == "settings" || name == "notifications" || name == "search-chats" || name == "universal-search" || name == "theme") {
+                if (name == "settings" || name == "notifications" || name == "search-chats" ||
+                    name == "universal-search" || name == "theme") {
                     const auto oldTheme = viewModel.themeName();
                     diagnostic.stage("palette-action");
                     QMetaObject::invokeMethod(palette, "runAction", Q_ARG(QVariant, value));
@@ -894,7 +977,8 @@ int main(int argc, char** argv) {
                 window->setHeight(width == 780 ? 640 : 780);
                 QTest::qWait(60);
                 auto* sidebar = find(find, page, "settingsCategorySidebar");
-                check(sidebar && sidebar->isVisible() == !page->property("compact").toBool(), "responsive breakpoint");
+                check(sidebar && sidebar->isVisible() == !page->property("compact").toBool(),
+                      "responsive breakpoint");
                 auto inspect = [&](auto&& self, QQuickItem* item) -> void {
                     // Constant class names and geometry only: no text, paths or user data.
                     std::fprintf(
@@ -925,12 +1009,15 @@ int main(int argc, char** argv) {
             status->forceActiveFocus();
             diagnostic.stage("accessible-interface-query");
             const auto* accessible = QAccessible::queryAccessibleInterface(status);
-            check(accessible && !accessible->text(QAccessible::Name).isEmpty(), "status accessible name");
+            check(accessible && !accessible->text(QAccessible::Name).isEmpty(),
+                  "status accessible name");
             QTest::keyClick(window, Qt::Key_Space);
             QTest::qWait(60);
             auto* statusPopup = window->findChild<QObject*>("daemonStatusPopup");
-            check(statusPopup && statusPopup->property("visible").toBool(), "keyboard opens daemon details");
-            check(window->activeFocusItem() && window->activeFocusItem() != status, "status popup receives focus");
+            check(statusPopup && statusPopup->property("visible").toBool(),
+                  "keyboard opens daemon details");
+            check(window->activeFocusItem() && window->activeFocusItem() != status,
+                  "status popup receives focus");
             QTest::keyClick(window, Qt::Key_Escape);
             QTest::qWait(40);
             check(status->hasActiveFocus(), "status popup restores focus");
@@ -938,13 +1025,17 @@ int main(int argc, char** argv) {
             window->setProperty("surface", 2);
             viewModel.startVoiceCapture(true);
             QTest::qWait(60);
-            check(!viewModel.voiceInputStatus().isEmpty() && !viewModel.voiceInputMessage().contains("ModelUnavailable"), "voice prerequisite guidance");
+            check(!viewModel.voiceInputStatus().isEmpty() &&
+                      !viewModel.voiceInputMessage().contains("ModelUnavailable"),
+                  "voice prerequisite guidance");
             auto* voiceSetup = find(find, window->contentItem(), "chatVoiceSetupButton");
             check(voiceSetup && voiceSetup->isVisible(), "voice setup action");
             diagnostic.stage("voice-setup-click");
             QMetaObject::invokeMethod(voiceSetup, "clicked");
             QApplication::processEvents();
-            check(page->property("activeCategory").toString() == "Voice" && window->property("surface").toInt() == 0, "voice settings route");
+            check(page->property("activeCategory").toString() == "Voice" &&
+                      window->property("surface").toInt() == 0,
+                  "voice settings route");
             QQmlComponent finishComponent(&engine);
             finishComponent.setData(R"(
                 import QtQuick
@@ -962,24 +1053,35 @@ int main(int argc, char** argv) {
                         function languageDisplayName(code) { return code }
                     }
                 }
-            )", QUrl("qrc:/phase1-finish-test.qml"));
+            )",
+                                    QUrl("qrc:/phase1-finish-test.qml"));
             diagnostic.stage("finish-component-create");
             std::unique_ptr<QObject> finish(finishComponent.create());
             check(bool(finish), "finish component fixture");
             auto* readiness = qvariant_cast<QObject*>(finish->property("viewModel"));
-            check(readiness && !finish->property("inferenceReady").toBool(), "offline readiness is false");
+            check(readiness && !finish->property("inferenceReady").toBool(),
+                  "offline readiness is false");
             readiness->setProperty("daemonConnected", true);
-            check(finish->property("inferenceReady").toBool() && finish->property("modelRunnable").toBool(), "authoritative ready presentation");
+            check(finish->property("inferenceReady").toBool() &&
+                      finish->property("modelRunnable").toBool(),
+                  "authoritative ready presentation");
             readiness->setProperty("activeRuntimeReadinessState", "busy");
-            check(!finish->property("inferenceReady").toBool() && finish->property("modelRunnable").toBool(), "busy is not ready to send");
+            check(!finish->property("inferenceReady").toBool() &&
+                      finish->property("modelRunnable").toBool(),
+                  "busy is not ready to send");
             for (const char* state : {"missingModel", "unavailable", "unknown"}) {
                 readiness->setProperty("activeRuntimeReadinessState", state);
-                check(!finish->property("inferenceReady").toBool() && !finish->property("modelRunnable").toBool(), "unconfirmed model is not runnable");
+                check(!finish->property("inferenceReady").toBool() &&
+                          !finish->property("modelRunnable").toBool(),
+                      "unconfirmed model is not runnable");
             }
             window->setProperty("surface", 0);
             auto luminance = [](const QColor& color) {
-                auto linear = [](double v) { return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4); };
-                return 0.2126 * linear(color.redF()) + 0.7152 * linear(color.greenF()) + 0.0722 * linear(color.blueF());
+                auto linear = [](double v) {
+                    return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+                };
+                return 0.2126 * linear(color.redF()) + 0.7152 * linear(color.greenF()) +
+                       0.0722 * linear(color.blueF());
             };
             for (const char* theme : {"Liquid Glass Light", "Liquid Glass Dark"}) {
                 viewModel.setThemeName(theme);
@@ -990,25 +1092,35 @@ int main(int argc, char** argv) {
                     const auto screenshot = window->grabWindow();
                     check(!screenshot.isNull(), "renderer returns icon pixels");
                     const auto background = window->property("settingsSurface").value<QColor>();
-                    for (const char* buttonName : {"DashboardNavigationButton", "ModelsNavigationButton", "InspectorNavigationButton"}) {
+                    for (const char* buttonName :
+                         {"DashboardNavigationButton", "ModelsNavigationButton",
+                          "InspectorNavigationButton"}) {
                         auto* button = find(find, window->contentItem(), buttonName);
                         check(button, "navigation icon button");
-                        const auto origin = button->mapToScene(QPointF(button->width() / 2 - 10, button->height() / 2 - 10));
+                        const auto origin = button->mapToScene(
+                            QPointF(button->width() / 2 - 10, button->height() / 2 - 10));
                         const double scale = screenshot.devicePixelRatio();
                         int contrastingPixels = 0;
-                        for (int y = int(origin.y() * scale); y < int((origin.y() + 20) * scale); ++y)
-                            for (int x = int(origin.x() * scale); x < int((origin.x() + 20) * scale); ++x) {
-                                const double a = luminance(screenshot.pixelColor(x, y)), b = luminance(background);
+                        for (int y = int(origin.y() * scale); y < int((origin.y() + 20) * scale);
+                             ++y)
+                            for (int x = int(origin.x() * scale);
+                                 x < int((origin.x() + 20) * scale); ++x) {
+                                const double a = luminance(screenshot.pixelColor(x, y)),
+                                             b = luminance(background);
                                 if ((qMax(a, b) + 0.05) / (qMin(a, b) + 0.05) >= 3.0)
                                     ++contrastingPixels;
                             }
-                        check(contrastingPixels >= 10, "icon strokes visible at >= 3:1 against rail surface");
-                        qInfo() << "Icon contrast pixels" << theme << contrast << buttonName << contrastingPixels;
+                        check(contrastingPixels >= 10,
+                              "icon strokes visible at >= 3:1 against rail surface");
+                        qInfo() << "Icon contrast pixels" << theme << contrast << buttonName
+                                << contrastingPixels;
                     }
                 }
             }
-            qInfo("Onboarding readiness state matrix and rendered rail stroke samples passed; not full WCAG certification");
-            qInfo("Phase 1 notification lifecycle/dismissal/focus, palette routes, labels, status and missing-STT flow passed (isolated harness)");
+            qInfo("Onboarding readiness state matrix and rendered rail stroke samples passed; not "
+                  "full WCAG certification");
+            qInfo("Phase 1 notification lifecycle/dismissal/focus, palette routes, labels, status "
+                  "and missing-STT flow passed (isolated harness)");
             diagnostic.stage("phase1-assertions-complete");
             app.exit(0);
         };
@@ -1036,8 +1148,11 @@ int main(int argc, char** argv) {
                 app.exit(code);
             };
             auto find = [](auto&& self, QQuickItem* parent, const QString& name) -> QQuickItem* {
-                if (parent->objectName() == name) return parent;
-                for (auto* child : parent->childItems()) if (auto* result = self(self, child, name)) return result;
+                if (parent->objectName() == name)
+                    return parent;
+                for (auto* child : parent->childItems())
+                    if (auto* result = self(self, child, name))
+                        return result;
                 return nullptr;
             };
             auto* prompt = find(find, panel->contentItem(), "quickPanelPrompt");
@@ -1047,7 +1162,11 @@ int main(int argc, char** argv) {
                 fail(71, "initial disconnected controls");
                 return;
             }
-            QVariantMap state{{"ready", true}, {"busy", false}, {"connection", "Connected"}, {"state", "idle"}, {"voiceState", "idle"}, {"voiceAvailable", false}, {"voiceTranscript", ""}, {"approvalCount", 0}, {"approval", QVariantMap{}}, {"preview", ""}};
+            QVariantMap state{
+                {"ready", true},         {"busy", false},        {"connection", "Connected"},
+                {"state", "idle"},       {"voiceState", "idle"}, {"voiceAvailable", false},
+                {"voiceTranscript", ""}, {"approvalCount", 0},   {"approval", QVariantMap{}},
+                {"preview", ""}};
             fixture->setProperty("state", state);
             QApplication::processEvents();
             prompt->setProperty("text", "Quick question");
@@ -1123,7 +1242,8 @@ int main(int argc, char** argv) {
                 fail(76, "busy controls");
                 return;
             }
-            auto* warden = qobject_cast<sentinel::desktop::CoreWardenItem*>(find(find, panel->contentItem(), "coreWardenPlayer"));
+            auto* warden = qobject_cast<sentinel::desktop::CoreWardenItem*>(
+                find(find, panel->contentItem(), "coreWardenPlayer"));
             if (!warden || !warden->isVisible()) {
                 fail(83, "Warden visible");
                 return;
@@ -1182,10 +1302,13 @@ int main(int argc, char** argv) {
             if (!evidence.isEmpty()) {
                 QDir().mkpath(evidence);
                 panel->setWidth(420);
-                for (const auto& theme : {QStringLiteral("Paper"), QStringLiteral("Liquid Glass Dark")}) {
+                for (const auto& theme :
+                     {QStringLiteral("Paper"), QStringLiteral("Liquid Glass Dark")}) {
                     viewModel.setThemeName(theme);
                     QTest::qWait(100);
-                    panel->grabWindow().save(evidence + (theme == "Paper" ? "/quick-error-light.png" : "/quick-error-dark.png"));
+                    panel->grabWindow().save(evidence + (theme == "Paper"
+                                                             ? "/quick-error-light.png"
+                                                             : "/quick-error-dark.png"));
                 }
                 fixture->setProperty("error", "");
                 state["busy"] = false;
@@ -1196,12 +1319,16 @@ int main(int argc, char** argv) {
                 panel->grabWindow().save(evidence + "/quick-idle-dark.png");
                 state["busy"] = true;
                 state["approvalCount"] = 1;
-                state["approval"] = QVariantMap{{"tool", "Fixture read-only operation"}, {"risk", 0}, {"detail", "Synthetic test approval; no task executed."}};
+                state["approval"] =
+                    QVariantMap{{"tool", "Fixture read-only operation"},
+                                {"risk", 0},
+                                {"detail", "Synthetic test approval; no task executed."}};
                 fixture->setProperty("state", state);
                 QTest::qWait(100);
                 panel->grabWindow().save(evidence + "/quick-approval-fixture-dark.png");
             }
-            qInfo("Tray loading/empty/response/error, Chat/Agent keyboard submission, focus and compact layout passed");
+            qInfo("Tray loading/empty/response/error, Chat/Agent keyboard submission, focus and "
+                  "compact layout passed");
             app.exit(0);
         });
     }
@@ -1210,66 +1337,137 @@ int main(int argc, char** argv) {
         window->setProperty("surface", 3);
         QTimer::singleShot(350, &app, [&, window] {
             auto find = [](auto&& self, QQuickItem* parent, const QString& name) -> QQuickItem* {
-                if (parent->objectName() == name) return parent;
-                for (auto* child : parent->childItems()) if (auto* found = self(self, child, name)) return found;
+                if (parent->objectName() == name)
+                    return parent;
+                for (auto* child : parent->childItems())
+                    if (auto* found = self(self, child, name))
+                        return found;
                 return nullptr;
             };
             auto* page = find(find, window->contentItem(), "modelsPage");
             auto* grid = find(find, window->contentItem(), "modelGrid");
             auto* sidebar = find(find, window->contentItem(), "modelSidebar");
             auto* selector = find(find, window->contentItem(), "modelVersionSelector");
-            if (!page || !grid || !sidebar || !selector || grid->property("count").toInt() != 1) { app.exit(40); return; }
+            if (!page || !grid || !sidebar || !selector || grid->property("count").toInt() != 1) {
+                app.exit(40);
+                return;
+            }
             selector->setProperty("currentIndex", 1);
             QMetaObject::invokeMethod(selector, "activated", Q_ARG(int, 1));
             auto* delegate = selector->parentItem()->parentItem()->parentItem();
-            if (qmlVariant(delegate->property("selectedModel")).toMap().value("ollamaId") != "qwen2.5:14b") { qWarning() << "Variant selection" << delegate << delegate->property("selectedModel") << selector->property("currentIndex"); app.exit(41); return; }
+            if (qmlVariant(delegate->property("selectedModel")).toMap().value("ollamaId") !=
+                "qwen2.5:14b") {
+                qWarning() << "Variant selection" << delegate << delegate->property("selectedModel")
+                           << selector->property("currentIndex");
+                app.exit(41);
+                return;
+            }
             auto* detailsButton = find(find, window->contentItem(), "modelDetailsButton");
             auto* popup = page->findChild<QObject*>("modelDetailsPopup");
-            if (!detailsButton || !popup || !QMetaObject::invokeMethod(detailsButton, "clicked")) { app.exit(49); return; }
-            if (qmlVariant(popup->property("modelInfo")).toMap().value("ollamaId") != "qwen2.5:14b") { app.exit(50); return; }
+            if (!detailsButton || !popup || !QMetaObject::invokeMethod(detailsButton, "clicked")) {
+                app.exit(49);
+                return;
+            }
+            if (qmlVariant(popup->property("modelInfo")).toMap().value("ollamaId") !=
+                "qwen2.5:14b") {
+                app.exit(50);
+                return;
+            }
             QMetaObject::invokeMethod(popup, "close");
             page->setProperty("sidebarCollapsed", true);
-            window->setWidth(780); window->setHeight(640);
+            window->setWidth(780);
+            window->setHeight(640);
             QTimer::singleShot(250, &app, [&, page, sidebar, window, find] {
-                if (sidebar->width() > 65 || sidebar->property("labelsVisible").toBool()) { app.exit(42); return; }
+                if (sidebar->width() > 65 || sidebar->property("labelsVisible").toBool()) {
+                    app.exit(42);
+                    return;
+                }
                 page->setProperty("sidebarCollapsed", false);
                 QTimer::singleShot(70, &app, [&, sidebar] {
-                    if (sidebar->property("labelsVisible").toBool() && sidebar->width() < sidebar->property("expandedWidth").toReal() - 1) app.exit(43);
+                    if (sidebar->property("labelsVisible").toBool() &&
+                        sidebar->width() < sidebar->property("expandedWidth").toReal() - 1)
+                        app.exit(43);
                 });
                 QTimer::singleShot(250, &app, [&, page, sidebar, window, find] {
-                    if (!sidebar->property("labelsVisible").toBool()) { app.exit(44); return; }
+                    if (!sidebar->property("labelsVisible").toBool()) {
+                        app.exit(44);
+                        return;
+                    }
                     auto* label = find(find, sidebar, "modelSidebarLabel");
                     auto* icon = find(find, sidebar, "modelSidebarIcon");
-                    if (!label || !icon || label->x() < icon->x() + icon->width()) { app.exit(45); return; }
+                    if (!label || !icon || label->x() < icon->x() + icon->width()) {
+                        app.exit(45);
+                        return;
+                    }
                     page->setProperty("searchQuery", "no-match-fixture");
                     QApplication::processEvents();
-                    if (!qmlVariant(page->property("currentModels")).toList().isEmpty()) { app.exit(46); return; }
-                    library.fetching = true; library.notify();
+                    if (!qmlVariant(page->property("currentModels")).toList().isEmpty()) {
+                        app.exit(46);
+                        return;
+                    }
+                    library.fetching = true;
+                    library.notify();
                     QApplication::processEvents();
-                    if (!page->property("catalogFetching").toBool()) { app.exit(47); return; }
-                    library.fetching = false; library.errorText = "Fixture catalog unavailable"; library.notify();
+                    if (!page->property("catalogFetching").toBool()) {
+                        app.exit(47);
+                        return;
+                    }
+                    library.fetching = false;
+                    library.errorText = "Fixture catalog unavailable";
+                    library.notify();
                     page->setProperty("searchQuery", "");
                     QApplication::processEvents();
                     sidebar->forceActiveFocus(Qt::TabFocusReason);
                     QTest::keyClick(window, Qt::Key_Tab);
-                    if (!window->activeFocusItem()) { app.exit(48); return; }
+                    if (!window->activeFocusItem()) {
+                        app.exit(48);
+                        return;
+                    }
                     for (int i = 0; i < 90; ++i)
-                        library.models.append(QVariantMap{{"id", QString("fixture/page%1").arg(i)}, {"name", QString("Page model %1").arg(i)}, {"category", "LLM"}});
+                        library.models.append(QVariantMap{{"id", QString("fixture/page%1").arg(i)},
+                                                          {"name", QString("Page model %1").arg(i)},
+                                                          {"category", "LLM"}});
                     library.notify();
                     QApplication::processEvents();
-                    if (qmlVariant(page->property("currentModels")).toList().size() != 40 || page->property("pageCount").toInt() != 3) { app.exit(51); return; }
+                    if (qmlVariant(page->property("currentModels")).toList().size() != 40 ||
+                        page->property("pageCount").toInt() != 3) {
+                        app.exit(51);
+                        return;
+                    }
                     auto* next = find(find, window->contentItem(), "modelsNextPage");
                     auto* previous = find(find, window->contentItem(), "modelsPreviousPage");
-                    if (!next || !previous || !QMetaObject::invokeMethod(next, "clicked")) { app.exit(52); return; }
+                    if (!next || !previous || !QMetaObject::invokeMethod(next, "clicked")) {
+                        app.exit(52);
+                        return;
+                    }
                     QApplication::processEvents();
-                    if (page->property("currentPage").toInt() != 1 || qmlVariant(page->property("currentModels")).toList().size() != 40) { app.exit(53); return; }
-                    QMetaObject::invokeMethod(next, "clicked"); QApplication::processEvents();
-                    if (qmlVariant(page->property("currentModels")).toList().size() != 11 || next->isEnabled()) { app.exit(54); return; }
-                    QMetaObject::invokeMethod(previous, "clicked"); QApplication::processEvents();
-                    if (page->property("currentPage").toInt() != 1) { app.exit(55); return; }
-                    page->setProperty("searchQuery", "Page model 89"); QApplication::processEvents();
-                    if (page->property("currentPage").toInt() != 0 || qmlVariant(page->property("currentModels")).toList().size() != 1) { app.exit(56); return; }
-                    qInfo("Model pagination, grouping, variants, responsive sidebar, empty/loading/error and keyboard flow passed");
+                    if (page->property("currentPage").toInt() != 1 ||
+                        qmlVariant(page->property("currentModels")).toList().size() != 40) {
+                        app.exit(53);
+                        return;
+                    }
+                    QMetaObject::invokeMethod(next, "clicked");
+                    QApplication::processEvents();
+                    if (qmlVariant(page->property("currentModels")).toList().size() != 11 ||
+                        next->isEnabled()) {
+                        app.exit(54);
+                        return;
+                    }
+                    QMetaObject::invokeMethod(previous, "clicked");
+                    QApplication::processEvents();
+                    if (page->property("currentPage").toInt() != 1) {
+                        app.exit(55);
+                        return;
+                    }
+                    page->setProperty("searchQuery", "Page model 89");
+                    QApplication::processEvents();
+                    if (page->property("currentPage").toInt() != 0 ||
+                        qmlVariant(page->property("currentModels")).toList().size() != 1) {
+                        app.exit(56);
+                        return;
+                    }
+                    qInfo("Model pagination, grouping, variants, responsive sidebar, "
+                          "empty/loading/error and keyboard flow passed");
                     app.exit(0);
                 });
             });
@@ -1278,22 +1476,32 @@ int main(int argc, char** argv) {
     if (settingsSmoke) {
         auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().first());
         QTimer::singleShot(200, &app, [&, window] {
-            auto findItem = [](auto&& self, QQuickItem* parent, const QString& name) -> QQuickItem* {
-                if (parent->objectName() == name) return parent;
+            auto findItem = [](auto&& self, QQuickItem* parent,
+                               const QString& name) -> QQuickItem* {
+                if (parent->objectName() == name)
+                    return parent;
                 for (auto* child : parent->childItems())
-                    if (auto* found = self(self, child, name)) return found;
+                    if (auto* found = self(self, child, name))
+                        return found;
                 return nullptr;
             };
             auto* page = findItem(findItem, window->contentItem(), "settingsPage");
-            if (!page) { app.exit(50); return; }
-            const QStringList categories{"Interface", "Appearance", "AI", "Voice", "Memory", "Security", "Notifications", "System"};
+            if (!page) {
+                app.exit(50);
+                return;
+            }
+            const QStringList categories{"Interface", "Appearance",    "AI",    "Voice", "Memory",
+                                         "Security",  "Notifications", "System"};
             for (int width : {1320, 780, 560}) {
                 window->setWidth(width);
                 for (const auto& category : categories) {
                     page->setProperty("activeCategory", category);
                     QApplication::processEvents();
                     auto* scroll = findItem(findItem, page, "settingsContentScroll");
-                    if (!scroll || scroll->width() < 250 || scroll->height() < 300) { app.exit(51); return; }
+                    if (!scroll || scroll->width() < 250 || scroll->height() < 300) {
+                        app.exit(51);
+                        return;
+                    }
                 }
             }
             QJsonArray layoutReport;
@@ -1305,16 +1513,29 @@ int main(int argc, char** argv) {
                         page->setProperty("activeCategory", category);
                         QApplication::processEvents();
                         auto* scroll = findItem(findItem, page, "settingsContentScroll");
-                        if (!scroll || scroll->width() < 250 || scroll->height() < 300) { app.exit(61); return; }
+                        if (!scroll || scroll->width() < 250 || scroll->height() < 300) {
+                            app.exit(61);
+                            return;
+                        }
                         QJsonArray elisions;
                         auto inspectText = [&](auto&& self, QQuickItem* item) -> void {
-                            if (!item->isVisible()) return;
+                            if (!item->isVisible())
+                                return;
                             if (item->property("truncated").toBool() && elisions.size() < 40)
-                                elisions.append(QJsonObject{{"name", item->objectName()}, {"text", item->property("text").toString().left(240)}, {"width", item->width()}});
-                            for (auto* child : item->childItems()) self(self, child);
+                                elisions.append(QJsonObject{
+                                    {"name", item->objectName()},
+                                    {"text", item->property("text").toString().left(240)},
+                                    {"width", item->width()}});
+                            for (auto* child : item->childItems())
+                                self(self, child);
                         };
                         inspectText(inspectText, page);
-                        layoutReport.append(QJsonObject{{"language", language}, {"width", width}, {"category", category}, {"contentWidth", scroll->width()}, {"contentHeight", scroll->height()}, {"elisionsForReview", elisions}});
+                        layoutReport.append(QJsonObject{{"language", language},
+                                                        {"width", width},
+                                                        {"category", category},
+                                                        {"contentWidth", scroll->width()},
+                                                        {"contentHeight", scroll->height()},
+                                                        {"elisionsForReview", elisions}});
                     }
                 }
             }
@@ -1323,37 +1544,64 @@ int main(int argc, char** argv) {
             QApplication::processEvents();
             auto* sidebar = findItem(findItem, page, "settingsCategorySidebar");
             auto* rtlContent = findItem(findItem, page, "settingsContentScroll");
-            if (!sidebar || !rtlContent || sidebar->mapToScene(QPointF()).x() <= rtlContent->mapToScene(QPointF()).x()) { app.exit(62); return; }
+            if (!sidebar || !rtlContent ||
+                sidebar->mapToScene(QPointF()).x() <= rtlContent->mapToScene(QPointF()).x()) {
+                app.exit(62);
+                return;
+            }
             QTest::qWait(40);
             window->grabWindow().save(QDir::tempPath() + "/sentinel-settings-rtl.png");
             QFile layoutFile(QDir::tempPath() + "/sentinel-settings-language-layout.json");
-            if (layoutFile.open(QIODevice::WriteOnly)) layoutFile.write(QJsonDocument(layoutReport).toJson());
+            if (layoutFile.open(QIODevice::WriteOnly))
+                layoutFile.write(QJsonDocument(layoutReport).toJson());
             settings.setAppLanguage("en");
             window->setWidth(1320);
             page->setProperty("activeCategory", "Notifications");
             QApplication::processEvents();
             auto* dnd = findItem(findItem, page, "settingsDndSwitch");
-            if (!dnd || !dnd->isVisible()) { app.exit(52); return; }
+            if (!dnd || !dnd->isVisible()) {
+                app.exit(52);
+                return;
+            }
             const auto* accessibleDnd = QAccessible::queryAccessibleInterface(dnd);
-            if (!accessibleDnd || accessibleDnd->text(QAccessible::Name).isEmpty()) { app.exit(60); return; }
+            if (!accessibleDnd || accessibleDnd->text(QAccessible::Name).isEmpty()) {
+                app.exit(60);
+                return;
+            }
             dnd->forceActiveFocus(Qt::TabFocusReason);
             QTest::keyClick(window, Qt::Key_Space);
-            if (!viewModel.dndEnabled()) { app.exit(53); return; }
+            if (!viewModel.dndEnabled()) {
+                app.exit(53);
+                return;
+            }
             QTest::keyClick(window, Qt::Key_Space);
-            if (viewModel.dndEnabled()) { app.exit(54); return; }
+            if (viewModel.dndEnabled()) {
+                app.exit(54);
+                return;
+            }
             page->setProperty("activeCategory", "Appearance");
-            for (const auto& theme : QStringList{"Liquid Glass Light", "Paper", "Linen", "Sage Light", "Sky Light", "Solarized Light"}) {
+            for (const auto& theme : QStringList{"Liquid Glass Light", "Paper", "Linen",
+                                                 "Sage Light", "Sky Light", "Solarized Light"}) {
                 viewModel.setThemeName(theme);
                 QApplication::processEvents();
-                if (viewModel.themeName() != theme) { app.exit(57); return; }
+                if (viewModel.themeName() != theme) {
+                    app.exit(57);
+                    return;
+                }
                 const auto background = window->property("settingsBackground").value<QColor>();
                 const auto text = window->property("settingsText").value<QColor>();
-                if (background.lightnessF() < 0.8 || text.lightnessF() > 0.4) { app.exit(55); return; }
+                if (background.lightnessF() < 0.8 || text.lightnessF() > 0.4) {
+                    app.exit(55);
+                    return;
+                }
             }
             QJsonArray contrastReport;
             auto luminance = [](const QColor& color) {
-                auto linear = [](double v) { return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4); };
-                return 0.2126 * linear(color.redF()) + 0.7152 * linear(color.greenF()) + 0.0722 * linear(color.blueF());
+                auto linear = [](double v) {
+                    return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+                };
+                return 0.2126 * linear(color.redF()) + 0.7152 * linear(color.greenF()) +
+                       0.0722 * linear(color.blueF());
             };
             for (const auto& theme : viewModel.availableThemes()) {
                 viewModel.setThemeName(theme);
@@ -1366,18 +1614,28 @@ int main(int argc, char** argv) {
                             const auto text = window->property(textKey).value<QColor>();
                             const double a = luminance(background), b = luminance(text);
                             const double ratio = (qMax(a, b) + 0.05) / (qMin(a, b) + 0.05);
-                            contrastReport.append(QJsonObject{{"theme", theme}, {"highContrast", highContrast}, {"background", backgroundKey}, {"text", textKey}, {"ratio", ratio}, {"AA_normal_text", ratio >= 4.5}});
+                            contrastReport.append(QJsonObject{{"theme", theme},
+                                                              {"highContrast", highContrast},
+                                                              {"background", backgroundKey},
+                                                              {"text", textKey},
+                                                              {"ratio", ratio},
+                                                              {"AA_normal_text", ratio >= 4.5}});
                         }
                     }
                 }
             }
             QFile contrastFile(QDir::tempPath() + "/sentinel-settings-contrast.json");
-            if (!contrastFile.open(QIODevice::WriteOnly)) { app.exit(58); return; }
+            if (!contrastFile.open(QIODevice::WriteOnly)) {
+                app.exit(58);
+                return;
+            }
             contrastFile.write(QJsonDocument(contrastReport).toJson());
             contrastFile.close();
             for (const auto& pair : contrastReport) {
                 if (!pair.toObject().value("AA_normal_text").toBool()) {
-                    qWarning() << "Contrast below AA" << pair; app.exit(59); return;
+                    qWarning() << "Contrast below AA" << pair;
+                    app.exit(59);
+                    return;
                 }
             }
             viewModel.setReducedMotionEnabled(true);
@@ -1385,7 +1643,10 @@ int main(int argc, char** argv) {
             viewModel.setHighContrastEnabled(true);
             QApplication::processEvents();
             if (window->property("settingsMotionDuration").toInt() != 0 ||
-                window->property("settingsPanel").value<QColor>().alpha() != 255) { app.exit(56); return; }
+                window->property("settingsPanel").value<QColor>().alpha() != 255) {
+                app.exit(56);
+                return;
+            }
             viewModel.setHighContrastEnabled(false);
             viewModel.setThemeName("Paper");
             // Leaf scope is an explicit test fixture; production live preparation stays
@@ -1445,7 +1706,8 @@ int main(int argc, char** argv) {
                     window->grabWindow().save(QDir::tempPath() + "/sentinel-settings-profile.png");
                 }
                 qInfo() << "Settings screenshot" << screenshotPath << saved;
-                qInfo("Settings categories, responsive layout, keyboard DND, light palettes, motion and opacity smoke passed");
+                qInfo("Settings categories, responsive layout, keyboard DND, light palettes, "
+                      "motion and opacity smoke passed");
                 app.exit(0);
             });
         });
@@ -1454,29 +1716,43 @@ int main(int argc, char** argv) {
         auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().first());
         window->setProperty("surface", 2);
         QTimer::singleShot(300, &app, [&, window] {
-            auto findItem = [](auto&& self, QQuickItem* parent, const QString& name) -> QQuickItem* {
-                if (parent->objectName() == name) return parent;
-                for (auto* child : parent->childItems()) if (auto* found = self(self, child, name)) return found;
+            auto findItem = [](auto&& self, QQuickItem* parent,
+                               const QString& name) -> QQuickItem* {
+                if (parent->objectName() == name)
+                    return parent;
+                for (auto* child : parent->childItems())
+                    if (auto* found = self(self, child, name))
+                        return found;
                 return nullptr;
             };
             auto* greeting = findItem(findItem, window->contentItem(), "chatGreeting");
             auto* composer = findItem(findItem, window->contentItem(), "chatComposer");
             auto* input = findItem(findItem, window->contentItem(), "chatPromptInput");
-            if (!greeting || !composer || !input || !greeting->isVisible() || composer->height() < 100) { app.exit(30); return; }
+            if (!greeting || !composer || !input || !greeting->isVisible() ||
+                composer->height() < 100) {
+                app.exit(30);
+                return;
+            }
             const auto evidence = qEnvironmentVariable("SENTINEL_WARDEN_UI_EVIDENCE");
             if (!evidence.isEmpty()) {
                 QDir().mkpath(evidence);
-                for (const auto size : {QSize(1100, 780), QSize(780, 640), QSize(560, 640), QSize(1600, 960)}) {
+                for (const auto size :
+                     {QSize(1100, 780), QSize(780, 640), QSize(560, 640), QSize(1600, 960)}) {
                     window->resize(size);
                     QTest::qWait(150);
                     auto* mascot = findItem(findItem, greeting, "coreWardenPlayer");
-                    const auto greetingBottom = greeting->mapToScene(QPointF(0, greeting->height())).y();
+                    const auto greetingBottom =
+                        greeting->mapToScene(QPointF(0, greeting->height())).y();
                     const auto composerTop = composer->mapToScene(QPointF()).y();
-                    if (!mascot || mascot->property("cachedFrames").toInt() != 1 || greetingBottom > composerTop + 1) {
-                        qWarning() << "Warden layout failure" << size << greetingBottom << composerTop;
-                        app.exit(36); return;
+                    if (!mascot || mascot->property("cachedFrames").toInt() != 1 ||
+                        greetingBottom > composerTop + 1) {
+                        qWarning()
+                            << "Warden layout failure" << size << greetingBottom << composerTop;
+                        app.exit(36);
+                        return;
                     }
-                    window->grabWindow().save(evidence + QString("/chat-%1x%2.png").arg(size.width()).arg(size.height()));
+                    window->grabWindow().save(
+                        evidence + QString("/chat-%1x%2.png").arg(size.width()).arg(size.height()));
                 }
                 window->resize(QSize(1100, 780));
                 QTest::qWait(100);
@@ -1485,30 +1761,57 @@ int main(int argc, char** argv) {
             const auto second = viewModel.createConversation("Empty two");
             viewModel.switchConversation(first);
             QApplication::processEvents();
-            if (!greeting->isVisible()) { app.exit(31); return; }
+            if (!greeting->isVisible()) {
+                app.exit(31);
+                return;
+            }
             viewModel.switchConversation(second);
             QApplication::processEvents();
-            if (!greeting->isVisible()) { app.exit(32); return; }
-            // No model is configured in this disposable profile: exercise the real failed-response state.
+            if (!greeting->isVisible()) {
+                app.exit(32);
+                return;
+            }
+            // No model is configured in this disposable profile: exercise the real failed-response
+            // state.
             viewModel.sendMessage("Test message for alignment");
             QApplication::processEvents();
             QTimer::singleShot(200, &app, [&, window, findItem, greeting, composer, input] {
-                const bool rowsReady = QTest::qWaitFor([&] {
-                    return findItem(findItem, window->contentItem(), "userMessageBubble")
-                        && findItem(findItem, window->contentItem(), "assistantMessageBubble");
-                }, 2000);
+                const bool rowsReady = QTest::qWaitFor(
+                    [&] {
+                        return findItem(findItem, window->contentItem(), "userMessageBubble") &&
+                               findItem(findItem, window->contentItem(), "assistantMessageBubble");
+                    },
+                    2000);
                 auto* user = findItem(findItem, window->contentItem(), "userMessageBubble");
-                auto* assistant = findItem(findItem, window->contentItem(), "assistantMessageBubble");
-                if (!rowsReady || !user || !assistant || greeting->isVisible() || user->x() <= assistant->x()) { qWarning() << "Alignment failure" << user << assistant << greeting->isVisible() << viewModel.conversationHistoryMessageCount() << (user ? user->x() : -1) << (assistant ? assistant->x() : -1); app.exit(33); return; }
-                window->setWidth(780); window->setHeight(640);
+                auto* assistant =
+                    findItem(findItem, window->contentItem(), "assistantMessageBubble");
+                if (!rowsReady || !user || !assistant || greeting->isVisible() ||
+                    user->x() <= assistant->x()) {
+                    qWarning() << "Alignment failure" << user << assistant << greeting->isVisible()
+                               << viewModel.conversationHistoryMessageCount()
+                               << (user ? user->x() : -1) << (assistant ? assistant->x() : -1);
+                    app.exit(33);
+                    return;
+                }
+                window->setWidth(780);
+                window->setHeight(640);
                 QApplication::processEvents();
                 auto* attach = findItem(findItem, window->contentItem(), "chatAttachButton");
                 auto* send = findItem(findItem, window->contentItem(), "chatSendButton");
-                if (!attach || !send || attach->mapToScene(QPointF()).x() >= send->mapToScene(QPointF()).x() || composer->height() < 100) { app.exit(34); return; }
+                if (!attach || !send ||
+                    attach->mapToScene(QPointF()).x() >= send->mapToScene(QPointF()).x() ||
+                    composer->height() < 100) {
+                    app.exit(34);
+                    return;
+                }
                 input->forceActiveFocus(Qt::TabFocusReason);
                 QTest::keyClick(window, Qt::Key_Tab);
-                if (!window->activeFocusItem() || !window->activeFocusItem()->isVisible()) { app.exit(35); return; }
-                qInfo("Empty conversation, alignment, failed response, responsive composer and keyboard focus smoke passed");
+                if (!window->activeFocusItem() || !window->activeFocusItem()->isVisible()) {
+                    app.exit(35);
+                    return;
+                }
+                qInfo("Empty conversation, alignment, failed response, responsive composer and "
+                      "keyboard focus smoke passed");
                 app.exit(0);
             });
         });
@@ -1516,29 +1819,45 @@ int main(int argc, char** argv) {
     if (navigationSmoke) {
         auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().first());
         QTimer::singleShot(100, &app, [&, window] {
-            auto findItem = [](auto&& self, QQuickItem* parent, const QString& name) -> QQuickItem* {
-                if (parent->objectName() == name) return parent;
+            auto findItem = [](auto&& self, QQuickItem* parent,
+                               const QString& name) -> QQuickItem* {
+                if (parent->objectName() == name)
+                    return parent;
                 for (auto* child : parent->childItems())
-                    if (auto* found = self(self, child, name)) return found;
+                    if (auto* found = self(self, child, name))
+                        return found;
                 return nullptr;
             };
             auto* home = findItem(findItem, window->contentItem(), "DashboardNavigationButton");
-            auto* preferences = findItem(findItem, window->contentItem(), "settingsNavigationButton");
-            if (!home || !preferences) { app.exit(23); return; }
+            auto* preferences =
+                findItem(findItem, window->contentItem(), "settingsNavigationButton");
+            if (!home || !preferences) {
+                app.exit(23);
+                return;
+            }
             home->forceActiveFocus(Qt::TabFocusReason);
             QTest::keyClick(window, Qt::Key_Space);
             QApplication::processEvents();
-            if (window->property("surface").toInt() != 2) { app.exit(24); return; }
-            QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
-                             preferences->mapToScene(QPointF(preferences->width() / 2,
-                                                            preferences->height() / 2)).toPoint());
+            if (window->property("surface").toInt() != 2) {
+                app.exit(24);
+                return;
+            }
+            QTest::mouseClick(
+                window, Qt::LeftButton, Qt::NoModifier,
+                preferences
+                    ->mapToScene(QPointF(preferences->width() / 2, preferences->height() / 2))
+                    .toPoint());
             QApplication::processEvents();
-            if (window->property("surface").toInt() != 0) { app.exit(25); return; }
+            if (window->property("surface").toInt() != 0) {
+                app.exit(25);
+                return;
+            }
         });
     }
     if (focusSmoke) {
         auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().first());
-        if (qEnvironmentVariableIsSet("SENTINEL_ONBOARDING_COMPACT")) window->resize(780, 640);
+        if (qEnvironmentVariableIsSet("SENTINEL_ONBOARDING_COMPACT"))
+            window->resize(780, 640);
         auto* onboarding = window->findChild<QQuickItem*>("sentinelOnboarding");
         auto* next = window->findChild<QQuickItem*>("onboardingNext");
         auto* back = window->findChild<QQuickItem*>("onboardingBack");
@@ -1571,10 +1890,14 @@ int main(int argc, char** argv) {
                 const auto evidence = qEnvironmentVariable("SENTINEL_ONBOARDING_EVIDENCE_DIR");
                 if (!evidence.isEmpty()) {
                     QDir().mkpath(evidence);
-                    for (const auto& theme : {QStringLiteral("Paper"), QStringLiteral("Liquid Glass Dark")}) {
+                    for (const auto& theme :
+                         {QStringLiteral("Paper"), QStringLiteral("Liquid Glass Dark")}) {
                         viewModel.setThemeName(theme);
                         QTest::qWait(100);
-                        window->grabWindow().save(evidence + QString("/step-%1-%2.png").arg(step).arg(theme == "Paper" ? "light" : "dark"));
+                        window->grabWindow().save(evidence +
+                                                  QString("/step-%1-%2.png")
+                                                      .arg(step)
+                                                      .arg(theme == "Paper" ? "light" : "dark"));
                     }
                 }
                 QSet<QQuickItem*> visited;

@@ -20,9 +20,7 @@ void BackgroundJobPersistenceTest::persistsAndRecoversTerminalMetadata() {
     const QString id = service.submitJob(
         QStringLiteral("success"), [](Job&, std::function<void(JobProgress)>) { return true; });
     QTRY_VERIFY_WITH_TIMEOUT(service.findJob(id).has_value(), 1000);
-    QTest::qWait(50);
-    QVERIFY(service.findJob(id).has_value());
-    QCOMPARE(service.findJob(id)->state, JobState::Completed);
+    QTRY_COMPARE_WITH_TIMEOUT(service.findJob(id)->state, JobState::Completed, 5000);
     database.close();
     QSqlDatabase::removeDatabase(connection);
 }
