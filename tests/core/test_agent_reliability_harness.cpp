@@ -658,10 +658,10 @@ ToolDescriptor builtInDescriptor(const QString& id) {
 
 class FaultProvider final : public IChatProvider {
 public:
-    // Observation classification requests (deadlineMs 60000) deterministically
-    // yield an empty typed requirement set. Planner requests (deadlineMs
-    // 120000) consume the scripted queue; barrier semantics apply only to
-    // planner requests.
+    // Classification explicitly disables reasoning; planning requests bounded
+    // low reasoning. Use that request intent, not a deadline constant: child
+    // deadlines shrink as the parent operation consumes time. Barriers apply
+    // only to planner requests.
     QString name() const override {
         return QStringLiteral("fixture-fault-provider");
     }
@@ -676,7 +676,7 @@ public:
     ChatProviderReply sendRequest(const QString& message,
                                   const ChatRequestOptions& options) override {
         Q_UNUSED(message);
-        if (options.deadlineMs == 60000)
+        if (options.reasoning == ReasoningControl::Disabled)
             return {true, QStringLiteral("{\"requirements\":[]}"), {}};
         ++plannerRequests;
         if (barrierAllRequests) {
@@ -749,7 +749,7 @@ public:
         return {true, QStringLiteral("{\"requirements\":[]}"), {}};
     }
     ChatProviderReply sendRequest(const QString&, const ChatRequestOptions& options) override {
-        if (options.deadlineMs == 60000)
+        if (options.reasoning == ReasoningControl::Disabled)
             return {true, QStringLiteral("{\"requirements\":[]}"), {}};
         if (fresh.load()) {
             freshToken = options.cancellationToken;
@@ -3789,7 +3789,7 @@ private:
             // The first delta arrived before cancellation; the late delta after
             // cancellation was delivered but never accepted.
             QCOMPARE(provider->emittedDeltas.load(), 2);
-            QCOMPARE(provider->originalDeadline, 120000);
+            QVERIFY(provider->originalDeadline > 0 && provider->originalDeadline <= 120000);
             QVERIFY(provider->originalRequireBounded.load());
             QCOMPARE(provider->originalNative, false);
             QCOMPARE(planner.modelBinding().capabilities.streaming, CapabilitySupport::Supported);
@@ -3801,7 +3801,7 @@ private:
             QCOMPARE(provider->streamRequests.load(), 0);
             QCOMPARE(provider->emittedDeltas.load(), 0);
             QCOMPARE(provider->requests.load(), 1);
-            QCOMPARE(provider->originalDeadline, 120000);
+            QVERIFY(provider->originalDeadline > 0 && provider->originalDeadline <= 120000);
             QCOMPARE(provider->originalNative, true);
         }
         QVERIFY(!runtime.approve(session, true));
