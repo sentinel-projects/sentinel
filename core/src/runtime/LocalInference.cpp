@@ -47,105 +47,134 @@ struct JsonReply {
     QString retrySummary;
     QString requestId;
     ChatProviderErrorCategory category = ChatProviderErrorCategory::None;
+    QJsonArray transportDiagnostics;
 };
 
 JsonReply postJsonOnce(const QUrl& url, const QJsonObject& body, int timeoutMs,
                        const QMap<QByteArray, QByteArray>& headers = {},
                        const std::shared_ptr<std::atomic_bool>& cancellationToken = {},
-                       const std::shared_ptr<ILocalInferenceNetworkFactory>& networkFactory = {}) {
-    const auto decision = NetworkPolicyService::instance().check(url);
-    if (decision != NetworkDecision::Allowed) {
-        JsonReply blocked;
-        blocked.category = ChatProviderErrorCategory::Offline;
-        blocked.error = NetworkPolicyService::code(decision);
-        return blocked;
-    }
-    const auto manager = networkFactory ? networkFactory->createManager()
-                                        : std::make_unique<QNetworkAccessManager>();
-    QNetworkRequest request{url};
-    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
-    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                         QNetworkRequest::ManualRedirectPolicy);
-    for (auto it = headers.constBegin(); it != headers.constEnd(); ++it) {
-        request.setRawHeader(it.key(), it.value());
-    }
-
-    QNetworkReply* reply =
-        manager->post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
-    const auto transport = ProviderRequestRuntime::wait(reply, timeoutMs, cancellationToken);
-    if (transport.cancelled) {
-        reply->deleteLater();
-        JsonReply cancelled;
-        cancelled.cancelled = true;
-        cancelled.error = QStringLiteral("Request cancelled.");
-        return cancelled;
-    }
-
-    if (transport.timedOut) {
-        reply->deleteLater();
-        return JsonReply{false,
-                         true,
-                         {},
-                         QStringLiteral("Ollama local generation timed out."),
-                         QNetworkReply::TimeoutError};
-    }
-
-    const int responseStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    if (responseStatus >= 300 && responseStatus < 400) {
-        reply->deleteLater();
-        JsonReply rejected;
-        rejected.httpStatus = responseStatus;
-        rejected.category = ChatProviderErrorCategory::RequestRejected;
-        rejected.error = QStringLiteral("Provider redirect rejected.");
-        return rejected;
-    }
-
-    if (reply->error() != QNetworkReply::NoError ||
-        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() >= 400) {
-        const auto networkError = reply->error();
-        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        const auto category = ProviderRequestRuntime::classify(httpStatus, networkError);
-        QString error =
-            QStringLiteral("Provider request failed: %1%2.")
-                .arg(chatProviderErrorCategoryName(category),
-                     httpStatus > 0 ? QStringLiteral(" (HTTP %1)").arg(httpStatus) : QString{});
-        const auto retryAfter = QString::fromLatin1(reply->rawHeader("Retry-After"));
-        // Upstream bodies are untrusted, including credential/prompt echoes. Retain only
-        // the existing context-rejection signal, never any upstream message text.
-        if (httpStatus == 400 || httpStatus == 422) {
-            const auto errorBody =
-                QJsonDocument::fromJson(reply->read(16384)).object().value(QStringLiteral("error"));
-            const auto message =
-                errorBody.isObject()
-                    ? errorBody.toObject().value(QStringLiteral("message")).toString()
-                    : errorBody.toString();
-            if (message.contains(QStringLiteral("context size has been exceeded"),
-                                 Qt::CaseInsensitive) ||
-                message.contains(QStringLiteral("context length exceeded"), Qt::CaseInsensitive) ||
-                message.contains(QStringLiteral("maximum context length"), Qt::CaseInsensitive))
-                error = QStringLiteral("Provider request rejected: context length exceeded.");
+                       const std::shared_ptr<ILocalInferenceNetworkFactory>& networkFactory = {},
+                       const std::shared_ptr<const OperationDeadline>& operation = {}) {
+    ProviderTransportTrace trace;
+    auto result = [&]() -> JsonReply {
+        const auto decision = NetworkPolicyService::instance().check(url);
+        trace.policyDecision(decision == NetworkDecision::Allowed);
+        if (decision != NetworkDecision::Allowed) {
+            JsonReply blocked;
+            blocked.category = ChatProviderErrorCategory::Offline;
+            blocked.error = NetworkPolicyService::code(decision);
+            return blocked;
         }
+        const auto manager = networkFactory ? networkFactory->createManager()
+                                            : std::make_unique<QNetworkAccessManager>();
+        QNetworkRequest request{url};
+        request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+        request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                             QNetworkRequest::ManualRedirectPolicy);
+        for (auto it = headers.constBegin(); it != headers.constEnd(); ++it) {
+            request.setRawHeader(it.key(), it.value());
+        }
+
+        const auto serializedRequest = QJsonDocument(body).toJson(QJsonDocument::Compact);
+        if ((cancellationToken && cancellationToken->load()) ||
+            (operation && operation->expired())) {
+            JsonReply stopped;
+            stopped.cancelled = cancellationToken && cancellationToken->load();
+            stopped.timedOut = !stopped.cancelled;
+            stopped.category = stopped.cancelled ? ChatProviderErrorCategory::Cancelled
+                                                 : ChatProviderErrorCategory::Timeout;
+            stopped.error = stopped.cancelled ? QStringLiteral("Cancelled")
+                                              : QStringLiteral("Operation deadline expired.");
+            trace.localStop(stopped.cancelled);
+            return stopped;
+        }
+        QNetworkReply* reply = manager->post(request, serializedRequest);
+        const auto transport = ProviderRequestRuntime::wait(reply, timeoutMs, cancellationToken, {},
+                                                            &trace, operation);
+        if (transport.cancelled) {
+            reply->deleteLater();
+            JsonReply cancelled;
+            cancelled.cancelled = true;
+            cancelled.httpStatus = transport.httpStatus;
+            cancelled.category = transport.category;
+            cancelled.error = QStringLiteral("Request cancelled.");
+            return cancelled;
+        }
+
+        if (transport.timedOut) {
+            reply->deleteLater();
+            JsonReply expired;
+            expired.timedOut = true;
+            expired.error = QStringLiteral("Ollama local generation timed out.");
+            expired.networkError = QNetworkReply::TimeoutError;
+            expired.httpStatus = transport.httpStatus;
+            expired.category = transport.category;
+            return expired;
+        }
+
+        const int responseStatus =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (responseStatus >= 300 && responseStatus < 400) {
+            reply->deleteLater();
+            JsonReply rejected;
+            rejected.httpStatus = responseStatus;
+            rejected.category = ChatProviderErrorCategory::RequestRejected;
+            rejected.error = QStringLiteral("Provider redirect rejected.");
+            return rejected;
+        }
+
+        if (reply->error() != QNetworkReply::NoError ||
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() >= 400) {
+            const auto networkError = reply->error();
+            const int httpStatus =
+                reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            const auto category = ProviderRequestRuntime::classify(httpStatus, networkError);
+            QString error =
+                QStringLiteral("Provider request failed: %1%2.")
+                    .arg(chatProviderErrorCategoryName(category),
+                         httpStatus > 0 ? QStringLiteral(" (HTTP %1)").arg(httpStatus) : QString{});
+            const auto retryAfter = QString::fromLatin1(reply->rawHeader("Retry-After"));
+            // Upstream bodies are untrusted, including credential/prompt echoes. Retain only
+            // the existing context-rejection signal, never any upstream message text.
+            if (httpStatus == 400 || httpStatus == 422) {
+                const auto errorBody = QJsonDocument::fromJson(reply->read(16384))
+                                           .object()
+                                           .value(QStringLiteral("error"));
+                const auto message =
+                    errorBody.isObject()
+                        ? errorBody.toObject().value(QStringLiteral("message")).toString()
+                        : errorBody.toString();
+                if (message.contains(QStringLiteral("context size has been exceeded"),
+                                     Qt::CaseInsensitive) ||
+                    message.contains(QStringLiteral("context length exceeded"),
+                                     Qt::CaseInsensitive) ||
+                    message.contains(QStringLiteral("maximum context length"), Qt::CaseInsensitive))
+                    error = QStringLiteral("Provider request rejected: context length exceeded.");
+            }
+            reply->deleteLater();
+            return JsonReply{false, false, {}, error, networkError, httpStatus, retryAfter};
+        }
+
+        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const auto payload = reply->readAll();
         reply->deleteLater();
-        return JsonReply{false, false, {}, error, networkError, httpStatus, retryAfter};
-    }
 
-    const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    const auto payload = reply->readAll();
-    reply->deleteLater();
+        QJsonParseError parseError;
+        const auto document = QJsonDocument::fromJson(payload, &parseError);
+        if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+            return JsonReply{false,
+                             false,
+                             {},
+                             QStringLiteral("Ollama local generation response was "
+                                            "not valid JSON."),
+                             QNetworkReply::UnknownContentError,
+                             httpStatus};
+        }
 
-    QJsonParseError parseError;
-    const auto document = QJsonDocument::fromJson(payload, &parseError);
-    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
-        return JsonReply{false,
-                         false,
-                         {},
-                         QStringLiteral("Ollama local generation response was "
-                                        "not valid JSON."),
-                         QNetworkReply::UnknownContentError,
-                         httpStatus};
-    }
-
-    return JsonReply{true, false, document, {}, QNetworkReply::NoError, httpStatus};
+        return JsonReply{true, false, document, {}, QNetworkReply::NoError, httpStatus};
+    }();
+    result.transportDiagnostics = QJsonArray{trace.snapshot()};
+    return result;
 }
 
 ChatProviderErrorCategory requestCategory(const JsonReply& reply) {
@@ -160,6 +189,7 @@ JsonReply executeJsonRequest(ProviderRequestMode mode,
                              const std::function<JsonReply()>& send, int attemptLimit = 0) {
     const QString requestId = ProviderRequestRuntime::requestId();
     QStringList retries;
+    QJsonArray transportAttempts;
     const int maxAttempts =
         attemptLimit > 0 ? attemptLimit : (mode == ProviderRequestMode::Generation ? 3 : 2);
     for (int attempt = 1; attempt <= maxAttempts; ++attempt) {
@@ -171,9 +201,15 @@ JsonReply executeJsonRequest(ProviderRequestMode mode,
             cancelled.retrySummary = retries.join(QStringLiteral("; "));
             cancelled.requestId = requestId;
             cancelled.category = ChatProviderErrorCategory::Cancelled;
+            cancelled.transportDiagnostics = transportAttempts;
             return cancelled;
         }
         auto reply = send();
+        for (const auto& frame : reply.transportDiagnostics) {
+            if (transportAttempts.size() < 3)
+                transportAttempts.append(frame);
+        }
+        reply.transportDiagnostics = transportAttempts;
         reply.attempts = attempt;
         reply.requestId = requestId;
         reply.category = requestCategory(reply);
@@ -204,19 +240,22 @@ JsonReply executeJsonRequest(ProviderRequestMode mode,
 JsonReply postJson(const QUrl& url, const QJsonObject& body, int timeoutMs,
                    const QMap<QByteArray, QByteArray>& headers = {},
                    const std::shared_ptr<std::atomic_bool>& cancellationToken = {},
-                   const std::shared_ptr<ILocalInferenceNetworkFactory>& networkFactory = {}) {
-    QElapsedTimer lifetime;
-    lifetime.start();
+                   const std::shared_ptr<ILocalInferenceNetworkFactory>& networkFactory = {},
+                   const std::shared_ptr<const OperationDeadline>& operation = {}) {
+    const auto lifetime = operation && operation->bounded()
+                              ? operation
+                              : std::make_shared<OperationDeadline>(timeoutMs);
     return executeJsonRequest(
         ProviderRequestMode::Generation, cancellationToken,
         [&] {
-            if (timeoutMs > 0 && lifetime.elapsed() >= timeoutMs) {
+            if (lifetime->expired()) {
                 JsonReply expired;
                 expired.timedOut = true;
                 return expired;
             }
-            const int remaining = timeoutMs > 0 ? qMax(1, timeoutMs - int(lifetime.elapsed())) : 0;
-            return postJsonOnce(url, body, remaining, headers, cancellationToken, networkFactory);
+            const int remaining = lifetime->childTimeoutMs(timeoutMs);
+            return postJsonOnce(url, body, remaining, headers, cancellationToken, networkFactory,
+                                lifetime);
         },
         timeoutMs > 0 ? 1 : 0);
 }
@@ -232,6 +271,7 @@ void recordRequestMetadata(LocalInferenceResponse& response, const JsonReply& re
     response.retrySummary = reply.retrySummary;
     response.requestId = reply.requestId;
     response.providerErrorCategory = static_cast<int>(reply.category);
+    response.diagnostics.insert(QStringLiteral("transport_attempts"), reply.transportDiagnostics);
 }
 
 int approximateTokenCount(const QString& text) {
@@ -827,7 +867,8 @@ LocalInferenceResponse OllamaLocalInferenceClient::infer(const LocalInferenceReq
                                                 "streaming; timeout %1 ms.")
                                      .arg(timeoutMs)));
     const auto reply = postJson(endpointUrl(QStringLiteral("/api/generate")), body, timeoutMs, {},
-                                request.options.cancellationToken);
+                                request.options.cancellationToken, config_.networkFactory,
+                                request.options.operationDeadline);
     recordRequestMetadata(response, reply);
     if (!reply.ok) {
         response.status = LocalInferenceStatus::Error;
@@ -990,14 +1031,17 @@ LocalInferenceStreamResult OllamaLocalInferenceStreamClient::startStream(
     options.insert(QStringLiteral("top_p"), request.options.topP);
     body.insert(QStringLiteral("options"), options);
 
-    QNetworkAccessManager manager;
+    const auto manager = config_.networkFactory ? config_.networkFactory->createManager()
+                                                : std::make_unique<QNetworkAccessManager>();
     QNetworkRequest networkRequest{endpointUrl(QStringLiteral("/api/generate"))};
     networkRequest.setHeader(QNetworkRequest::ContentTypeHeader,
                              QStringLiteral("application/json"));
     networkRequest.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                                 QNetworkRequest::ManualRedirectPolicy);
 
+    ProviderTransportTrace transportTrace;
     const auto networkDecision = NetworkPolicyService::instance().check(networkRequest.url());
+    transportTrace.policyDecision(networkDecision == NetworkDecision::Allowed);
     if (networkDecision != NetworkDecision::Allowed) {
         result.status = LocalInferenceStreamStatus::Refused;
         result.lifecycle = ChatRequestLifecycle::Failed;
@@ -1016,8 +1060,22 @@ LocalInferenceStreamResult OllamaLocalInferenceStreamClient::startStream(
     QElapsedTimer elapsed;
     elapsed.start();
 
-    QNetworkReply* reply =
-        manager.post(networkRequest, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    const auto serializedBody = QJsonDocument(body).toJson(QJsonDocument::Compact);
+    if (auto stopped = stoppedProviderOperation(request.options.cancellationToken,
+                                                request.options.operationDeadline)) {
+        result.status = stopped->category == ChatProviderErrorCategory::Cancelled
+                            ? LocalInferenceStreamStatus::Cancelled
+                            : LocalInferenceStreamStatus::Error;
+        result.lifecycle = stopped->lifecycle;
+        result.providerErrorCategory = int(stopped->category);
+        result.error = stopped->category == ChatProviderErrorCategory::Timeout
+                           ? LocalInferenceError::Timeout
+                           : LocalInferenceError::RequestFailed;
+        result.cancelled = stopped->category == ChatProviderErrorCategory::Cancelled;
+        result.summary = stopped->errorMessage;
+        return result;
+    }
+    QNetworkReply* reply = manager->post(networkRequest, serializedBody);
 
     auto processLine = [&](const QByteArray& line) {
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -1046,6 +1104,7 @@ LocalInferenceStreamResult OllamaLocalInferenceStreamClient::startStream(
         }
 
         const auto object = document.object();
+        provider::preserveReportedUsage(object, result.diagnostics);
         if (object.contains(QStringLiteral("error")) ||
             object.value(QStringLiteral("type")).toString() == QLatin1String("error")) {
             streamError = true;
@@ -1113,11 +1172,15 @@ LocalInferenceStreamResult OllamaLocalInferenceStreamClient::startStream(
     result.summary = QStringLiteral("Local Ollama streaming generation is active.");
     result.lifecycle = ChatRequestLifecycle::Running;
     const auto transport = ProviderRequestRuntime::wait(
-        reply, timeoutMs, request.options.cancellationToken, consumeReady);
+        reply, timeoutMs, request.options.cancellationToken, consumeReady, &transportTrace,
+        request.options.operationDeadline);
+    result.diagnostics.insert(QStringLiteral("transport_attempts"),
+                              QJsonArray{transport.diagnostics});
     result.httpStatus = transport.httpStatus;
     result.providerErrorCategory = static_cast<int>(transport.category);
     result.lifecycle = transport.lifecycle;
     result.latencyMs = elapsed.elapsed();
+    provider::applyOutcomeToDiagnostics(finalOutcome, result.diagnostics);
 
     if (transport.cancelled || cancellationRequested(request)) {
         result.status = LocalInferenceStreamStatus::Cancelled;
@@ -1255,7 +1318,8 @@ LMStudioLocalInferenceClient::LMStudioLocalInferenceClient(LMStudioConfig config
 
 LMStudioLocalInferenceClient::OpenAiCompletionResult
 LMStudioLocalInferenceClient::completeOpenAiChat(
-    const QJsonObject& body, const std::shared_ptr<std::atomic_bool>& cancellationToken) const {
+    const QJsonObject& body, const std::shared_ptr<std::atomic_bool>& cancellationToken,
+    const std::shared_ptr<const OperationDeadline>& operation) const {
     if (!endpointAllowed())
         return {false, {}, QStringLiteral("OpenAI-compatible endpoint is unavailable."), 0};
     const auto host = config_.endpoint.host().toLower();
@@ -1268,7 +1332,7 @@ LMStudioLocalInferenceClient::completeOpenAiChat(
     const auto path = provider::openAiCompatibleChatCompletionsPath(config_.endpoint);
     const auto reply =
         postJson(endpointUrl(path), body, timeoutMs_ > 0 ? timeoutMs_ : config_.timeoutMs, headers,
-                 cancellationToken, config_.networkFactory);
+                 cancellationToken, config_.networkFactory, operation);
     if (!reply.ok)
         return {false,
                 {},
@@ -1282,7 +1346,8 @@ LMStudioLocalInferenceClient::completeOpenAiChat(
                 reply.attempts,
                 reply.retrySummary,
                 reply.requestId,
-                static_cast<int>(reply.category)};
+                static_cast<int>(reply.category),
+                reply.transportDiagnostics};
     OpenAiCompletionResult result;
     result.ok = true;
     result.body = reply.document.object();
@@ -1290,13 +1355,15 @@ LMStudioLocalInferenceClient::completeOpenAiChat(
     result.attempts = reply.attempts;
     result.retrySummary = reply.retrySummary;
     result.requestId = reply.requestId;
+    result.transportDiagnostics = reply.transportDiagnostics;
     return result;
 }
 
 LMStudioLocalInferenceClient::OpenAiCompletionResult
 LMStudioLocalInferenceClient::completeNativeChat(
     NativeProtocol protocol, const QJsonObject& body,
-    const std::shared_ptr<std::atomic_bool>& cancellationToken) const {
+    const std::shared_ptr<std::atomic_bool>& cancellationToken,
+    const std::shared_ptr<const OperationDeadline>& operation) const {
     if (!endpointAllowed())
         return {false, {}, QStringLiteral("Native provider endpoint is unavailable."), 0};
     const auto host = config_.endpoint.host().toLower();
@@ -1321,7 +1388,7 @@ LMStudioLocalInferenceClient::completeNativeChat(
     if (protocol == NativeProtocol::Gemini)
         payload.remove(QStringLiteral("model"));
     const auto reply = postJson(url, payload, timeoutMs_ > 0 ? timeoutMs_ : config_.timeoutMs,
-                                headers, cancellationToken, config_.networkFactory);
+                                headers, cancellationToken, config_.networkFactory, operation);
     if (!reply.ok)
         return {
             false,
@@ -1336,7 +1403,8 @@ LMStudioLocalInferenceClient::completeNativeChat(
             reply.attempts,
             reply.retrySummary,
             reply.requestId,
-            static_cast<int>(reply.category)};
+            static_cast<int>(reply.category),
+            reply.transportDiagnostics};
     OpenAiCompletionResult result;
     result.ok = true;
     result.body = reply.document.object();
@@ -1344,6 +1412,7 @@ LMStudioLocalInferenceClient::completeNativeChat(
     result.attempts = reply.attempts;
     result.retrySummary = reply.retrySummary;
     result.requestId = reply.requestId;
+    result.transportDiagnostics = reply.transportDiagnostics;
     return result;
 }
 
@@ -1420,7 +1489,8 @@ LocalInferenceResponse LMStudioLocalInferenceClient::infer(const LocalInferenceR
             headers.insert("x-api-key", config_.apiKey.toUtf8());
             headers.insert("anthropic-version", "2023-06-01");
             const auto reply = postJson(provider::anthropicMessagesUrl(), body, timeoutMs, headers,
-                                        request.options.cancellationToken, config_.networkFactory);
+                                        request.options.cancellationToken, config_.networkFactory,
+                                        request.options.operationDeadline);
             recordRequestMetadata(response, reply);
             if (!reply.ok) {
                 response.status = LocalInferenceStatus::Error;
@@ -1476,7 +1546,7 @@ LocalInferenceResponse LMStudioLocalInferenceClient::infer(const LocalInferenceR
 
             const auto url = provider::geminiGenerateContentUrl(modelId, config_.apiKey);
             const auto reply = postJson(url, body, timeoutMs, {}, request.options.cancellationToken,
-                                        config_.networkFactory);
+                                        config_.networkFactory, request.options.operationDeadline);
             recordRequestMetadata(response, reply);
             if (!reply.ok) {
                 response.status = LocalInferenceStatus::Error;
@@ -1527,9 +1597,10 @@ LocalInferenceResponse LMStudioLocalInferenceClient::infer(const LocalInferenceR
 
         QMap<QByteArray, QByteArray> headers;
         headers.insert("Authorization", QStringLiteral("Bearer %1").arg(config_.apiKey).toUtf8());
-        const auto reply = postJson(
-            endpointUrl(provider::openAiCompatibleChatCompletionsPath(config_.endpoint)), body,
-            timeoutMs, headers, request.options.cancellationToken, config_.networkFactory);
+        const auto reply =
+            postJson(endpointUrl(provider::openAiCompatibleChatCompletionsPath(config_.endpoint)),
+                     body, timeoutMs, headers, request.options.cancellationToken,
+                     config_.networkFactory, request.options.operationDeadline);
         recordRequestMetadata(response, reply);
         if (!reply.ok) {
             response.status = LocalInferenceStatus::Error;
@@ -1618,7 +1689,8 @@ LocalInferenceResponse LMStudioLocalInferenceClient::infer(const LocalInferenceR
 
     const auto reply =
         postJson(endpointUrl(provider::openAiCompatibleChatCompletionsPath(config_.endpoint)), body,
-                 timeoutMs, {}, request.options.cancellationToken, config_.networkFactory);
+                 timeoutMs, {}, request.options.cancellationToken, config_.networkFactory,
+                 request.options.operationDeadline);
     recordRequestMetadata(response, reply);
     if (!reply.ok) {
         response.status = LocalInferenceStatus::Error;
@@ -1787,7 +1859,9 @@ LocalInferenceStreamResult LMStudioLocalInferenceStreamClient::startStream(
         return result;
     }
 
+    ProviderTransportTrace transportTrace;
     const auto networkDecision = NetworkPolicyService::instance().check(config_.endpoint);
+    transportTrace.policyDecision(networkDecision == NetworkDecision::Allowed);
     if (networkDecision != NetworkDecision::Allowed) {
         result.status = LocalInferenceStreamStatus::Refused;
         result.lifecycle = ChatRequestLifecycle::Failed;
@@ -1885,8 +1959,22 @@ LocalInferenceStreamResult LMStudioLocalInferenceStreamClient::startStream(
     QElapsedTimer elapsed;
     elapsed.start();
 
-    QNetworkReply* reply =
-        manager->post(networkRequest, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    const auto serializedBody = QJsonDocument(body).toJson(QJsonDocument::Compact);
+    if (auto stopped = stoppedProviderOperation(request.options.cancellationToken,
+                                                request.options.operationDeadline)) {
+        result.status = stopped->category == ChatProviderErrorCategory::Cancelled
+                            ? LocalInferenceStreamStatus::Cancelled
+                            : LocalInferenceStreamStatus::Error;
+        result.lifecycle = stopped->lifecycle;
+        result.providerErrorCategory = int(stopped->category);
+        result.error = stopped->category == ChatProviderErrorCategory::Timeout
+                           ? LocalInferenceError::Timeout
+                           : LocalInferenceError::RequestFailed;
+        result.cancelled = stopped->category == ChatProviderErrorCategory::Cancelled;
+        result.summary = stopped->errorMessage;
+        return result;
+    }
+    QNetworkReply* reply = manager->post(networkRequest, serializedBody);
 
     auto processLine = [&](const QByteArray& line) {
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -1925,6 +2013,7 @@ LocalInferenceStreamResult LMStudioLocalInferenceStreamClient::startStream(
         }
 
         const auto object = document.object();
+        provider::preserveReportedUsage(object, result.diagnostics);
         if (object.contains(QStringLiteral("error")) ||
             object.value(QStringLiteral("type")).toString() == QLatin1String("error")) {
             streamError = true;
@@ -1959,6 +2048,11 @@ LocalInferenceStreamResult LMStudioLocalInferenceStreamClient::startStream(
             text = delta.value(QStringLiteral("text")).toString();
             const auto msgType = object.value(QStringLiteral("type")).toString();
             const auto stopReason = delta.value(QStringLiteral("stop_reason")).toString();
+            if (stopReason == QLatin1String("max_tokens")) {
+                outputLimitReached = true;
+                streamOutcome.truncated = true;
+                streamOutcome.finishReason = provider::FinishReason::Length;
+            }
             if (msgType == QLatin1String("message_stop") || !stopReason.isEmpty()) {
                 isFinal = true;
                 done = true;
@@ -1975,6 +2069,11 @@ LocalInferenceStreamResult LMStudioLocalInferenceStreamClient::startStream(
                     text = parts.first().toObject().value(QStringLiteral("text")).toString();
                 }
                 const auto finishReason = candObj.value(QStringLiteral("finishReason")).toString();
+                if (finishReason == QLatin1String("MAX_TOKENS")) {
+                    outputLimitReached = true;
+                    streamOutcome.truncated = true;
+                    streamOutcome.finishReason = provider::FinishReason::Length;
+                }
                 if (!finishReason.isEmpty()) {
                     isFinal = true;
                     done = true; // Gemini does not send [DONE]; finishReason signals completion
@@ -2025,11 +2124,15 @@ LocalInferenceStreamResult LMStudioLocalInferenceStreamClient::startStream(
     result.summary = QStringLiteral("Local LM Studio streaming generation is active.");
     result.lifecycle = ChatRequestLifecycle::Running;
     const auto transport = ProviderRequestRuntime::wait(
-        reply, timeoutMs, request.options.cancellationToken, consumeReady);
+        reply, timeoutMs, request.options.cancellationToken, consumeReady, &transportTrace,
+        request.options.operationDeadline);
+    result.diagnostics.insert(QStringLiteral("transport_attempts"),
+                              QJsonArray{transport.diagnostics});
     result.httpStatus = transport.httpStatus;
     result.providerErrorCategory = static_cast<int>(transport.category);
     result.lifecycle = transport.lifecycle;
     result.latencyMs = elapsed.elapsed();
+    provider::applyOutcomeToDiagnostics(streamOutcome, result.diagnostics);
 
     if (transport.cancelled || cancellationRequested(request)) {
         result.status = LocalInferenceStreamStatus::Cancelled;

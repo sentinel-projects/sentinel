@@ -185,135 +185,145 @@ ChatProviderReply nativeEndpointReply(LMStudioLocalInferenceClient::NativeProtoc
     }
 
     LMStudioLocalInferenceClient client(config, timeoutMs);
-    const auto completion = client.completeNativeChat(protocol, body, options.cancellationToken);
-    if (!completion.ok) {
-        // Precedence: cancellation, an explicit native capability rejection, then the
-        // transport-classified status/category. The Qt UnknownContentError flag is a
-        // last-resort fallback so it cannot override a validated HTTP status such as
-        // 408 (Timeout) or 429 (RateLimited).
-        const auto classified =
-            completion.cancelled ? ChatProviderErrorCategory::Cancelled
-            : completion.httpStatus == 400 || completion.httpStatus == 422 ||
-                    completion.httpStatus == 501
-                ? ChatProviderErrorCategory::CapabilityUnsupported
-            : completion.providerErrorCategory > 0
-                ? static_cast<ChatProviderErrorCategory>(completion.providerErrorCategory)
-            : completion.malformed
-                ? ChatProviderErrorCategory::MalformedResponse
-                : ProviderRequestRuntime::classify(completion.httpStatus, completion.networkError,
-                                                   completion.timedOut, completion.cancelled);
-        const auto category = classified == ChatProviderErrorCategory::None
-                                  ? ChatProviderErrorCategory::ProviderUnavailable
-                                  : classified;
-        auto reply =
-            providerFailure(completion.error, category,
-                            category == ChatProviderErrorCategory::CapabilityUnsupported
-                                ? ChatProviderReply::Error::CapabilityRejected
-                                : ChatProviderReply::Error::ProviderFailure,
-                            completion.httpStatus, completion.attempts, completion.retrySummary);
-        reply.requestId = completion.requestId;
-        return reply;
-    }
-    ChatProviderReply result;
-    result.success = true;
-    result.lifecycle = ChatRequestLifecycle::Completed;
-    result.httpStatus = completion.httpStatus;
-    result.attempts = completion.attempts;
-    result.retrySummary = completion.retrySummary;
-    result.requestId = completion.requestId;
-    const auto invalid = [&](const QString& detail) {
-        auto reply = malformed(detail);
-        reply.httpStatus = completion.httpStatus;
-        reply.attempts = completion.attempts;
-        reply.retrySummary = completion.retrySummary;
-        reply.requestId = completion.requestId;
-        return reply;
-    };
-    QString claudeContinuation;
-    QString geminiContinuation;
-    // Native tool-name resolution, continuation wiring and the gemini-3
-    // signature policy stay in this adapter; the protocol modules only normalize
-    // the response into text plus {callId, name, arguments, signature} parts.
-    const auto appendToolCall = [&](const QString& callId, const QString& name,
-                                    const QJsonValue& arguments, const QString& signature,
-                                    const QString& continuation) -> QString {
-        QString toolId;
-        for (const auto& tool : options.tools)
-            if (tool.enabled && tool.exposedToModel &&
-                provider::openAiCompatibleFunctionName(tool.id) == name) {
-                toolId = tool.id;
-                break;
+    const auto completion = client.completeNativeChat(protocol, body, options.cancellationToken,
+                                                      options.operationDeadline);
+    auto nativeReply = [&]() -> ChatProviderReply {
+        if (!completion.ok) {
+            // Precedence: cancellation, an explicit native capability rejection, then the
+            // transport-classified status/category. The Qt UnknownContentError flag is a
+            // last-resort fallback so it cannot override a validated HTTP status such as
+            // 408 (Timeout) or 429 (RateLimited).
+            const auto classified =
+                completion.cancelled ? ChatProviderErrorCategory::Cancelled
+                : completion.httpStatus == 400 || completion.httpStatus == 422 ||
+                        completion.httpStatus == 501
+                    ? ChatProviderErrorCategory::CapabilityUnsupported
+                : completion.providerErrorCategory > 0
+                    ? static_cast<ChatProviderErrorCategory>(completion.providerErrorCategory)
+                : completion.malformed
+                    ? ChatProviderErrorCategory::MalformedResponse
+                    : ProviderRequestRuntime::classify(completion.httpStatus,
+                                                       completion.networkError, completion.timedOut,
+                                                       completion.cancelled);
+            const auto category = classified == ChatProviderErrorCategory::None
+                                      ? ChatProviderErrorCategory::ProviderUnavailable
+                                      : classified;
+            auto reply = providerFailure(
+                completion.error, category,
+                category == ChatProviderErrorCategory::CapabilityUnsupported
+                    ? ChatProviderReply::Error::CapabilityRejected
+                    : ChatProviderReply::Error::ProviderFailure,
+                completion.httpStatus, completion.attempts, completion.retrySummary);
+            reply.requestId = completion.requestId;
+            return reply;
+        }
+        ChatProviderReply result;
+        result.success = true;
+        result.lifecycle = ChatRequestLifecycle::Completed;
+        result.httpStatus = completion.httpStatus;
+        result.attempts = completion.attempts;
+        result.retrySummary = completion.retrySummary;
+        result.requestId = completion.requestId;
+        const auto invalid = [&](const QString& detail) {
+            auto reply = malformed(detail);
+            reply.httpStatus = completion.httpStatus;
+            reply.attempts = completion.attempts;
+            reply.retrySummary = completion.retrySummary;
+            reply.requestId = completion.requestId;
+            return reply;
+        };
+        QString claudeContinuation;
+        QString geminiContinuation;
+        // Native tool-name resolution, continuation wiring and the gemini-3
+        // signature policy stay in this adapter; the protocol modules only normalize
+        // the response into text plus {callId, name, arguments, signature} parts.
+        const auto appendToolCall = [&](const QString& callId, const QString& name,
+                                        const QJsonValue& arguments, const QString& signature,
+                                        const QString& continuation) -> QString {
+            QString toolId;
+            for (const auto& tool : options.tools)
+                if (tool.enabled && tool.exposedToModel &&
+                    provider::openAiCompatibleFunctionName(tool.id) == name) {
+                    toolId = tool.id;
+                    break;
+                }
+            if (!options.nativeToolCalling || toolId.isEmpty() || callId.isEmpty() ||
+                !arguments.isObject())
+                return QStringLiteral("Invalid or unregistered native function call.");
+            if (!claude && binding.modelId.startsWith(QLatin1String("gemini-3")) &&
+                result.toolCalls.isEmpty() && signature.isEmpty())
+                return QStringLiteral("Gemini function response lacks a continuation signature.");
+            result.toolCalls.append({callId, toolId, arguments.toObject(), continuation});
+            return {};
+        };
+        if (claude) {
+            const auto parsed = provider::parseAnthropicMessagesResponse(completion.body);
+            if (!parsed.hasContent)
+                return invalid(QStringLiteral("Native provider response has no content."));
+            result.message = parsed.text;
+            auto history = body.value(QStringLiteral("messages")).toArray();
+            history.append(QJsonObject{{QStringLiteral("role"), QStringLiteral("assistant")},
+                                       {QStringLiteral("content"), parsed.contentBlocks}});
+            claudeContinuation =
+                QString::fromUtf8(QJsonDocument(history).toJson(QJsonDocument::Compact));
+            for (const auto& call : parsed.toolUses) {
+                const auto error = appendToolCall(call.callId, call.name, call.input, QString{},
+                                                  claudeContinuation);
+                if (!error.isEmpty())
+                    return invalid(error);
             }
-        if (!options.nativeToolCalling || toolId.isEmpty() || callId.isEmpty() ||
-            !arguments.isObject())
-            return QStringLiteral("Invalid or unregistered native function call.");
-        if (!claude && binding.modelId.startsWith(QLatin1String("gemini-3")) &&
-            result.toolCalls.isEmpty() && signature.isEmpty())
-            return QStringLiteral("Gemini function response lacks a continuation signature.");
-        result.toolCalls.append({callId, toolId, arguments.toObject(), continuation});
-        return {};
-    };
-    if (claude) {
-        const auto parsed = provider::parseAnthropicMessagesResponse(completion.body);
-        if (!parsed.hasContent)
-            return invalid(QStringLiteral("Native provider response has no content."));
-        result.message = parsed.text;
-        auto history = body.value(QStringLiteral("messages")).toArray();
-        history.append(QJsonObject{{QStringLiteral("role"), QStringLiteral("assistant")},
-                                   {QStringLiteral("content"), parsed.contentBlocks}});
-        claudeContinuation =
-            QString::fromUtf8(QJsonDocument(history).toJson(QJsonDocument::Compact));
-        for (const auto& call : parsed.toolUses) {
-            const auto error =
-                appendToolCall(call.callId, call.name, call.input, QString{}, claudeContinuation);
-            if (!error.isEmpty())
-                return invalid(error);
+        } else {
+            const auto parsed =
+                provider::parseGeminiGenerateContentResponse(completion.body, completion.requestId);
+            if (parsed.status == provider::GeminiGenerateContentResponseStatus::Blocked) {
+                auto reply = providerFailure(QStringLiteral("Gemini blocked the request."),
+                                             ChatProviderErrorCategory::RequestRejected,
+                                             ChatProviderReply::Error::ProviderFailure,
+                                             completion.httpStatus, completion.attempts,
+                                             completion.retrySummary);
+                reply.requestId = completion.requestId;
+                return reply;
+            }
+            if (parsed.status == provider::GeminiGenerateContentResponseStatus::Rejected) {
+                auto reply = providerFailure(QStringLiteral("Gemini rejected the response."),
+                                             ChatProviderErrorCategory::RequestRejected,
+                                             ChatProviderReply::Error::ProviderFailure,
+                                             completion.httpStatus, completion.attempts,
+                                             completion.retrySummary);
+                reply.requestId = completion.requestId;
+                return reply;
+            }
+            if (parsed.status != provider::GeminiGenerateContentResponseStatus::Ok)
+                return invalid(QStringLiteral("Native provider response has no content."));
+            result.message = parsed.text;
+            auto history = body.value(QStringLiteral("contents")).toArray();
+            history.append(parsed.modelContent);
+            geminiContinuation =
+                QString::fromUtf8(QJsonDocument(history).toJson(QJsonDocument::Compact));
+            for (const auto& call : parsed.functionCalls) {
+                const auto error = appendToolCall(call.callId, call.name, call.args,
+                                                  call.thoughtSignature, geminiContinuation);
+                if (!error.isEmpty())
+                    return invalid(error);
+            }
         }
-    } else {
-        const auto parsed =
-            provider::parseGeminiGenerateContentResponse(completion.body, completion.requestId);
-        if (parsed.status == provider::GeminiGenerateContentResponseStatus::Blocked) {
-            auto reply =
-                providerFailure(QStringLiteral("Gemini blocked the request."),
-                                ChatProviderErrorCategory::RequestRejected,
-                                ChatProviderReply::Error::ProviderFailure, completion.httpStatus,
-                                completion.attempts, completion.retrySummary);
-            reply.requestId = completion.requestId;
-            return reply;
+        if (options.structuredOutput && result.toolCalls.isEmpty()) {
+            QJsonParseError parseError;
+            const auto document = QJsonDocument::fromJson(result.message.toUtf8(), &parseError);
+            if (parseError.error != QJsonParseError::NoError || !document.isObject())
+                return invalid(QStringLiteral("Native structured response is malformed."));
+            result.structuredResult = document.object();
         }
-        if (parsed.status == provider::GeminiGenerateContentResponseStatus::Rejected) {
-            auto reply =
-                providerFailure(QStringLiteral("Gemini rejected the response."),
-                                ChatProviderErrorCategory::RequestRejected,
-                                ChatProviderReply::Error::ProviderFailure, completion.httpStatus,
-                                completion.attempts, completion.retrySummary);
-            reply.requestId = completion.requestId;
-            return reply;
-        }
-        if (parsed.status != provider::GeminiGenerateContentResponseStatus::Ok)
-            return invalid(QStringLiteral("Native provider response has no content."));
-        result.message = parsed.text;
-        auto history = body.value(QStringLiteral("contents")).toArray();
-        history.append(parsed.modelContent);
-        geminiContinuation =
-            QString::fromUtf8(QJsonDocument(history).toJson(QJsonDocument::Compact));
-        for (const auto& call : parsed.functionCalls) {
-            const auto error = appendToolCall(call.callId, call.name, call.args,
-                                              call.thoughtSignature, geminiContinuation);
-            if (!error.isEmpty())
-                return invalid(error);
-        }
-    }
-    if (options.structuredOutput && result.toolCalls.isEmpty()) {
-        QJsonParseError parseError;
-        const auto document = QJsonDocument::fromJson(result.message.toUtf8(), &parseError);
-        if (parseError.error != QJsonParseError::NoError || !document.isObject())
-            return invalid(QStringLiteral("Native structured response is malformed."));
-        result.structuredResult = document.object();
-    }
-    if (result.message.isEmpty() && result.toolCalls.isEmpty())
-        return invalid(QStringLiteral("Native provider response has no text or function calls."));
-    return result;
+        if (result.message.isEmpty() && result.toolCalls.isEmpty())
+            return invalid(
+                QStringLiteral("Native provider response has no text or function calls."));
+        return result;
+    }();
+    provider::preserveReportedUsage(completion.body, nativeReply.diagnostics);
+    nativeReply.diagnostics.insert(QStringLiteral("transport_attempts"),
+                                   completion.transportDiagnostics);
+    return enforceProviderOperationStop(std::move(nativeReply), options.cancellationToken,
+                                        options.operationDeadline);
 }
 
 // IChatProvider implementation for every non-Ollama provider id. The binding
@@ -346,7 +356,8 @@ public:
     ChatProviderReply sendMessageWithToken(
         const QString& message, const std::shared_ptr<std::atomic_bool>& cancellationToken,
         const QList<ChatImage>& images = {}, int deadlineMs = 0, int maxOutputTokens = 0,
-        ReasoningControl reasoning = ReasoningControl::Default) {
+        ReasoningControl reasoning = ReasoningControl::Default,
+        std::shared_ptr<const OperationDeadline> operation = {}) {
         if (!config_.isAllowedEndpoint())
             return providerFailure(
                 QStringLiteral("Selected provider '%1' is unavailable or not configured.")
@@ -361,6 +372,7 @@ public:
         if (maxOutputTokens > 0)
             request.options.maxTokens = maxOutputTokens;
         request.options.cancellationToken = cancellationToken;
+        request.options.operationDeadline = operation;
         request.options.reasoning = reasoning;
         request.options.reasoningEndpoint = profile.endpoint;
         request.options.loadedContextTokens = profile.loadedContextTokens;
@@ -369,6 +381,7 @@ public:
         elapsed.start();
         const auto result = client.infer(request);
         const auto finish = [&](ChatProviderReply reply) {
+            reply = enforceProviderOperationStop(std::move(reply), cancellationToken, operation);
             reply.diagnostics = result.diagnostics;
             reply.diagnostics.insert(QStringLiteral("provider_id"), binding_.providerId.left(128));
             reply.diagnostics.insert(QStringLiteral("model_id"), binding_.modelId.left(128));
@@ -415,6 +428,9 @@ public:
 
     ChatProviderReply sendRequest(const QString& message,
                                   const ChatRequestOptions& options) override {
+        if (auto stopped =
+                stoppedProviderOperation(options.cancellationToken, options.operationDeadline))
+            return *stopped;
         if (!options.images.isEmpty() &&
             binding_.capabilities.visionInput == CapabilitySupport::Unsupported)
             return providerFailure(QStringLiteral("Selected model does not support image input."),
@@ -434,7 +450,7 @@ public:
         if (!options.nativeToolCalling && !options.structuredOutput)
             return sendMessageWithToken(message, options.cancellationToken, options.images,
                                         options.deadlineMs, options.maxOutputTokens,
-                                        options.reasoning);
+                                        options.reasoning, options.operationDeadline);
         if (!config_.isAllowedEndpoint())
             return providerFailure(QStringLiteral("Selected endpoint is unavailable."),
                                    ChatProviderErrorCategory::ProviderUnavailable);
@@ -493,6 +509,8 @@ public:
                            options.deadlineMs > 0 ? options.deadlineMs : timeoutMs_);
         QString diagnosticRequestId;
         const auto finish = [&](ChatProviderReply reply, const QString& outcome) {
+            reply = enforceProviderOperationStop(std::move(reply), options.cancellationToken,
+                                                 options.operationDeadline);
             if (reply.requestId.isEmpty())
                 reply.requestId = diagnosticRequestId;
             auto metadata = diagnostics;
@@ -527,8 +545,11 @@ public:
         diagnostics.insert(QStringLiteral("transport_attempted"), true);
         LMStudioLocalInferenceClient client(config_, options.deadlineMs > 0 ? options.deadlineMs
                                                                             : timeoutMs_);
-        const auto completion = client.completeOpenAiChat(body, options.cancellationToken);
+        const auto completion =
+            client.completeOpenAiChat(body, options.cancellationToken, options.operationDeadline);
         diagnosticRequestId = completion.requestId;
+        diagnostics.insert(QStringLiteral("transport_attempts"), completion.transportDiagnostics);
+        provider::preserveReportedUsage(completion.body, diagnostics);
         if (!completion.ok) {
             const bool contextRejected =
                 (completion.httpStatus == 400 || completion.httpStatus == 422) &&
@@ -678,8 +699,11 @@ public:
         }
         const auto token = cancellationToken ? cancellationToken : options.cancellationToken;
         const int deadlineMs = options.deadlineMs > 0 ? options.deadlineMs : timeoutMs_;
-        return streamSelected(message, onDelta, token, options.images, deadlineMs,
-                              options.maxOutputTokens, options.requireBoundedStreaming);
+        return enforceProviderOperationStop(streamSelected(message, onDelta, token, options.images,
+                                                           deadlineMs, options.maxOutputTokens,
+                                                           options.requireBoundedStreaming,
+                                                           options.operationDeadline),
+                                            token, options.operationDeadline);
     }
 
 private:
@@ -687,7 +711,8 @@ private:
                                      const std::function<void(const QString&)>& onDelta,
                                      const std::shared_ptr<std::atomic_bool>& cancellationToken,
                                      const QList<ChatImage>& images, int deadlineMs,
-                                     int maxOutputTokens, bool requireBoundedStreaming) {
+                                     int maxOutputTokens, bool requireBoundedStreaming,
+                                     std::shared_ptr<const OperationDeadline> operation = {}) {
         LocalInferenceRequest request;
         request.prompt = message;
         request.images = images;
@@ -698,6 +723,7 @@ private:
             request.options.maxTokens = maxOutputTokens;
         }
         request.options.cancellationToken = cancellationToken;
+        request.options.operationDeadline = operation;
         LMStudioLocalInferenceStreamClient client(config_, timeoutMs_);
         const auto result =
             client.startStream(request, [&](const LocalInferenceStreamChunk& chunk) {
@@ -708,6 +734,9 @@ private:
             ChatProviderReply reply{true, result.accumulatedText, {}};
             reply.lifecycle = ChatRequestLifecycle::Completed;
             reply.requestId = result.requestId;
+            reply.httpStatus = result.httpStatus;
+            reply.attempts = result.attempts;
+            reply.diagnostics = result.diagnostics;
             reply.diagnostics.insert(QStringLiteral("deadline_ms"), result.timeoutMs);
             reply.diagnostics.insert(QStringLiteral("bounded_streaming"), requireBoundedStreaming);
             return reply;
@@ -722,6 +751,7 @@ private:
             ChatProviderReply::Error::ProviderFailure, result.httpStatus, result.attempts,
             result.retrySummary);
         reply.lifecycle = result.lifecycle;
+        reply.diagnostics = result.diagnostics;
         reply.requestId = result.requestId;
         reply.diagnostics.insert("output_limit_reached", result.outputLimitReached);
         reply.diagnostics.insert(QStringLiteral("deadline_ms"), result.timeoutMs);

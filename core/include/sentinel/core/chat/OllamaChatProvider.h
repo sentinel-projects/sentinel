@@ -52,11 +52,13 @@ private:
                                     const std::shared_ptr<std::atomic_bool>& cancellationToken,
                                     const QList<ChatImage>& images, int deadlineMs,
                                     int maxOutputTokens, bool requireBoundedStreaming,
-                                    ReasoningControl reasoning = ReasoningControl::Default);
+                                    ReasoningControl reasoning = ReasoningControl::Default,
+                                    std::shared_ptr<const OperationDeadline> operation = {});
     ChatProviderReply sendMessageWithToken(
         const QString& message, const std::shared_ptr<std::atomic_bool>& cancellationToken,
         const QList<ChatImage>& images = {}, int deadlineMs = 0, int maxOutputTokens = 0,
-        ReasoningControl reasoning = ReasoningControl::Default);
+        ReasoningControl reasoning = ReasoningControl::Default,
+        std::shared_ptr<const OperationDeadline> operation = {});
     OllamaConfig config_;
     int timeoutMs_ = 30000;
     QString selectedModel_;

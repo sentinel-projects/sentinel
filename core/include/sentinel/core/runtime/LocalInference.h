@@ -76,6 +76,7 @@ struct LocalInferenceOptions {
     bool streamingRequested = false;
     bool cancellationRequested = false;
     std::shared_ptr<std::atomic_bool> cancellationToken;
+    std::shared_ptr<const OperationDeadline> operationDeadline;
     // Explicit bounded requirement. When set, this streaming request must resolve
     // to a positive deadline; the transport refuses instead of waiting unbounded.
     bool requireBoundedStreaming = false;
@@ -381,6 +382,7 @@ public:
         QString retrySummary;
         QString requestId;
         int providerErrorCategory = 0;
+        QJsonArray transportDiagnostics;
     };
     explicit LMStudioLocalInferenceClient(LMStudioConfig config = LMStudioConfig{},
                                           int timeoutMs = 0);
@@ -388,10 +390,12 @@ public:
     LocalInferenceResponse infer(const LocalInferenceRequest& request) override;
     OpenAiCompletionResult
     completeOpenAiChat(const QJsonObject& body,
-                       const std::shared_ptr<std::atomic_bool>& cancellationToken = {}) const;
+                       const std::shared_ptr<std::atomic_bool>& cancellationToken = {},
+                       const std::shared_ptr<const OperationDeadline>& operation = {}) const;
     OpenAiCompletionResult
     completeNativeChat(NativeProtocol protocol, const QJsonObject& body,
-                       const std::shared_ptr<std::atomic_bool>& cancellationToken = {}) const;
+                       const std::shared_ptr<std::atomic_bool>& cancellationToken = {},
+                       const std::shared_ptr<const OperationDeadline>& operation = {}) const;
     QString statusSummary() const override;
 
 private:

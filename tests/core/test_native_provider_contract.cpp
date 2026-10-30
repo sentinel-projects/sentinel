@@ -13,6 +13,7 @@
 #include "sentinel/core/memory/InMemorySettingsStore.h"
 #include "sentinel/core/model/ModelService.h"
 #include "sentinel/core/network/NetworkPolicyService.h"
+#include "sentinel/core/provider/SelectedEndpointChatProvider.h"
 #include "sentinel/core/runtime/BuiltInToolProvider.h"
 #include "sentinel/core/runtime/LocalInference.h"
 #include "sentinel/core/runtime/ProviderRequestRuntime.h"
@@ -120,6 +121,105 @@ LMStudioConfig nativeStreamConfig(const QUrl& endpoint, const QString& apiKey,
 class NativeProviderContractTest final : public QObject {
     Q_OBJECT
 private slots:
+
+    void nativeTransportParity_data() {
+        QTest::addColumn<QString>("protocol");
+        QTest::addColumn<QString>("scenario");
+        for (const auto* protocol : {"compatible", "claude", "gemini"})
+            for (const auto* scenario : {"success", "timeout", "tls", "malformed",
+                                         "dispatch-expired", "dispatch-cancelled", "usage-success"})
+                QTest::newRow(qPrintable(QString("%1-%2").arg(protocol, scenario)))
+                    << QString(protocol) << QString(scenario);
+    }
+    void nativeTransportParity() {
+        QFETCH(QString, protocol);
+        QFETCH(QString, scenario);
+        ScopedOnlineNetworkMode online;
+        auto state = std::make_shared<ScriptedTransportState>();
+        state->responder = [=](const auto&) {
+            QByteArray body =
+                protocol == "claude"
+                    ? R"({"content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn"})"
+                : protocol == "gemini"
+                    ? R"({"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}]})"
+                    : R"({"choices":[{"message":{"content":"hello"},"finish_reason":"stop"}]})";
+
+            if (scenario == "usage-success") {
+                auto object = QJsonDocument::fromJson(body).object();
+                object.insert(protocol == "gemini" ? "usageMetadata" : "usage",
+                              protocol == "claude"
+                                  ? QJsonObject{{"input_tokens", 3}, {"output_tokens", 2}}
+                              : protocol == "gemini" ? QJsonObject{{"promptTokenCount", 3},
+                                                                   {"candidatesTokenCount", 2},
+                                                                   {"totalTokenCount", 5}}
+                                                     : QJsonObject{{"prompt_tokens", 3},
+                                                                   {"completion_tokens", 2},
+                                                                   {"total_tokens", 5}});
+                body = QJsonDocument(object).toJson();
+            }
+            auto response = ScriptedHttpResponse::body(
+                scenario == "malformed" ? QByteArray("PRIVATE_RESPONSE") : body);
+            response.emitMetadataSignal = true;
+            if (scenario == "timeout") {
+                response.frames.clear();
+                response.finish = false;
+            }
+            if (scenario == "tls") {
+                response.status = 0;
+                response.error = QNetworkReply::SslHandshakeFailedError;
+                response.errorString = "PRIVATE_TLS";
+            }
+            return response;
+        };
+        qint64 now = 0;
+        auto token = std::make_shared<std::atomic_bool>(false);
+        if (scenario == "dispatch-expired")
+            state->onCreateManager = [&] { now = 30; };
+        if (scenario == "dispatch-cancelled")
+            state->onCreateManager = [token] { token->store(true); };
+        LMStudioConfig config;
+        config.endpoint = protocol == "claude"   ? QUrl("https://api.anthropic.com")
+                          : protocol == "gemini" ? QUrl("https://generativelanguage.googleapis.com")
+                                                 : QUrl("https://fixture.invalid/v1");
+        config.apiKey = "PRIVATE_KEY";
+        config.networkFactory = std::make_shared<ScriptedNetworkFactory>(state);
+        ModelBinding binding{protocol == "claude"   ? "claude"
+                             : protocol == "gemini" ? "gemini"
+                                                    : "cloud-api",
+                             "fixture"};
+        binding.capabilities.nativeToolCalling = CapabilitySupport::Supported;
+        auto provider = makeSelectedEndpointChatProvider(binding, config, 0);
+        ChatRequestOptions options;
+        options.nativeToolCalling = true;
+        options.tools = {syntheticReadTool()};
+        options.maxOutputTokens = 128;
+        options.deadlineMs = 30;
+        options.cancellationToken = token;
+        options.operationDeadline = std::make_shared<OperationDeadline>(30, [&] { return now; });
+        const auto reply = provider->sendRequest("PRIVATE_PROMPT", options);
+        QCOMPARE(reply.success, scenario == "success" || scenario == "usage-success");
+        const bool undispatched = scenario.startsWith("dispatch-");
+        QCOMPARE(state->requests.size(), undispatched ? 0 : 1);
+        const auto frames = reply.diagnostics.value("transport_attempts").toArray();
+        QCOMPARE(frames.size(), 1);
+        const auto frame = frames.first().toObject();
+        QVERIFY(!QUuid(frame.value("attempt_id").toString()).isNull());
+        QCOMPARE(frame.value("http_status").isNull(), undispatched || scenario == "tls");
+        QCOMPARE(frame.value("response_completed").toBool(),
+                 scenario == "success" || scenario == "usage-success" || scenario == "malformed");
+        if (scenario == "timeout" || scenario == "dispatch-expired")
+            QCOMPARE(reply.category, ChatProviderErrorCategory::Timeout);
+        if (scenario == "dispatch-cancelled")
+            QCOMPARE(reply.category, ChatProviderErrorCategory::Cancelled);
+        QVERIFY(reply.toolCalls.isEmpty());
+        if (scenario == "usage-success") {
+            QCOMPARE(reply.diagnostics.value("prompt_tokens").toInt(-1), 3);
+            QCOMPARE(reply.diagnostics.value("completion_tokens").toInt(-1), 2);
+            QCOMPARE(reply.diagnostics.contains("total_tokens"), protocol != "claude");
+        } else
+            QVERIFY(!reply.diagnostics.contains("total_tokens"));
+        QVERIFY(!QJsonDocument(reply.diagnostics).toJson().contains("PRIVATE_"));
+    }
     void initTestCase();
 
     // Claude: native Anthropic Messages protocol.

@@ -4,11 +4,14 @@
 #include "../support/ScriptedProviderTransport.h"
 #endif
 #include "sentinel/core/app/AppSettings.h"
+#include "sentinel/core/chat/OllamaChatProvider.h"
 #include "sentinel/core/memory/InMemorySettingsStore.h"
 #include "sentinel/core/model/ModelService.h"
 #include "sentinel/core/network/NetworkPolicyService.h"
+#include "sentinel/core/provider/ProviderCapabilityNormalizer.h"
 #include "sentinel/core/provider/ProviderErrorClassifier.h"
 #include "sentinel/core/provider/ProviderMessageNormalizer.h"
+#include "sentinel/core/provider/SelectedEndpointChatProvider.h"
 #include "sentinel/core/runtime/BuiltInToolProvider.h"
 #include "sentinel/core/runtime/LocalInference.h"
 #include "sentinel/core/runtime/ProviderRequestRuntime.h"
@@ -25,6 +28,193 @@ using sentinel::test::ProviderHttpFixture;
 class ProviderContractsTest final : public QObject {
     Q_OBJECT
 private slots:
+
+    void reportedUsageRemainsOptionalAndStrict() {
+        QVERIFY(!provider::normalizeOpenAiOutcome(
+                     QJsonObject{{"usage", QJsonObject{{"completion_tokens", 1.5}}}})
+                     .outputTokens);
+        QJsonObject diagnostics;
+        provider::preserveReportedUsage(
+            QJsonObject{{"usage", QJsonObject{{"prompt_tokens", 0},
+                                              {"completion_tokens", 1.5},
+                                              {"total_tokens", "PRIVATE_COUNT"},
+                                              {"header", "PRIVATE_HEADER"}}}},
+            diagnostics);
+        QCOMPARE(diagnostics.value("prompt_tokens").toInt(-1), 0);
+        QVERIFY(!diagnostics.contains("completion_tokens"));
+        QVERIFY(!diagnostics.contains("total_tokens"));
+        provider::preserveReportedUsage(QJsonObject{{"usage", QJsonObject{{"prompt_tokens", -1}}}},
+                                        diagnostics);
+        QCOMPARE(diagnostics.value("prompt_tokens").toInt(-1), 0);
+        QVERIFY(!QJsonDocument(diagnostics).toJson().contains("PRIVATE_"));
+    }
+
+    void streamTransportParity_data() {
+        QTest::addColumn<QString>("backend");
+        QTest::addColumn<QString>("scenario");
+        for (const auto* backend : {"cloud", "local", "llama", "ollama", "claude", "gemini"})
+            for (const auto* scenario : {"success", "partial", "timeout", "cancel", "tls",
+                                         "expired", "usage-partial", "truncated"})
+                QTest::newRow(qPrintable(QString("%1-%2").arg(backend, scenario)))
+                    << QString(backend) << QString(scenario);
+    }
+    void streamTransportParity() {
+        QFETCH(QString, backend);
+        QFETCH(QString, scenario);
+        sentinel::test::ScopedOnlineNetworkMode online;
+        auto state = std::make_shared<sentinel::test::ScriptedTransportState>();
+        state->responder = [=](const auto&) {
+            QList<QByteArray> frames;
+            if (backend == "ollama") {
+                frames = {
+                    R"({"response":"hello","done":false})"
+                    "\n",
+                    R"({"done":true,"done_reason":"stop","eval_count":2,"prompt_eval_count":3})"
+                    "\n"};
+            } else if (backend == "claude") {
+                frames = {
+                    "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"hello\"}}\n\n",
+                    "data: {\"type\":\"message_stop\"}\n\n"};
+            } else if (backend == "gemini") {
+                frames = {
+                    "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}]}}]}\n\n",
+                    "data: "
+                    "{\"candidates\":[{\"content\":{\"parts\":[]},\"finishReason\":\"STOP\"}]}"
+                    "\n\n"};
+            } else {
+                frames = {
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
+                    "data: "
+                    "{\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_"
+                    "tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\ndata: [DONE]\n\n"};
+            }
+
+            if (scenario == "truncated") {
+                frames = {
+                    frames.first(),
+                    backend == "claude"   ? QByteArray("data: "
+                                                         "{\"type\":\"message_delta\",\"delta\":{"
+                                                         "\"stop_reason\":\"max_tokens\"}}\n\n")
+                    : backend == "gemini" ? QByteArray("data: "
+                                                       "{\"candidates\":[{\"content\":{\"parts\":[]"
+                                                       "},\"finishReason\":\"MAX_TOKENS\"}]}\n\n")
+                    : backend == "ollama"
+                        ? QByteArray("{\"done\":true,\"done_reason\":\"length\"}\n")
+                        : QByteArray(
+                              "data: "
+                              "{\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n")};
+            }
+            if (scenario == "usage-partial") {
+                if (backend == "claude") {
+                    frames = {"data: "
+                              "{\"type\":\"message_start\",\"message\":{\"usage\":{\"input_"
+                              "tokens\":3}}}\n\n",
+                              frames.first(),
+                              "data: "
+                              "{\"type\":\"message_delta\",\"delta\":{},\"usage\":{\"output_"
+                              "tokens\":2}}\n\n"};
+                } else if (backend == "gemini") {
+                    frames = {"data: "
+                              "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}]}}],"
+                              "\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":"
+                              "2,\"totalTokenCount\":5}}\n\n"};
+                } else if (backend == "ollama") {
+                    frames = {
+                        R"({"response":"hello","done":false,"prompt_eval_count":3,"eval_count":2})"
+                        "\n"};
+                } else {
+                    frames = {frames.first(), "data: "
+                                              "{\"choices\":[],\"usage\":{\"prompt_tokens\":3,"
+                                              "\"completion_tokens\":2,\"total_tokens\":5}}\n\n"};
+                }
+            }
+            if (scenario == "partial" || scenario == "cancel")
+                frames = {frames.first()};
+            if (scenario == "timeout" || scenario == "tls")
+                frames.clear();
+            auto response = sentinel::test::ScriptedHttpResponse::streaming(
+                frames, scenario == "success" || scenario == "tls" || scenario == "truncated");
+            response.emitMetadataSignal = scenario != "tls";
+            if (scenario == "tls") {
+                response.status = 0;
+                response.error = QNetworkReply::SslHandshakeFailedError;
+                response.errorString = "PRIVATE_TRANSPORT_ERROR";
+            }
+            return response;
+        };
+        std::shared_ptr<IChatProvider> provider;
+        if (backend == "ollama") {
+            auto config = OllamaConfig::fromEndpoint("http://127.0.0.1:11434");
+            config.healthCheckEnabled = config.modelDiscoveryEnabled = false;
+            config.networkFactory = std::make_shared<sentinel::test::ScriptedNetworkFactory>(state);
+            auto ollama = std::make_shared<OllamaChatProvider>(config, 0);
+            ollama->setSelectedModel("fixture");
+            provider = ollama;
+        } else {
+            LMStudioConfig config;
+            config.endpoint = backend == "claude" ? QUrl("https://api.anthropic.com")
+                              : backend == "gemini"
+                                  ? QUrl("https://generativelanguage.googleapis.com")
+                              : backend == "cloud" ? QUrl("https://fixture.invalid/v1")
+                                                   : QUrl("http://127.0.0.1:1234/v1");
+            config.apiKey = "PRIVATE_KEY";
+            config.networkFactory = std::make_shared<sentinel::test::ScriptedNetworkFactory>(state);
+            ModelBinding binding{backend == "local"   ? "lm-studio"
+                                 : backend == "llama" ? "llama-cpp-server"
+                                                      : "cloud-api",
+                                 "fixture"};
+            binding.capabilities.streaming = CapabilitySupport::Supported;
+            provider = makeSelectedEndpointChatProvider(binding, config, 0);
+        }
+        auto token = std::make_shared<std::atomic_bool>(false);
+        qint64 now = 0;
+        ChatRequestOptions options;
+        options.deadlineMs = 30;
+        options.requireBoundedStreaming = true;
+        options.cancellationToken = token;
+        options.operationDeadline = std::make_shared<OperationDeadline>(30, [&] { return now; });
+        if (scenario == "expired")
+            now = 30;
+        if (scenario == "cancel")
+            QTimer::singleShot(2, [token] { token->store(true); });
+        QString visible;
+        const auto reply = provider->sendMessageStreaming(
+            "PRIVATE_PROMPT", [&](const QString& delta) { visible += delta; }, token, options);
+        QCOMPARE(reply.success, scenario == "success");
+        QCOMPARE(state->requests.size(), scenario == "expired" ? 0 : 1);
+        const auto frames = reply.diagnostics.value("transport_attempts").toArray();
+        if (scenario != "expired") {
+            QCOMPARE(frames.size(), 1);
+            const auto phase = frames.first().toObject();
+            QCOMPARE(phase.value("response_completed").toBool(),
+                     scenario == "success" || scenario == "truncated");
+            QCOMPARE(phase.value("partial_body").toBool(),
+                     scenario == "partial" || scenario == "cancel" || scenario == "usage-partial");
+            QCOMPARE(phase.value("http_status").isNull(), scenario == "tls");
+            QCOMPARE(reply.httpStatus, scenario == "tls" ? 0 : 200);
+            QVERIFY(!QJsonDocument(reply.diagnostics).toJson().contains("PRIVATE_"));
+        }
+        if (scenario == "partial" || scenario == "usage-partial")
+            QCOMPARE(visible, QString("hello"));
+        if (scenario == "success")
+            QCOMPARE(reply.message, QString("hello"));
+        if (scenario == "usage-partial") {
+            QCOMPARE(reply.diagnostics.value("prompt_tokens").toInt(-1), 3);
+            QCOMPARE(reply.diagnostics.value("completion_tokens").toInt(-1), 2);
+            QCOMPARE(reply.diagnostics.contains("total_tokens"),
+                     backend != "claude" && backend != "ollama");
+        } else if (backend == "claude" || backend == "gemini" || scenario != "success")
+            QVERIFY(!reply.diagnostics.contains("total_tokens"));
+        if (scenario == "partial" || scenario == "timeout" || scenario == "expired" ||
+            scenario == "usage-partial")
+            QCOMPARE(reply.category, ChatProviderErrorCategory::Timeout);
+        if (scenario == "cancel")
+            QCOMPARE(reply.category, ChatProviderErrorCategory::Cancelled);
+        if (scenario == "truncated") {
+            QCOMPARE(reply.category, ChatProviderErrorCategory::RequestRejected);
+            QVERIFY(reply.diagnostics.value("output_limit_reached").toBool());
+        }
+    }
     void initTestCase();
     void capabilityDefaultsAreNotHealth();
     void missingCredentialsNeverFallback();
