@@ -42,6 +42,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Trust checked-out workspace in the build container
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Install validation tools
         run: |
           set -euxo pipefail
@@ -92,6 +94,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Trust checked-out workspace in the build container
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Install build dependencies
         run: |
           set -euxo pipefail
