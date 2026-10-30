@@ -16,6 +16,11 @@
 
 ## Security / Privacy Impact
 
+<!-- For substantive changes, follow docs/development/ENGINEERING_STANDARD.md:
+record material operating conditions → failure modes → evidence → acceptance oracles,
+platform/provider/upgrade limits, and phase/issue follow-ups. Link an existing design/audit
+instead of duplicating it. For trivial edits, a brief scope/validation note is enough. -->
+
 - [ ] No new autonomous authority, tool capability, permission bypass, or background behavior was introduced without explicit security and permission consideration.
 - [ ] No telemetry, hidden cloud calls, or silent update checks were introduced.
 - [ ] Not applicable
