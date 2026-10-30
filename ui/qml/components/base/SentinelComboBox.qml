@@ -30,6 +30,16 @@ ComboBox {
     Accessible.name: control.placeholderText
     Accessible.description: control.accessibleDescription
 
+    Component.onCompleted: {
+        // Feature detection keeps this component loadable before Qt 6.11,
+        // while newer attached objects expose the live popup state.
+        const accessibility = control.Accessible
+        if ("expandable" in accessibility)
+            accessibility.expandable = true
+        if ("expanded" in accessibility)
+            accessibility.expanded = Qt.binding(function() { return control.popup.visible })
+    }
+
     implicitHeight: SentinelTheme.controlHeight
     font.pixelSize: SentinelTheme.fontBody
     hoverEnabled: true

@@ -650,7 +650,16 @@ int main(int argc, char** argv) {
             }
 #endif
             QTest::keyClick(window, Qt::Key_Escape);
-            QTest::qWait(60);
+            if (!waitHidden(combo->property("popup").value<QObject*>())) {
+                fail(222, "combo popup closes on Escape");
+                return;
+            }
+#if QT_VERSION >= QT_VERSION_CHECK(6, 11, 0)
+            if (QAccessible::queryAccessibleInterface(combo)->state().expanded) {
+                fail(222, "combo collapsed state after Escape");
+                return;
+            }
+#endif
 
             // Tab navigation reaches the next visible focusable control.
             button->forceActiveFocus(Qt::TabFocusReason);
