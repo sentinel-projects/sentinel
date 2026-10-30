@@ -85,8 +85,12 @@ public:
         allowedToolFilterSet_ = true;
     }
     std::unique_ptr<LlmAgentRuntime> forkForSubagent(const QStringList& allowedTools) const;
+    void setOperationClockForTesting(OperationDeadline::Clock clock) {
+        operationClock_ = std::move(clock);
+    }
 
 private:
+    OperationDeadline::Clock operationClock_;
     QString buildPlannerPrompt(const QString& goal, const QList<AgentStepRecord>& history,
                                const AgentPlanningContext* selected = nullptr) const;
     AgentStepDecision decisionFromLlmOutput(const QString& output) const;

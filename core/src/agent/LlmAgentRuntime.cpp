@@ -249,6 +249,8 @@ void LlmAgentRuntime::setStreamObserver(std::function<void(const QString&)> onDe
 
 AgentStepDecision LlmAgentRuntime::nextStep(const QString& goal,
                                             const QList<AgentStepRecord>& history) const {
+    const auto operation = std::make_shared<OperationDeadline>(
+        agentInferenceDeadlineMs(modelBinding_, 120000), operationClock_);
     lastDecisionUsedLlm_ = false;
     lastProviderRecoveryAttempts_ = 0;
     if (!provider_) {
@@ -359,6 +361,7 @@ AgentStepDecision LlmAgentRuntime::nextStep(const QString& goal,
         ChatRequestOptions options;
         options.cancellationToken = streamCancellationToken_;
         options.deadlineMs = agentInferenceDeadlineMs(modelBinding_, 120000);
+        options.operationDeadline = operation;
         options.maxOutputTokens = requestedOutputTokens;
         options.images = inputImages_;
         // Planning asks for bounded reasoning so hidden reasoning is a small,
@@ -470,6 +473,9 @@ AgentStepDecision LlmAgentRuntime::nextStep(const QString& goal,
             modelBinding_.capabilities.streaming == CapabilitySupport::Supported &&
             provider_->supportsBoundedStreaming() && streamObserver_;
         const auto send = [&]() {
+            if (auto stopped = stoppedProviderOperation(streamCancellationToken_, operation))
+                return *stopped;
+            options.deadlineMs = operation->childTimeoutMs(options.deadlineMs);
             if (!useBoundedStreaming) {
                 return provider_->sendRequest(request, options);
             }
@@ -482,7 +488,8 @@ AgentStepDecision LlmAgentRuntime::nextStep(const QString& goal,
                 [&](const QString& delta) {
                     // Deltas arriving after cancellation are ignored and never
                     // accumulated: no planner text may be accepted late.
-                    if (streamCancellationToken_ && streamCancellationToken_->load()) {
+                    if ((streamCancellationToken_ && streamCancellationToken_->load()) ||
+                        operation->expired()) {
                         return;
                     }
                     outputEmitted = true;
@@ -500,12 +507,19 @@ AgentStepDecision LlmAgentRuntime::nextStep(const QString& goal,
         };
         const auto sendBoundRequest = [&]() {
             if (serializeProviderRequests_ && providerSerialization_) {
-                std::lock_guard lock(*providerSerialization_);
+                std::unique_lock lock(*providerSerialization_, std::defer_lock);
+                while (!lock.try_lock()) {
+                    if (auto stopped =
+                            stoppedProviderOperation(streamCancellationToken_, operation))
+                        return *stopped;
+                    ProviderRequestRuntime::backoff(10, streamCancellationToken_, operation);
+                }
                 return send();
             }
             return send();
         };
         auto reply = sendBoundRequest();
+        reply = enforceProviderOperationStop(std::move(reply), streamCancellationToken_, operation);
         if (plannerStreamOverflow) {
             AgentStepDecision failure;
             failure.kind = AgentStepDecision::Kind::GiveUp;
@@ -523,7 +537,7 @@ AgentStepDecision LlmAgentRuntime::nextStep(const QString& goal,
             ProviderRequestRuntime::backoff(
                 ProviderRequestRuntime::retryDelayMs(totalAttempts - 1, {},
                                                      ProviderRequestMode::Generation),
-                streamCancellationToken_)) {
+                streamCancellationToken_, operation)) {
             auto recovered = sendBoundRequest();
             ++lastProviderRecoveryAttempts_;
             totalAttempts += qMax(1, recovered.attempts);
@@ -533,6 +547,7 @@ AgentStepDecision LlmAgentRuntime::nextStep(const QString& goal,
                     QStringLiteral("Agent planner retried a transient provider failure");
             reply = std::move(recovered);
         }
+        reply = enforceProviderOperationStop(std::move(reply), streamCancellationToken_, operation);
         if (agentProviderDiagnostics().isInfoEnabled()) {
             auto metadata = reply.diagnostics;
             metadata.insert(QStringLiteral("provider_id"), modelBinding_.providerId.left(128));

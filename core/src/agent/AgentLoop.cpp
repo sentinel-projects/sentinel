@@ -972,6 +972,8 @@ void AgentLoop::runAsync(const QString& goal, const QString& sessionId, QObject*
                                          ? AgentTerminalReason::Cancelled
                                          : AgentTerminalReason::ObservationIndeterminate;
         asyncState_.abortReason = classificationAbortMessage(asyncState_.observationIntent);
+        if (asyncState_.observationIntent.providerFailure)
+            asyncState_.providerFailure = *asyncState_.observationIntent.providerFailure;
         completeAsync();
         return;
     }
@@ -1492,6 +1494,8 @@ AgentLoopState AgentLoop::run(const QString& goal, const QString& sessionId) {
                                    ? AgentTerminalReason::Cancelled
                                    : AgentTerminalReason::ObservationIndeterminate;
         state.abortReason = classificationAbortMessage(state.observationIntent);
+        if (state.observationIntent.providerFailure)
+            state.providerFailure = *state.observationIntent.providerFailure;
         return state;
     }
     return advance(std::move(state));

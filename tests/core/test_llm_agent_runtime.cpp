@@ -54,6 +54,8 @@ public:
                                   const ChatRequestOptions& options) override {
         prompts.append(message);
         requestOptions.append(options);
+        if (onRequest)
+            onRequest(options);
         if (!options.structuredOutput && !options.nativeToolCalling) {
             if (!scriptedPlainResults.isEmpty())
                 return scriptedPlainResults.takeFirst();
@@ -78,6 +80,7 @@ public:
     QList<ChatRequestOptions> requestOptions;
     bool failNext = false;
     bool bounded = false;
+    std::function<void(const ChatRequestOptions&)> onRequest;
 };
 
 AgentStepRecord sampleRecord() {
@@ -97,6 +100,127 @@ class LlmAgentRuntimeTest final : public QObject {
     Q_OBJECT
 
 private slots:
+
+    void defaultProviderCannotIgnoreParentBudget() {
+        class LegacyProvider final : public IChatProvider {
+        public:
+            int calls = 0;
+            QString name() const override {
+                return "fixture";
+            }
+            ChatProviderStatus status() const override {
+                return ChatProviderStatus::Ready;
+            }
+            ChatProviderReply sendMessage(const QString&) override {
+                ++calls;
+                return {true, "unsafe", {}};
+            }
+        } provider;
+        qint64 now = 0;
+        ChatRequestOptions options;
+        options.operationDeadline = std::make_shared<OperationDeadline>(10, [&] { return now; });
+        QCOMPARE(provider.sendRequest("fixture", options).category,
+                 ChatProviderErrorCategory::CapabilityUnsupported);
+        now = 10;
+        QCOMPARE(provider.sendRequest("fixture", options).category,
+                 ChatProviderErrorCategory::Timeout);
+        QCOMPARE(provider.calls, 0);
+    }
+
+    void cancellationWhileWaitingForSerializedProvider() {
+        auto provider = std::make_shared<FakeChatProvider>();
+        provider->scriptedReply = R"({"action":"final","grounding":"context","answer":"hello"})";
+        LlmAgentRuntime root({}, provider.get());
+        root.bindModel({"cloud-api", "fixture"}, provider);
+        auto first = root.forkForSubagent({});
+        auto waiting = root.forkForSubagent({});
+        auto token = std::make_shared<std::atomic_bool>(false);
+        waiting->setStreamObserver({}, token);
+        waiting->setOperationClockForTesting([] { return 0; });
+        bool observed = false;
+        provider->onRequest = [&](const auto&) {
+            QTimer::singleShot(0, [token] { token->store(true); });
+            QElapsedTimer elapsed;
+            elapsed.start();
+            const auto rejected = waiting->nextStep("Explain", {});
+            QVERIFY(elapsed.elapsed() < 1000);
+            QVERIFY(rejected.providerFailure);
+            QCOMPARE(rejected.providerFailure->category, ChatProviderErrorCategory::Cancelled);
+            observed = true;
+        };
+        const auto accepted = first->nextStep("Explain", {});
+        QVERIFY(observed);
+        QCOMPARE(accepted.kind, AgentStepDecision::Kind::FinalAnswer);
+        QCOMPARE(provider->requestOptions.size(), 1);
+    }
+
+    void parentDeadlineFencesPlannerChildren_data() {
+        QTest::addColumn<QString>("scenario");
+        for (const auto* name : {"repair-remaining", "repair-expired", "late-success",
+                                 "backoff-expired", "cancelled", "local-long"})
+            QTest::newRow(name) << QString(name);
+    }
+    void parentDeadlineFencesPlannerChildren() {
+        QFETCH(QString, scenario);
+        qint64 now = 0;
+        auto token = std::make_shared<std::atomic_bool>(scenario == "cancelled");
+        auto provider = std::make_shared<FakeChatProvider>();
+        const QString valid = R"({"action":"final","grounding":"context","answer":"hello"})";
+        provider->scriptedPlainReplies = {scenario == "late-success" ? valid : "invalid", valid};
+        if (scenario == "backoff-expired") {
+            ChatProviderReply failed;
+            failed.category = ChatProviderErrorCategory::ProviderUnavailable;
+            failed.httpStatus = 503;
+            provider->scriptedPlainResults = {failed};
+        }
+        provider->onRequest = [&](const auto&) {
+            if (provider->requestOptions.size() == 1) {
+                now = scenario == "repair-remaining"  ? 119000
+                      : scenario == "local-long"      ? 900000
+                      : scenario == "backoff-expired" ? 119999
+                                                      : 120000;
+                if (scenario == "backoff-expired")
+                    QTimer::singleShot(0, [&] { now = 120000; });
+            }
+        };
+        LlmAgentRuntime runtime({}, provider.get());
+        runtime.bindModel({scenario == "local-long" ? "lm-studio" : "cloud-api", "fixture"},
+                          provider);
+        runtime.setOperationClockForTesting([&] { return now; });
+        runtime.setStreamObserver({}, token);
+        const auto decision = runtime.nextStep("Explain a fictional scenario", {});
+        const bool success = scenario == "repair-remaining" || scenario == "local-long";
+        QCOMPARE(provider->requestOptions.size(), scenario == "cancelled" ? 0 : success ? 2 : 1);
+        if (success) {
+            QCOMPARE(decision.kind, AgentStepDecision::Kind::FinalAnswer);
+            QCOMPARE(provider->requestOptions.last().deadlineMs,
+                     scenario == "local-long" ? 0 : 1000);
+        } else {
+            QCOMPARE(decision.kind, AgentStepDecision::Kind::GiveUp);
+            QVERIFY(decision.providerFailure);
+            QCOMPARE(decision.providerFailure->category, scenario == "cancelled"
+                                                             ? ChatProviderErrorCategory::Cancelled
+                                                             : ChatProviderErrorCategory::Timeout);
+        }
+    }
+    void monotonicOperationBudgetBoundaries() {
+        qint64 now = 10;
+        OperationDeadline parent(100, [&] { return now; });
+        QCOMPARE(parent.remainingMs(), 100);
+        now = 109;
+        QCOMPARE(parent.childTimeoutMs(80), 1);
+        QVERIFY(!parent.expired());
+        now = 110;
+        QVERIFY(parent.expired());
+        QCOMPARE(parent.childTimeoutMs(100), 0);
+        now = 111;
+        QVERIFY(parent.expired());
+        OperationDeadline local(0, [&] { return now; });
+        now += 10000000;
+        QVERIFY(!local.expired());
+        QCOMPARE(local.childTimeoutMs(0), 0);
+        QCOMPARE(local.childTimeoutMs(42000), 42000);
+    }
     void emptyVerifiedFinalReachesEvidenceGate_data() {
         QTest::addColumn<QString>("providerId");
         for (const auto& id : {"ollama", "lm-studio", "llama-cpp-server"})
@@ -152,7 +276,8 @@ private slots:
             QCOMPARE(result.kind, AgentStepDecision::Kind::FinalAnswer);
             const auto options = provider->requestOptions.first();
             const bool remote = QString(id) == "cloud-api" || QString(id) == "unknown";
-            QCOMPARE(options.deadlineMs, remote ? 120000 : 0);
+            QVERIFY(remote ? options.deadlineMs > 0 && options.deadlineMs <= 120000
+                           : options.deadlineMs == 0);
             QCOMPARE(options.requireBoundedStreaming, remote);
             QCOMPARE(options.cancellationToken, token);
             QVERIFY(options.maxOutputTokens > 0 && options.maxOutputTokens <= 2048);
@@ -248,7 +373,8 @@ private slots:
         QCOMPARE(provider->requestOptions.size(), 2);
         QVERIFY(provider->requestOptions.first().requireBoundedStreaming);
         QVERIFY(!provider->requestOptions.last().requireBoundedStreaming);
-        QCOMPARE(provider->requestOptions.last().deadlineMs, 120000);
+        QVERIFY(provider->requestOptions.last().deadlineMs > 0 &&
+                provider->requestOptions.last().deadlineMs <= 120000);
         QVERIFY(provider->requestOptions.last().maxOutputTokens <= 2048);
     }
     void budgetRefusesBeforeProviderAndNeverReturnsSuccess() {

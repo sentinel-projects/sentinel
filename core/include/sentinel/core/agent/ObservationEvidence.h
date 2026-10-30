@@ -3,12 +3,15 @@
 #pragma once
 
 #include <QDateTime>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
 #include <QString>
 #include <memory>
 
 namespace sentinel::core {
+
+struct ProviderFailureMetadata;
 
 enum class ObservationDomain {
     FileSystem,
@@ -180,6 +183,9 @@ struct ObservationIntent {
     // at the provider output limit is never mistaken for a provider outage or
     // for invalid JSON.
     ObservationClassificationFailure failure = ObservationClassificationFailure::None;
+    // Safe request metadata only; no classification prompt or provider output.
+    QJsonArray requestDiagnostics;
+    std::shared_ptr<const ProviderFailureMetadata> providerFailure;
     bool requiresObservation() const {
         return !requirements.isEmpty();
     }

@@ -4,6 +4,7 @@
 
 #include "sentinel/core/agent/ObservationEvidence.h"
 #include "sentinel/core/model/ModelRouting.h"
+#include "sentinel/core/runtime/OperationDeadline.h"
 #include "sentinel/core/runtime/ToolDescriptor.h"
 #include "sentinel/core/runtime/ToolExecution.h"
 #include <atomic>
@@ -27,9 +28,9 @@ class ObservationIntentPolicy final : public IObservationIntentPolicy {
 public:
     explicit ObservationIntentPolicy(IChatProvider* provider,
                                      std::shared_ptr<std::atomic_bool> cancellationToken = {},
-                                     ModelBinding binding = {})
+                                     ModelBinding binding = {}, OperationDeadline::Clock clock = {})
         : binding_(std::move(binding)), provider_(provider),
-          cancellationToken_(std::move(cancellationToken)) {}
+          cancellationToken_(std::move(cancellationToken)), clock_(std::move(clock)) {}
     ObservationIntent classify(const QString& goal, const QString& conversationContext,
                                const QList<ToolDescriptor>& tools) const override;
 
@@ -37,6 +38,7 @@ private:
     ModelBinding binding_;
     IChatProvider* provider_ = nullptr;
     std::shared_ptr<std::atomic_bool> cancellationToken_;
+    OperationDeadline::Clock clock_;
 };
 
 struct EvidenceGateResult {

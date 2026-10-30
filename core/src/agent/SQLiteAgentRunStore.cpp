@@ -3,6 +3,7 @@
 
 #include "sentinel/core/agent/SQLiteAgentRunStore.h"
 #include "sentinel/core/agent/ClaimGroundingResolver.h"
+#include "sentinel/core/agent/ClassificationDiagnostics.h"
 #include "sentinel/core/memory/SqlitePragmas.h"
 #include "sentinel/core/security/AuthorizationResolver.h"
 
@@ -91,6 +92,7 @@ StoredAgentRun readRun(const QSqlQuery& query) {
     run.workspaceName = query.value(30).toString();
     run.presetId = query.value(31).toString();
     run.profileVersion = query.value(32).toString();
+    run.classificationDiagnostics = QJsonDocument::fromJson(query.value(33).toByteArray()).object();
     return run;
 }
 
@@ -101,7 +103,14 @@ const QString runColumns = QStringLiteral(
     "(SELECT COUNT(*) FROM agent_steps s WHERE s.run_id=agent_runs.run_id),"
     "capability_snapshot,role,provider_error_category,provider_http_status,"
     "provider_attempts,provider_retry_occurred,provider_request_lifecycle,terminal_reason,"
-    "delegation_purpose,provider_recovery_attempts,workspace_id,workspace_name,preset_id,profile_version");
+    "delegation_purpose,provider_recovery_attempts,workspace_id,workspace_name,"
+    "preset_id,profile_version,classification_diagnostics");
+
+const QString classificationRetentionSql = QStringLiteral(
+    "UPDATE agent_runs SET classification_diagnostics=NULL "
+    "WHERE classification_diagnostics IS NOT NULL AND finished_at IS NOT NULL "
+    "AND (julianday(started_at)<julianday('now','-30 days') OR run_id NOT IN "
+    "(SELECT run_id FROM agent_runs ORDER BY started_at DESC,run_id DESC LIMIT 256))");
 
 QString lifecycleName(ChatRequestLifecycle lifecycle) {
     switch (lifecycle) {
@@ -188,7 +197,7 @@ bool SQLiteAgentRunStore::initialize() {
             lastError_ = versionCheck.lastError().text();
             return false;
         }
-        if (versionCheck.next() && versionCheck.value(0).toInt() > 7) {
+        if (versionCheck.next() && versionCheck.value(0).toInt() > 8) {
             lastError_ = QStringLiteral("Unsupported Agent run schema version.");
             return false;
         }
@@ -247,8 +256,8 @@ bool SQLiteAgentRunStore::initialize() {
     if (!ensureColumn(connection.db, QStringLiteral("agent_runs"),
                       QStringLiteral("capability_snapshot"),
                       QStringLiteral("capability_snapshot TEXT"), lastError_) ||
-        !ensureColumn(connection.db, QStringLiteral("agent_runs"),
-                      QStringLiteral("role"), QStringLiteral("role TEXT"), lastError_) ||
+        !ensureColumn(connection.db, QStringLiteral("agent_runs"), QStringLiteral("role"),
+                      QStringLiteral("role TEXT"), lastError_) ||
         !ensureColumn(connection.db, QStringLiteral("agent_runs"),
                       QStringLiteral("provider_error_category"),
                       QStringLiteral("provider_error_category TEXT"), lastError_) ||
@@ -265,40 +274,43 @@ bool SQLiteAgentRunStore::initialize() {
                       QStringLiteral("provider_request_lifecycle"),
                       QStringLiteral("provider_request_lifecycle TEXT"), lastError_) ||
         !ensureColumn(connection.db, QStringLiteral("agent_runs"),
-                      QStringLiteral("terminal_reason"),
-                      QStringLiteral("terminal_reason TEXT"), lastError_) ||
+                      QStringLiteral("terminal_reason"), QStringLiteral("terminal_reason TEXT"),
+                      lastError_) ||
         !ensureColumn(connection.db, QStringLiteral("agent_runs"),
                       QStringLiteral("delegation_purpose"),
                       QStringLiteral("delegation_purpose TEXT"), lastError_) ||
         !ensureColumn(connection.db, QStringLiteral("agent_runs"),
                       QStringLiteral("provider_recovery_attempts"),
                       QStringLiteral("provider_recovery_attempts INTEGER"), lastError_) ||
+        !ensureColumn(connection.db, QStringLiteral("agent_runs"), QStringLiteral("workspace_id"),
+                      QStringLiteral("workspace_id TEXT"), lastError_) ||
+        !ensureColumn(connection.db, QStringLiteral("agent_runs"), QStringLiteral("workspace_name"),
+                      QStringLiteral("workspace_name TEXT"), lastError_) ||
+        !ensureColumn(connection.db, QStringLiteral("agent_runs"), QStringLiteral("preset_id"),
+                      QStringLiteral("preset_id TEXT"), lastError_) ||
         !ensureColumn(connection.db, QStringLiteral("agent_runs"),
-                      QStringLiteral("workspace_id"), QStringLiteral("workspace_id TEXT"), lastError_) ||
+                      QStringLiteral("profile_version"), QStringLiteral("profile_version TEXT"),
+                      lastError_) ||
         !ensureColumn(connection.db, QStringLiteral("agent_runs"),
-                      QStringLiteral("workspace_name"), QStringLiteral("workspace_name TEXT"), lastError_) ||
-        !ensureColumn(connection.db, QStringLiteral("agent_runs"),
-                      QStringLiteral("preset_id"), QStringLiteral("preset_id TEXT"), lastError_) ||
-        !ensureColumn(connection.db, QStringLiteral("agent_runs"),
-                      QStringLiteral("profile_version"), QStringLiteral("profile_version TEXT"), lastError_) ||
+                      QStringLiteral("classification_diagnostics"),
+                      QStringLiteral("classification_diagnostics TEXT"), lastError_) ||
         !ensureColumn(connection.db, QStringLiteral("agent_tool_calls"),
-                      QStringLiteral("mutation_summary"),
-                      QStringLiteral("mutation_summary TEXT"), lastError_) ||
-        !ensureColumn(connection.db, QStringLiteral("agent_tool_calls"),
-                      QStringLiteral("batch_id"),
+                      QStringLiteral("mutation_summary"), QStringLiteral("mutation_summary TEXT"),
+                      lastError_) ||
+        !ensureColumn(connection.db, QStringLiteral("agent_tool_calls"), QStringLiteral("batch_id"),
                       QStringLiteral("batch_id TEXT"), lastError_) ||
         !ensureColumn(connection.db, QStringLiteral("agent_tool_calls"),
-                      QStringLiteral("sandbox_summary"),
-                      QStringLiteral("sandbox_summary TEXT"), lastError_) ||
-        !ensureColumn(connection.db, QStringLiteral("agent_evidence"),
-                      QStringLiteral("freshness"), QStringLiteral("freshness INTEGER"), lastError_) ||
-        !ensureColumn(connection.db, QStringLiteral("agent_claims"),
-                      QStringLiteral("claim_type"), QStringLiteral("claim_type INTEGER"), lastError_) ||
+                      QStringLiteral("sandbox_summary"), QStringLiteral("sandbox_summary TEXT"),
+                      lastError_) ||
+        !ensureColumn(connection.db, QStringLiteral("agent_evidence"), QStringLiteral("freshness"),
+                      QStringLiteral("freshness INTEGER"), lastError_) ||
+        !ensureColumn(connection.db, QStringLiteral("agent_claims"), QStringLiteral("claim_type"),
+                      QStringLiteral("claim_type INTEGER"), lastError_) ||
         !ensureColumn(connection.db, QStringLiteral("agent_authorizations"),
                       QStringLiteral("scope"), QStringLiteral("scope TEXT"), lastError_))
         return false;
     if (!query.exec(QStringLiteral("INSERT INTO agent_run_schema_metadata(key,value) "
-                                   "VALUES('schema_version',7) ON CONFLICT(key) "
+                                   "VALUES('schema_version',8) ON CONFLICT(key) "
                                    "DO UPDATE SET value=excluded.value"))) {
         lastError_ = query.lastError().text();
         return false;
@@ -321,6 +333,10 @@ bool SQLiteAgentRunStore::initialize() {
                                    "WHERE finished_at IS NULL AND step_id IN ("
                                    "SELECT step_id FROM agent_steps WHERE run_id IN ("
                                    "SELECT run_id FROM agent_runs WHERE state='Interrupted'))"))) {
+        lastError_ = query.lastError().text();
+        return false;
+    }
+    if (!query.exec(classificationRetentionSql)) {
         lastError_ = query.lastError().text();
         return false;
     }
@@ -661,6 +677,22 @@ bool SQLiteAgentRunStore::record(const AgentEvent& event) {
                      {event.turnId});
         }
         if (const auto* run = std::get_if<AgentRunEvent>(&event.payload)) {
+            const auto attempts =
+                sanitizedClassificationDiagnostics(run->observationIntent.requestDiagnostics);
+            if (!attempts.isEmpty()) {
+                const QJsonObject diagnostics{
+                    {QStringLiteral("attempts"), attempts},
+                    {QStringLiteral("indeterminate"), run->observationIntent.indeterminate},
+                    {QStringLiteral("classification_failure"),
+                     observationClassificationFailureName(run->observationIntent.failure)}};
+                exec(QStringLiteral(
+                         "UPDATE agent_runs SET classification_diagnostics=? WHERE run_id=?"),
+                     {QString::fromUtf8(QJsonDocument(diagnostics).toJson(QJsonDocument::Compact)),
+                      event.turnId});
+                // Diagnostic metadata has a tighter lifetime than run history.
+                // Preserve the run/evidence itself; clear only this bounded field.
+                exec(classificationRetentionSql, {});
+            }
             if (run->terminalReason != AgentTerminalReason::None)
                 exec(QStringLiteral("UPDATE agent_runs SET terminal_reason=? WHERE run_id=?"),
                      {agentTerminalReasonName(run->terminalReason), event.turnId});

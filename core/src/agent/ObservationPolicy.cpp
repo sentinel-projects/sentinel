@@ -3,6 +3,7 @@
 #include "sentinel/core/agent/ObservationPolicy.h"
 #include "sentinel/core/agent/AgentInferencePolicy.h"
 #include "sentinel/core/agent/ClaimGroundingResolver.h"
+#include "sentinel/core/agent/ClassificationDiagnostics.h"
 #include "sentinel/core/context/ContextBudgetManager.h"
 #include "sentinel/core/platform/UserDirectories.h"
 
@@ -366,6 +367,22 @@ ObservationIntent ObservationIntentPolicy::classify(const QString& goal,
     ChatRequestOptions options;
     options.cancellationToken = cancellationToken_;
     options.deadlineMs = agentInferenceDeadlineMs(binding_, 60000);
+    options.operationDeadline = std::make_shared<OperationDeadline>(options.deadlineMs, clock_);
+    const auto stoppedIntent = [&](const ChatProviderReply& stopped, int attempts = 0,
+                                   int status = 0, const QString& requestId = QString{}) {
+        intent.indeterminate = true;
+        intent.failure = stopped.category == ChatProviderErrorCategory::Cancelled
+                             ? ObservationClassificationFailure::Cancelled
+                             : ObservationClassificationFailure::ProviderFailure;
+        intent.error = stopped.errorMessage;
+        intent.providerFailure = std::make_shared<ProviderFailureMetadata>(ProviderFailureMetadata{
+            stopped.lifecycle, stopped.category, status, attempts,
+            QUuid(requestId).isNull() ? QString{}
+                                      : QUuid(requestId).toString(QUuid::WithoutBraces)});
+        return intent;
+    };
+    if (auto stopped = stoppedProviderOperation(cancellationToken_, options.operationDeadline))
+        return stoppedIntent(*stopped);
     // Classification is a small, schema-shaped answer. Hidden reasoning competes
     // directly with the required JSON for the completion budget, so ask the model
     // to skip it through the field this endpoint documents. A model whose
@@ -373,9 +390,19 @@ ObservationIntent ObservationIntentPolicy::classify(const QString& goal,
     // field; the typed truncation path below reports the consequence honestly.
     options.reasoning = ReasoningControl::Disabled;
     options.maxOutputTokens = 2048;
-    const auto budget = ContextBudgetManager{}.assemble(
+    auto budget = ContextBudgetManager{}.assemble(
         binding_, options, {{prompt, ContextBudgetKind::Instruction, 0, true}});
+    if (auto stopped = stoppedProviderOperation(cancellationToken_, options.operationDeadline))
+        return stoppedIntent(*stopped);
     if (!budget.accepted()) {
+        intent.requestDiagnostics = sanitizedClassificationDiagnostics(QJsonArray{QJsonObject{
+            {"trace_id", traceId},
+            {"attempt", 0},
+            {"provider_invoked", false},
+            {"started_at_utc", QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)},
+            {"deadline_ms", options.deadlineMs},
+            {"elapsed_ms", elapsed.elapsed()},
+            {"output_budget_tokens", budget.reservedOutput}}});
         intent.indeterminate = true;
         intent.failure = ObservationClassificationFailure::BudgetRefused;
         intent.error = QStringLiteral("Context budget refused observation classification.");
@@ -392,12 +419,88 @@ ObservationIntent ObservationIntentPolicy::classify(const QString& goal,
     // and a cancelled run never retries. The identical request is never sent
     // twice and no more than one retry is taken.
     ChatProviderReply reply;
-    QString retryReason;
+    int transportAttempts = 0;
     int attemptOutputBudget = budget.reservedOutput;
     for (int attempt = 0; attempt < 2; ++attempt) {
+        if (auto stopped =
+                stoppedProviderOperation(cancellationToken_, options.operationDeadline)) {
+            reply = attempt > 0 ? enforceProviderOperationStop(std::move(reply), cancellationToken_,
+                                                               options.operationDeadline)
+                                : *stopped;
+            break;
+        }
         options.maxOutputTokens = attemptOutputBudget;
+        if (attempt > 0) {
+            budget = ContextBudgetManager{}.assemble(
+                binding_, options, {{prompt, ContextBudgetKind::Instruction, 0, true}});
+            if (auto stopped =
+                    stoppedProviderOperation(cancellationToken_, options.operationDeadline))
+                return stoppedIntent(*stopped, transportAttempts, reply.httpStatus,
+                                     reply.requestId);
+            if (!budget.accepted()) {
+                intent.indeterminate = true;
+                intent.failure = ObservationClassificationFailure::BudgetRefused;
+                intent.error = QStringLiteral("Context budget refused classification retry.");
+                intent.requestDiagnostics.append(
+                    QJsonObject{{"attempt", attempt + 1},
+                                {"trace_id", traceId},
+                                {"provider_invoked", false},
+                                {"output_budget_tokens", budget.reservedOutput}});
+                intent.requestDiagnostics =
+                    sanitizedClassificationDiagnostics(intent.requestDiagnostics);
+                return intent;
+            }
+            options.maxOutputTokens = budget.reservedOutput;
+        }
+        options.deadlineMs = options.operationDeadline->childTimeoutMs(options.deadlineMs);
+        if (auto stopped =
+                stoppedProviderOperation(cancellationToken_, options.operationDeadline)) {
+            reply = *stopped;
+            break;
+        }
+        const auto started = QDateTime::currentDateTimeUtc();
+        QElapsedTimer attemptElapsed;
+        attemptElapsed.start();
         reply = provider_->sendRequest(budget.prompt, options);
-        if (cancellationToken_ && cancellationToken_->load())
+        transportAttempts += qMax(1, reply.attempts);
+        const QStringList lifecycles{"Pending",  "Running",     "Completed", "Cancelled",
+                                     "TimedOut", "RateLimited", "Failed"};
+        const auto lifecycle = static_cast<int>(reply.lifecycle);
+        QJsonObject diagnostic{
+            {"trace_id", traceId},
+            {"request_id", reply.requestId},
+            {"started_at_utc", started.toString(Qt::ISODateWithMs)},
+            {"attempt", attempt + 1},
+            {"deadline_ms", options.deadlineMs},
+            {"elapsed_ms", attemptElapsed.elapsed()},
+            {"provider_invoked", true},
+            {"parent_expired", options.operationDeadline->expired()},
+            {"parent_cancelled", cancellationToken_ && cancellationToken_->load()},
+            {"http_status", reply.httpStatus},
+            {"provider_attempts", qMax(1, reply.attempts)},
+            {"category", chatProviderErrorCategoryName(reply.category)},
+            {"lifecycle", lifecycles.value(lifecycle, QStringLiteral("Failed"))},
+            {"output_budget_tokens", options.maxOutputTokens},
+            {"estimated_input_tokens", budget.estimatedInput ? QJsonValue(*budget.estimatedInput)
+                                                             : QJsonValue(QJsonValue::Null)},
+            {"prompt_bytes", budget.prompt.toUtf8().size()},
+            {"cancelled", (cancellationToken_ && cancellationToken_->load()) ||
+                              reply.category == ChatProviderErrorCategory::Cancelled},
+            {"timed_out", reply.category == ChatProviderErrorCategory::Timeout},
+            {"output_truncated",
+             reply.completion == ResponseCompletion::Truncated ||
+                 reply.diagnostics.value(provider::kOutputLimitReachedDiagnostic).toBool()}};
+        for (const auto* key :
+             {"prompt_tokens", "completion_tokens", "total_tokens", "reasoning_tokens"})
+            diagnostic.insert(QLatin1String(key), reply.diagnostics.value(QLatin1String(key)));
+        diagnostic.insert(QStringLiteral("transport_attempts"),
+                          reply.diagnostics.value(QStringLiteral("transport_attempts")));
+        intent.requestDiagnostics.append(diagnostic);
+        intent.requestDiagnostics = sanitizedClassificationDiagnostics(intent.requestDiagnostics);
+        reply = enforceProviderOperationStop(std::move(reply), cancellationToken_,
+                                             options.operationDeadline);
+        if (reply.category == ChatProviderErrorCategory::Cancelled ||
+            reply.category == ChatProviderErrorCategory::Timeout)
             break;
         const bool truncated =
             reply.completion == ResponseCompletion::Truncated ||
@@ -413,56 +516,35 @@ ObservationIntent ObservationIntentPolicy::classify(const QString& goal,
         const int ceiling =
             binding_.capabilities.maxOutputTokens.value_or(std::numeric_limits<int>::max());
         if (attemptOutputBudget >= ceiling) {
-            retryReason = QStringLiteral(
-                "no larger completion budget is available within the model output limit");
             break;
         }
         attemptOutputBudget = qMin(ceiling, attemptOutputBudget * 2);
-        retryReason =
-            QStringLiteral("output truncated at the completion budget; retrying once with %1 "
-                           "output tokens and reasoning still disabled")
-                .arg(attemptOutputBudget);
     }
     const bool truncatedReply =
-        reply.completion == ResponseCompletion::Truncated ||
-        reply.diagnostics.value(provider::kOutputLimitReachedDiagnostic).toBool();
+        reply.category != ChatProviderErrorCategory::Timeout &&
+        reply.category != ChatProviderErrorCategory::Cancelled &&
+        (reply.completion == ResponseCompletion::Truncated ||
+         reply.diagnostics.value(provider::kOutputLimitReachedDiagnostic).toBool());
     const auto recordOutcome = qScopeGuard([&] {
-        QJsonObject diagnostic{{"stage", "classification"},
-                               {"event", "exit"},
-                               {"trace_id", traceId},
-                               {"request_id", reply.requestId.left(128)},
-                               {"utc", QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)},
-                               {"wall_elapsed_ms", elapsed.elapsed()},
-                               {"cancelled", cancellationToken_ && cancellationToken_->load()},
-                               {"error_category", chatProviderErrorCategoryName(reply.category)}};
-        for (const auto& key :
-             {"provider_id", "model_id", "deadline_ms", "output_budget_tokens", "elapsed_ms",
-              "http_status", "category", "upstream_cancellation", "reported_context_tokens",
-              "request_bytes", "estimated_input_tokens", "estimate_method", "finish_reason",
-              "prompt_tokens", "completion_tokens", "total_tokens", "reasoning_tokens",
-              "output_limit_reached"}) {
-            const auto value = reply.diagnostics.value(QLatin1String(key));
-            if (value.isDouble() || value.isBool() || value.isString())
-                diagnostic.insert(QLatin1String(key), value.isString()
-                                                          ? QJsonValue(value.toString().left(128))
-                                                          : value);
-        }
-        if (reply.success && intent.indeterminate) {
-            diagnostic.insert(QStringLiteral("parse_failure"), intent.error);
-        }
-        diagnostic.insert(QStringLiteral("classification_retry"),
-                          QJsonValue(!retryReason.isEmpty()));
-        if (!retryReason.isEmpty())
-            diagnostic.insert(QStringLiteral("retry_reason"), retryReason.left(256));
-        diagnostic.insert(QStringLiteral("classification_failure"),
-                          observationClassificationFailureName(intent.failure));
-        diagnostic.insert(QStringLiteral("classification_result"),
-                          intent.indeterminate ? QStringLiteral("indeterminate")
-                                               : QStringLiteral("classified"));
+        // This is the same strict, bounded metadata persisted with the run. Never
+        // forward provider-supplied strings or parse/output contents to logging.
+        const QJsonObject diagnostic{
+            {"stage", "classification"},
+            {"event", "exit"},
+            {"trace_id", traceId},
+            {"wall_elapsed_ms", elapsed.elapsed()},
+            {"classification_failure", observationClassificationFailureName(intent.failure)},
+            {"classification_result", intent.indeterminate ? "indeterminate" : "classified"},
+            {"attempts", sanitizedClassificationDiagnostics(intent.requestDiagnostics)}};
         qCInfo(classificationDiagnostics).noquote()
             << QJsonDocument(diagnostic).toJson(QJsonDocument::Compact);
     });
     if (!reply.success) {
+        intent.providerFailure = std::make_shared<ProviderFailureMetadata>(ProviderFailureMetadata{
+            reply.lifecycle, reply.category, reply.httpStatus, transportAttempts,
+            QUuid(reply.requestId).isNull()
+                ? QString{}
+                : QUuid(reply.requestId).toString(QUuid::WithoutBraces)});
         intent.indeterminate = true;
         // A reply cut off at the provider output limit is a distinct, typed
         // failure: the classification JSON is a prefix and must not be parsed or
