@@ -101,6 +101,7 @@ public:
 class StreamingPlannerProvider final : public IChatProvider {
 public:
     int boundedPlannerRequests = 0;
+    int boundedPlannerDeadline = 0;
     QString name() const override {
         return QStringLiteral("streaming-test");
     }
@@ -120,8 +121,9 @@ public:
             return reply;
         }
         // Both immediate fixtures implement the requested bounded contract.
-        if (options.deadlineMs == 120000) {
+        if (options.reasoning == ReasoningControl::Low) {
             ++boundedPlannerRequests;
+            boundedPlannerDeadline = options.deadlineMs;
             return {true,
                     QStringLiteral("{\"action\":\"final\",\"grounding\":\"context\","
                                    "\"answer\":\"A specific contextual answer.\"}"),
@@ -887,6 +889,7 @@ private slots:
         const auto streamingState = runtime.submit(session, QStringLiteral("task"));
         QCOMPARE(streamingState.phase, AgentLoopPhase::Completed);
         QCOMPARE(provider.boundedPlannerRequests, 1);
+        QVERIFY(provider.boundedPlannerDeadline > 0 && provider.boundedPlannerDeadline <= 120000);
         const auto events = runtime.eventHistory(session);
         QString stepId;
         QString turnId;
