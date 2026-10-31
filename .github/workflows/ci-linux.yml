@@ -41,7 +41,7 @@ jobs:
           python3 -m pip install --user clang-format==18.1.8
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Install Qt
-        uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
+        uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
         with:
           version: '6.11.*'
           arch: linux_gcc_64
@@ -98,7 +98,7 @@ jobs:
           key: ${{ runner.os }}-sentinel-${{ github.job }}
           max-size: 500M
       - name: Install Qt
-        uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
+        uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
         with:
           version: '6.11.*'
           arch: linux_gcc_64
@@ -133,7 +133,7 @@ jobs:
           key: ${{ runner.os }}-sentinel-${{ github.job }}
           max-size: 500M
       - name: Install Qt
-        uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
+        uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
         with:
           version: '6.11.*'
           arch: linux_gcc_64
