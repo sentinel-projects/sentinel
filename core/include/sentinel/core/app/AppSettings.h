@@ -239,6 +239,8 @@ public:
     void setLocalChatInferenceEnabled(bool enabled);
     bool localInferenceStreamingEnabled() const;
     void setLocalInferenceStreamingEnabled(bool enabled);
+    QString inferenceTimeoutProfileJson() const;
+    bool setInferenceTimeoutProfileJson(const QString& json);
     int localInferenceTimeoutMs() const;
     void setLocalInferenceTimeoutMs(int timeoutMs);
     double localInferenceTemperature() const;
@@ -431,6 +433,7 @@ signals:
     void selectedModelRoleChanged();
     void localChatInferenceEnabledChanged();
     void localInferenceStreamingEnabledChanged();
+    void inferenceTimeoutProfileChanged();
     void localInferenceTimeoutMsChanged();
     void localInferenceTemperatureChanged();
     void localInferenceTopPChanged();

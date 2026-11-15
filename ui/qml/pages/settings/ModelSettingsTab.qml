@@ -598,6 +598,11 @@ Item {
             }
         }
 
+        SettingCard {
+            title: qsTr("Chat response waiting")
+            subtitle: qsTr("Choose how a supported text stream waits for response and useful progress.")
+            InferenceTimeoutSettings { Layout.fillWidth: true; viewModel: root.viewModel; accent: root.modeAccent }
+        }
         SentinelButton {
             Layout.fillWidth: true
             text: root.advanced ? qsTr("Hide advanced settings") : qsTr("Show advanced settings")
@@ -686,10 +691,10 @@ Item {
 
             SettingToggleRow {
                 id: requestTimeoutToggle
-                title: qsTr("Request timeout")
+                title: qsTr("Provider time limit")
                 subtitle: checked
-                          ? qsTr("Stop a request after the selected limit.")
-                          : qsTr("No client-side time limit. You can still stop a response manually.")
+                          ? qsTr("Provider limit enabled. A separate operation limit may be shorter.")
+                          : qsTr("No provider time limit. Chat or Agent may still have a separate total limit; Stop remains available.")
                 accent: root.modeAccent
                 compact: root.compact
                 checked: root.viewModel.localInferenceTimeoutMs > 0

@@ -314,6 +314,7 @@ set(SENTINEL_DESKTOP_QML_FILES
     ${CMAKE_SOURCE_DIR}/ui/qml/pages/models/OnlineRegistryTab.qml
     ${CMAKE_SOURCE_DIR}/ui/qml/pages/settings/SettingsPage.qml
     ${CMAKE_SOURCE_DIR}/ui/qml/pages/settings/AppearanceSettingsTab.qml
+    ${CMAKE_SOURCE_DIR}/ui/qml/pages/settings/InferenceTimeoutSettings.qml
     ${CMAKE_SOURCE_DIR}/ui/qml/pages/settings/ModelSettingsTab.qml
     ${CMAKE_SOURCE_DIR}/ui/qml/pages/settings/VoiceSettingsTab.qml
     ${CMAKE_SOURCE_DIR}/ui/qml/pages/settings/WorkspaceSettingsTab.qml

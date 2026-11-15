@@ -203,6 +203,8 @@ struct RuntimePeer : Peer {
     QJsonObject historyRequest;
     bool holdHistory = true;
     bool holdExtensions = false;
+    bool holdProfileMutations = false;
+    QList<QJsonObject> profileMutations;
     QJsonObject extensionsRequest, extensionActionRequest;
     static QJsonValue emptyValue(const QString& type) {
         if (type == "string") {
@@ -276,6 +278,11 @@ struct RuntimePeer : Peer {
                 payload = {{"sessions", QJsonArray{snapshot}}};
             } else if (name == "session.attach") {
                 payload = snapshot;
+            } else if (name == "desktop.settings_service" && holdProfileMutations &&
+                       request.value("payload").toObject().value("action").toString() ==
+                           "setProductSetting") {
+                profileMutations.append(request);
+                continue;
             } else if (name == "desktop.settings_service" && holdExtensions) {
                 const auto action = request.value("payload").toObject().value("action").toString();
                 if (action == "extensionsHubState") {
@@ -301,6 +308,48 @@ struct RuntimePeer : Peer {
 class DesktopIpcTest final : public QObject {
     Q_OBJECT
 private slots:
+    void timeoutProfileUncertainAcknowledgementIsNotReplayed() {
+        RuntimePeer peer;
+        peer.holdHistory = false;
+        peer.holdProfileMutations = true;
+        DaemonClient transport(peer.path, 1000, 100);
+        sentinel::desktop::DesktopRuntimeClient adapter(transport);
+        QVERIFY(peer.connect(transport));
+        QTRY_VERIFY((peer.pump(), adapter.ready()));
+        sentinel::core::InferenceTimeoutProfile profile;
+        profile.mode = sentinel::core::InferenceTimeoutMode::Custom;
+        profile.totalMs = 600000;
+        QSignalSpy failed(&transport, &DaemonClient::requestFailed);
+        const auto pending =
+            adapter
+                .settingsService("setProductSetting", {"models.inference-timeout", profile.json()},
+                                 false)
+                .toMap();
+        QCOMPARE(pending.value("code").toString(), QString("Pending"));
+        QTRY_COMPARE((peer.pump(), peer.profileMutations.size()), 1);
+        const auto id = pending.value("requestId").toString();
+        auto failures = [&] {
+            int count = 0;
+            for (const auto& row : failed)
+                if (row.first().toString() == id)
+                    ++count;
+            return count;
+        };
+        QTRY_COMPARE((peer.pump(), failures()), 1);
+        send(peer.socket, frame("response", id, "desktop.settings_service",
+                                {{"result", QJsonObject{{"accepted", true}}}}));
+        adapter.refresh();
+        QTest::qWait(120);
+        peer.pump();
+        QCOMPARE(failures(), 1);
+        QCOMPARE(peer.profileMutations.size(), 1);
+        transport.disconnectFromDaemon();
+        QVERIFY(peer.connect(transport));
+        QTRY_VERIFY((peer.pump(), adapter.ready()));
+        adapter.refresh();
+        peer.pump();
+        QCOMPARE(peer.profileMutations.size(), 1);
+    }
     void cloudSettingsUseTheSameGatewayForDiscoveryAndRequests() {
         using namespace sentinel::core;
         sentinel::test::ScopedOnlineNetworkMode network;

@@ -2,16 +2,21 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/ScriptedProviderTransport.h"
 #include "sentinel/core/agent/ContextEngine.h"
+#include "sentinel/core/app/AppSettings.h"
 #include "sentinel/core/app/IClock.h"
+#include "sentinel/core/app/SettingsService.h"
 #include "sentinel/core/chat/ChatModeService.h"
 #include "sentinel/core/chat/ChatSession.h"
 #include "sentinel/core/chat/InMemoryConversationStore.h"
 #include "sentinel/core/chat/SQLiteConversationStore.h"
 #include "sentinel/core/interfaces/IChatProvider.h"
+#include "sentinel/core/memory/InMemorySettingsStore.h"
 #include "sentinel/core/memory/InMemoryStore.h"
 #include "sentinel/core/memory/SQLiteMemoryStore.h"
 #include "sentinel/core/model/ModelService.h"
+#include "sentinel/core/runtime/LocalInference.h"
 #include <QBuffer>
 #include <QTemporaryDir>
 
@@ -54,6 +59,8 @@ public:
                                            const std::shared_ptr<std::atomic_bool>& cancellation,
                                            const ChatRequestOptions& options) override {
         Q_ASSERT(options.maxOutputTokens > 0 && options.deadlineMs > 0);
+        if (beforeReply)
+            beforeReply();
         return sendMessageStreaming(prompt, onDelta, cancellation);
     }
     ChatProviderReply sendMessage(const QString&) override {
@@ -117,6 +124,92 @@ class ChatModeServiceTest final : public QObject {
     Q_OBJECT
 
 private slots:
+
+    void lateStreamingSuccessCannotCompletePastSavedTotal() {
+        AppSettings settings(std::make_unique<InMemorySettingsStore>(),
+                             inMemoryTestCredentialStore());
+        ModelService models(&settings);
+        auto provider =
+            std::make_shared<FixtureProvider>(FixtureProvider::ReplyMode::StreamWithEmptyFinal);
+        provider->beforeReply = [] { QThread::msleep(30); }; // Deliberately noncooperative fixture.
+        ModelCapabilities caps;
+        caps.streaming = CapabilitySupport::Supported;
+        models.registerProvider(
+            "lm-studio", [provider](const ModelBinding&) { return provider; }, caps);
+        models.setSelectedModel({"lm-studio", "fixture"});
+        InferenceTimeoutProfile custom;
+        custom.mode = InferenceTimeoutMode::Custom;
+        custom.totalMs = 10;
+        SettingsService preferences(settings, &models);
+        QVERIFY(preferences.set("models.inference-timeout", custom.json()).accepted);
+        InMemoryConversationStore store;
+        const auto conversation = store.createConversation("fixture");
+        ChatSession session(std::make_unique<SystemClock>());
+        ChatModeService chat(models, session, store);
+        QVERIFY(chat.send(conversation.id, "fixture"));
+        QTRY_VERIFY_WITH_TIMEOUT(!chat.busy(), 1000);
+        QCOMPARE(session.messages().last().status, ChatMessageStatus::Failed);
+        QCOMPARE(chat.lastError(), ChatProviderErrorCategory::Timeout);
+    }
+    void savedTimeoutReachesRealStreamingTransport() {
+        AppSettings settings(std::make_unique<InMemorySettingsStore>(),
+                             inMemoryTestCredentialStore());
+        ModelService models(&settings);
+        auto state = std::make_shared<sentinel::test::ScriptedTransportState>();
+        // The settings profile uses milliseconds here to keep deterministic idle
+        // tests small; the Desktop displays and edits seconds.
+        qint64 now = 0;
+        state->clock = [&] { return now; };
+        state->responder = [&](const auto&) {
+            auto response = sentinel::test::ScriptedHttpResponse::streaming(
+                {"data: {\"choices\":[{\"delta\":{\"content\":\"prefix\"}}]}\n\n",
+                 ": heartbeat\n\n"},
+                false);
+            response.beforeFrame = [&](int index) { now = index == 0 ? 1 : 31; };
+            response.emitMetadataSignal = true;
+            return response;
+        };
+        ModelCapabilities caps;
+        caps.streaming = CapabilitySupport::Supported;
+        models.registerProvider(
+            "lm-studio",
+            [state](const ModelBinding& binding) {
+                LMStudioConfig config;
+                config.networkFactory =
+                    std::make_shared<sentinel::test::ScriptedNetworkFactory>(state);
+                return makeSelectedEndpointChatProvider(binding, config, 0);
+            },
+            caps);
+        models.setSelectedModel({"lm-studio", "fixture"});
+        InferenceTimeoutProfile custom;
+        custom.mode = InferenceTimeoutMode::Custom;
+        custom.progress = {100, 30};
+        custom.totalMs = 1000;
+        SettingsService service(settings, &models);
+        QVERIFY(service.set("models.inference-timeout", custom.json()).accepted);
+        InMemoryConversationStore store;
+        const auto conversation = store.createConversation("fixture");
+        ChatSession session(std::make_unique<SystemClock>());
+        ChatModeService chat(models, session, store);
+        QVERIFY(chat.send(conversation.id, "fixture"));
+        QTRY_VERIFY_WITH_TIMEOUT(!chat.busy(), 2000);
+        QCOMPARE(session.messages().last().status, ChatMessageStatus::Failed);
+        QCOMPARE(chat.lastError(), ChatProviderErrorCategory::Timeout);
+        QCOMPARE(state->requests.size(), 1);
+        const auto applied = chat.budgetDiagnostics().value("inference_timeout_policy").toObject();
+        QCOMPARE(applied.value("initialMs").toInt(), 100);
+        QCOMPARE(applied.value("idleMs").toInt(), 30);
+        QCOMPARE(applied.value("totalMs").toInt(), 1000);
+        // A provider switch must reject a saved unsupported requirement before POST.
+        models.registerProvider("ollama", [](const ModelBinding&) {
+            return std::make_shared<FixtureProvider>(FixtureProvider::ReplyMode::FinalOnly);
+        });
+        models.setSelectedModel({"ollama", "fixture"});
+        QVERIFY(chat.send(conversation.id, "fixture", {}, {"ollama", "fixture"}));
+        QTRY_VERIFY_WITH_TIMEOUT(!chat.busy(), 1000);
+        QCOMPARE(session.messages().last().status, ChatMessageStatus::Failed);
+        QCOMPARE(state->requests.size(), 1);
+    }
     void admittedWorkerBlocksMaintenanceAndLateShutdownSuccess() {
         QTemporaryDir profile;
         auto authority = std::make_shared<StorageAdmission>();
@@ -508,10 +601,18 @@ void ChatModeServiceTest::bindingFailureDoesNotLeaveEmptyAssistantMessage() {
 
 void ChatModeServiceTest::lateSuccessfulCallbackAfterCancellationStaysCancelled() {
     Harness harness(FixtureProvider::ReplyMode::IgnoresCancellation);
+    QSemaphore entered;
+    harness.models.registerProvider("ollama", [&entered](const ModelBinding&) {
+        auto provider =
+            std::make_shared<FixtureProvider>(FixtureProvider::ReplyMode::IgnoresCancellation);
+        provider->beforeReply = [&entered] { entered.release(); };
+        return provider;
+    });
     ChatModeService service(harness.models, harness.session, harness.store);
 
     QVERIFY(service.send(harness.conversationId, QStringLiteral("fixture prompt"), {},
                          {QStringLiteral("ollama"), QStringLiteral("fixture")}, false));
+    QVERIFY(entered.tryAcquire(1, 1000));
     QVERIFY(service.stop());
     // A provider may return late even after it receives cancellation.  The service
     // must close the visible request immediately, then ignore that late success.
@@ -526,17 +627,23 @@ void ChatModeServiceTest::lateSuccessfulCallbackAfterCancellationStaysCancelled(
 void ChatModeServiceTest::shutdownJoinsCancelledAndReplacementWorkers() {
     Harness harness(FixtureProvider::ReplyMode::IgnoresCancellation);
     auto finished = std::make_shared<std::atomic_int>(0);
-    harness.models.registerProvider(QStringLiteral("ollama"), [finished](const ModelBinding&) {
-        return std::make_shared<FixtureProvider>(FixtureProvider::ReplyMode::IgnoresCancellation,
-                                                 finished);
-    });
+    QSemaphore entered;
+    harness.models.registerProvider(
+        QStringLiteral("ollama"), [finished, &entered](const ModelBinding&) {
+            auto provider = std::make_shared<FixtureProvider>(
+                FixtureProvider::ReplyMode::IgnoresCancellation, finished);
+            provider->beforeReply = [&entered] { entered.release(); };
+            return provider;
+        });
     auto service =
         std::make_unique<ChatModeService>(harness.models, harness.session, harness.store);
     QVERIFY(service->send(harness.conversationId, QStringLiteral("First cancelled turn"), {},
                           {QStringLiteral("ollama"), QStringLiteral("fixture")}));
+    QVERIFY(entered.tryAcquire(1, 1000));
     QVERIFY(service->stop());
     QVERIFY(service->send(harness.conversationId, QStringLiteral("Replacement turn"), {},
                           {QStringLiteral("ollama"), QStringLiteral("fixture")}));
+    QVERIFY(entered.tryAcquire(1, 1000));
     service.reset();
     QCOMPARE(finished->load(), 2);
 }

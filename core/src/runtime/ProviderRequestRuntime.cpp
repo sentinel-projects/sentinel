@@ -130,7 +130,7 @@ ChatProviderErrorCategory ProviderRequestRuntime::classify(
 ProviderTransportResult ProviderRequestRuntime::wait(
     QNetworkReply* reply, int timeoutMs, const std::shared_ptr<std::atomic_bool>& cancellationToken,
     const std::function<void()>& onReadyRead, ProviderTransportTrace* trace,
-    const std::shared_ptr<const OperationDeadline>& operation) {
+    const std::shared_ptr<const OperationDeadline>& operation, InferenceProgressWatch* progress) {
     ProviderTransportResult result;
     ProviderTransportTrace localTrace(false);
     auto* observer = trace ? trace : &localTrace;
@@ -142,6 +142,7 @@ ProviderTransportResult ProviderRequestRuntime::wait(
     QEventLoop loop;
     QTimer deadline;
     deadline.setSingleShot(true);
+    deadline.setTimerType(Qt::PreciseTimer);
     bool deadlineExpired = false;
     if (operation && operation->expired()) {
         deadlineExpired = true;
@@ -156,8 +157,35 @@ ProviderTransportResult ProviderRequestRuntime::wait(
         reply->abort();
         loop.quit();
     });
+    const auto observeProgress = [&] {
+        const bool cancelled = cancellationToken && cancellationToken->load();
+        if (progress && progress->check(cancelled) != InferenceStopReason::None) {
+            deadlineExpired = !cancelled;
+            observer->localStop(cancelled);
+            reply->abort();
+            loop.quit();
+            return false;
+        }
+        return !cancelled && !(operation && operation->expired());
+    };
+    QTimer progressTimer;
+    if (progress) {
+        progressTimer.setTimerType(Qt::PreciseTimer);
+        progressTimer.setInterval(25);
+        QObject::connect(&progressTimer, &QTimer::timeout, &loop, observeProgress);
+        QObject::connect(reply, &QNetworkReply::metaDataChanged, &loop, [&] {
+            if (observeProgress() &&
+                reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).isValid())
+                progress->responseObserved();
+        });
+        if (progress->needsPolling())
+            progressTimer.start();
+    }
     if (onReadyRead)
-        QObject::connect(reply, &QNetworkReply::readyRead, &loop, onReadyRead);
+        QObject::connect(reply, &QNetworkReply::readyRead, &loop, [&] {
+            if (observeProgress())
+                onReadyRead();
+        });
     if (cancellationToken) {
         cancellationTimer.setInterval(25);
         QObject::connect(&cancellationTimer, &QTimer::timeout, &loop, [&] {
@@ -182,6 +210,8 @@ ProviderTransportResult ProviderRequestRuntime::wait(
         !(cancellationToken && cancellationToken->load()))
         loop.exec();
     cancellationTimer.stop();
+    progressTimer.stop();
+    observeProgress();
     result.cancelled = cancellationToken && cancellationToken->load();
     result.timedOut = !result.cancelled && (deadlineExpired || (operation && operation->expired()));
     if (result.timedOut || result.cancelled) reply->abort();
@@ -199,6 +229,8 @@ ProviderTransportResult ProviderRequestRuntime::wait(
                            : ChatRequestLifecycle::Failed;
     observer->finish(reply, result.timedOut, result.cancelled);
     result.diagnostics = observer->snapshot();
+    if (progress)
+        result.diagnostics.insert(QStringLiteral("inference_timeout"), progress->diagnostics());
     return result;
 }
 

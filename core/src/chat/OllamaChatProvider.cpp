@@ -99,7 +99,8 @@ ChatProviderReply OllamaChatProvider::sendRequest(const QString& message,
     if (auto stopped =
             stoppedProviderOperation(options.cancellationToken, options.operationDeadline))
         return *stopped;
-    if (options.nativeToolCalling || options.structuredOutput)
+    if (options.inferenceTimeout.requested() || options.nativeToolCalling ||
+        options.structuredOutput)
         return IChatProvider::sendRequest(message, options);
     return enforceProviderOperationStop(
         sendMessageWithToken(message, options.cancellationToken, options.images, options.deadlineMs,
@@ -197,6 +198,10 @@ ChatProviderReply OllamaChatProvider::sendMessageStreaming(
 ChatProviderReply OllamaChatProvider::sendMessageStreaming(
     const QString& message, const std::function<void(const QString&)>& onDelta,
     const std::shared_ptr<std::atomic_bool>& cancellationToken, const ChatRequestOptions& options) {
+    if (options.inferenceTimeout.requested())
+        return failureReply(QStringLiteral("Progress timeout policy is not supported for Ollama."),
+                            ChatProviderErrorCategory::CapabilityUnsupported,
+                            ChatProviderReply::Error::CapabilityRejected);
     if (options.structuredOutput || options.nativeToolCalling) {
         auto reply = failureReply(
             QStringLiteral("Bounded streaming does not carry structured or native tool output."),

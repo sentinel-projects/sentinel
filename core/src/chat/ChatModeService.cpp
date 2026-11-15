@@ -323,7 +323,6 @@ bool ChatModeService::runTurn(const QString& conversationId, int userMessageId,
     }
     const auto provider = resolved.provider;
     ChatRequestOptions requestOptions;
-    requestOptions.deadlineMs = 120000;
     requestOptions.maxOutputTokens = 2048;
     for (const auto& data : user.attachmentData) {
         const auto object = data.toObject();
@@ -333,8 +332,28 @@ bool ChatModeService::runTurn(const QString& conversationId, int userMessageId,
                  QByteArray::fromBase64(object.value("image").toString().toLatin1())});
         }
     }
+    const auto timeout =
+        models_.chatTimeoutPolicy(resolved.binding, resolved.provider->supportsBoundedStreaming() &&
+                                                        requestOptions.images.isEmpty());
+    if (!timeout.error.isEmpty()) {
+        ChatProviderReply failure;
+        failure.category = ChatProviderErrorCategory::CapabilityUnsupported;
+        failure.lifecycle = ChatRequestLifecycle::Failed;
+        failure.errorMessage =
+            QStringLiteral("Chat timeout policy cannot be honored: %1. Open Models settings to "
+                           "select Compatibility or a supported text-streaming provider.")
+                .arg(timeout.error);
+        acceptResult(conversationId, assistant.id, failure);
+        return true;
+    }
+    requestOptions.deadlineMs = timeout.totalMs;
+    requestOptions.inferenceTimeout = timeout.progress;
+    if (!timeout.compatibility)
+        requestOptions.operationDeadline = std::make_shared<OperationDeadline>(timeout.totalMs);
     const auto budget = contextFor(conversationId, user.id, resolved.binding, requestOptions);
     budgetDiagnostics_ = budget.diagnostics();
+    budgetDiagnostics_.insert(QStringLiteral("inference_timeout_policy"),
+                              QJsonObject::fromVariantMap(timeout.snapshot()));
     if (!budget.accepted()) {
         ChatProviderReply failure;
         failure.category = ChatProviderErrorCategory::RequestRejected;
@@ -363,13 +382,18 @@ bool ChatModeService::runTurn(const QString& conversationId, int userMessageId,
                 Qt::QueuedConnection);
         };
         ChatProviderReply reply;
-        if (provider->supportsBoundedStreaming() && requestOptions.images.isEmpty()) {
+        if (auto stopped =
+                stoppedProviderOperation(cancellation, requestOptions.operationDeadline)) {
+            reply = *stopped;
+        } else if (provider->supportsBoundedStreaming() && requestOptions.images.isEmpty()) {
             auto options = requestOptions;
             options.requireBoundedStreaming = true;
             reply = provider->sendMessageStreaming(prompt, delta, cancellation, options);
         } else {
             reply = provider->sendRequest(prompt, requestOptions);
         }
+        reply = enforceProviderOperationStop(std::move(reply), cancellation,
+                                             requestOptions.operationDeadline);
         QMetaObject::invokeMethod(
             this,
             [this, lifetime, conversationId, messageId, reply]() {

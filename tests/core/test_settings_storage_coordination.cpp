@@ -26,6 +26,25 @@ std::unique_ptr<ISettingsStore> encrypted(const QString& path) {
 class SettingsStorageCoordinationTest final : public QObject {
     Q_OBJECT
 private slots:
+    void adaptiveProfileStorageRefusalHasNoPublication() {
+        QTemporaryDir profile;
+        const auto path = profile.filePath("settings.json");
+        auto admission = std::make_shared<StorageAdmission>();
+        AppSettings settings(encrypted(path), inMemoryTestCredentialStore());
+        QVERIFY(settings.attachStorageAdmission(admission));
+        InferenceTimeoutProfile custom;
+        custom.mode = InferenceTimeoutMode::Custom;
+        custom.totalMs = 600000;
+        QVERIFY(settings.setInferenceTimeoutProfileJson(custom.json()));
+        const auto before = bytes(path);
+        const auto stored = settings.inferenceTimeoutProfileJson();
+        QSignalSpy changed(&settings, &AppSettings::inferenceTimeoutProfileChanged);
+        QCOMPARE(admission->prepareLocal(0ms), StorageAdmission::Result::Ready);
+        QVERIFY(!settings.setInferenceTimeoutProfileJson(QString{}));
+        QCOMPARE(settings.inferenceTimeoutProfileJson(), stored);
+        QCOMPARE(bytes(path), before);
+        QCOMPARE(changed.count(), 0);
+    }
     void transientFallbackReaderNeverMigratesLegacyCredentials() {
         QTemporaryDir profile;
         const auto path = profile.filePath("settings.json");

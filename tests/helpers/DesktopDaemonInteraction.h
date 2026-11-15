@@ -569,6 +569,99 @@ inline int runDesktopDaemonInteraction(QQuickWindow* window, desktop::DesktopShe
                                           {"responsive", true},
                                           {"disconnected", true},
                                           {"invalid_file", true}});
+    // AT-05: actual Desktop QML -> settings IPC -> authoritative settings,
+    // without submitting inference or granting an execution permission.
+    core::ModelCapabilities timeoutCaps;
+    timeoutCaps.streaming = core::CapabilitySupport::Supported;
+    controller.modelService()->setModelCapabilities("lm-studio", "timeout-fixture", timeoutCaps);
+    controller.modelService()->setSelectedModel({"lm-studio", "timeout-fixture"});
+    item("settingsPage")->setProperty("activeCategory", "AI");
+    P606_CHECK(wait([&] {
+        return item("inferenceTimeoutSettings") &&
+               item("inferenceTimeoutSettings")->property("loaded").toBool() &&
+               item("inferenceTimeoutSettings")->property("supported").toBool();
+    }));
+    auto* timeoutPanel = item("inferenceTimeoutSettings");
+    auto* timeoutMode = item("inferenceTimeoutMode");
+    P606_CHECK(
+        timeoutMode && QAccessible::queryAccessibleInterface(timeoutMode) &&
+        !QAccessible::queryAccessibleInterface(timeoutMode)->text(QAccessible::Name).isEmpty());
+    timeoutMode->forceActiveFocus(Qt::TabFocusReason);
+    QTest::keyClick(window, Qt::Key_Space);
+    QTest::keyClick(window, Qt::Key_Home);
+    QTest::keyClick(window, Qt::Key_Down);
+    QTest::keyClick(window, Qt::Key_Return);
+    P606_CHECK(wait([&] { return timeoutPanel->property("draftMode").toString() == "extended"; }));
+    // Invalid zero total remains a visible validation error, not a write.
+    const auto timeoutBefore = desktopBytes(profile.filePath("settings.json"));
+    P606_CHECK(activate("inferenceTimeoutSave"));
+    P606_CHECK(desktopBytes(profile.filePath("settings.json")) == timeoutBefore);
+    P606_CHECK(
+        item("inferenceTimeoutStatus")->property("text").toString().contains("valid seconds"));
+    auto typeTimeout = [&](const QString& name, const QByteArray& digits) {
+        auto* field = item(name);
+        if (!field)
+            return false;
+        field->forceActiveFocus(Qt::TabFocusReason);
+        QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+        QTest::keyClick(window, Qt::Key_Backspace);
+        for (auto digit : digits)
+            QTest::keyClick(window, digit);
+        return true;
+    };
+    P606_CHECK(typeTimeout("inferenceTimeoutInitial", "120"));
+    P606_CHECK(typeTimeout("inferenceTimeoutIdle", "60"));
+    P606_CHECK(typeTimeout("inferenceTimeoutTotal", "600"));
+    P606_CHECK(activate("inferenceTimeoutSave"));
+    P606_CHECK(wait([&] {
+        return !timeoutPanel->property("awaiting").toBool() &&
+               item("inferenceTimeoutStatus")->property("text").toString().contains("saved");
+    }));
+    P606_CHECK(controller.modelService()->chatTimeoutPolicySnapshot().value("totalMs").toInt() ==
+               600000);
+    P606_CHECK(item("inferenceTimeoutEffective")->property("text").toString().contains("600"));
+    for (const auto& theme : {QString("Paper"), QString("Liquid Glass Dark")}) {
+        vm.setThemeName(theme);
+        window->setWidth(560);
+        QTest::qWait(40);
+        P606_CHECK(timeoutPanel->width() <= window->width());
+        auto* scroll = item("settingsContentScroll");
+        auto* flick = scroll ? scroll->property("contentItem").value<QObject*>() : nullptr;
+        P606_CHECK(flick);
+        const auto panelY = timeoutPanel->mapToScene(QPointF()).y();
+        const auto viewportY = scroll->mapToScene(QPointF()).y();
+        flick->setProperty(
+            "contentY", qMax(0.0, flick->property("contentY").toDouble() + panelY - viewportY - 8));
+        QTest::qWait(40);
+        P606_CHECK(capture("timeout-" + theme));
+    }
+    QTest::keyClick(window, Qt::Key_Tab);
+    P606_CHECK(window->activeFocusItem() && window->activeFocusItem()->isVisible());
+    transport.disconnectFromDaemon();
+    P606_CHECK(wait([&] { return !vm.daemonConnected(); }));
+    P606_CHECK(!item("inferenceTimeoutReset")->isEnabled());
+    P606_CHECK(
+        item("inferenceTimeoutEffective")->property("text").toString().contains("unavailable"));
+    transport.connectToDaemon();
+    P606_CHECK(wait([&] { return runtime.ready() && timeoutPanel->property("loaded").toBool(); }));
+    P606_CHECK(controller.modelService()->chatTimeoutPolicySnapshot().value("totalMs").toInt() ==
+               600000);
+    P606_CHECK(activate("inferenceTimeoutReset"));
+    P606_CHECK(wait([&] {
+        return !timeoutPanel->property("awaiting").toBool() && controller.modelService()
+                                                                   ->chatTimeoutPolicySnapshot()
+                                                                   .value("compatibility")
+                                                                   .toBool();
+    }));
+    controller.modelService()->setSelectedModel({"ollama", "sentinel-test-model"});
+    P606_CHECK(wait([&] { return !timeoutPanel->property("supported").toBool(); }));
+    P606_CHECK(item("inferenceTimeoutMode")->property("count").toInt() == 1);
+    record("adaptive-timeout-settings", {{"real_ipc", true},
+                                         {"keyboard_save_reset", true},
+                                         {"invalid_no_write", true},
+                                         {"effective_values", true},
+                                         {"disconnect_no_replay", true},
+                                         {"light_dark_compact", true}});
     P606_CHECK(!script->timedOut.load());
 #undef P606_CHECK
     return 0;

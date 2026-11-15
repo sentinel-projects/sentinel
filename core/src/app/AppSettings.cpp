@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "sentinel/core/app/AppSettings.h"
+#include "sentinel/core/runtime/InferenceTimeoutSettings.h"
 #include <QThread>
 
 #include "sentinel/core/model/ModelRegistry.h"
@@ -1213,6 +1214,27 @@ void AppSettings::setLocalInferenceStreamingEnabled(bool enabled) {
         return;
     }
     emit localInferenceStreamingEnabledChanged();
+}
+
+QString AppSettings::inferenceTimeoutProfileJson() const {
+    return store_ ? store_->value(QStringLiteral("inferenceTimeoutProfile.v1"), QString{})
+                  : QString{};
+}
+bool AppSettings::setInferenceTimeoutProfileJson(const QString& json) {
+    if (QThread::currentThread() != thread()) {
+        wrongThreadWrite_ = true;
+        return false;
+    }
+    const auto profile = InferenceTimeoutProfile::parse(json);
+    if (!profile.valid() || !store_)
+        return false;
+    const auto normalized = profile.json();
+    if (normalized == inferenceTimeoutProfileJson())
+        return true;
+    if (!persistValue(QStringLiteral("inferenceTimeoutProfile.v1"), normalized))
+        return false;
+    emit inferenceTimeoutProfileChanged();
+    return true;
 }
 
 int AppSettings::localInferenceTimeoutMs() const {

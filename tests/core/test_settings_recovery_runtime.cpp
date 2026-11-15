@@ -38,6 +38,126 @@ private slots:
         QDir().rmdir(QFileInfo(RecoveryService::statusPath()).absolutePath());
         NetworkPolicyService::instance().setMode(NetworkMode::Online);
     }
+
+    void adaptiveTimeoutProfilePersistenceAndResolution() {
+        QTemporaryDir dir;
+        const auto path = dir.filePath("settings.json");
+        AppSettings settings(std::make_unique<JsonSettingsStore>(path),
+                             inMemoryTestCredentialStore());
+        settings.setLocalInferenceTimeoutMs(0);
+        QVERIFY(settings.inferenceTimeoutProfileJson().isEmpty());
+        ModelService models(&settings);
+        models.setSelectedModel({"lm-studio", "fixture"});
+        ModelCapabilities caps;
+        caps.streaming = CapabilitySupport::Supported;
+        models.setModelCapabilities("lm-studio", "fixture", caps);
+        SettingsService service(settings, &models);
+        InferenceTimeoutProfile extended;
+        extended.mode = InferenceTimeoutMode::Extended;
+        extended.progress = {120000, 60000};
+        extended.totalMs = 600000;
+        QVERIFY(service.set("models.inference-timeout", extended.json()).accepted);
+        QCOMPARE(settings.localInferenceTimeoutMs(), 0);
+        QCOMPARE(models.chatTimeoutPolicySnapshot().value("totalMs").toInt(), 600000);
+        QCOMPARE(models.chatTimeoutPolicySnapshot().value("initialMs").toInt(), 120000);
+        {
+            AppSettings reload(std::make_unique<JsonSettingsStore>(path),
+                               inMemoryTestCredentialStore());
+            ModelService restarted(&reload);
+            restarted.setModelCapabilities("lm-studio", "fixture", caps);
+            QCOMPARE(restarted.chatTimeoutPolicySnapshot().value("totalMs").toInt(), 600000);
+            QCOMPARE(reload.localInferenceTimeoutMs(), 0);
+        }
+        settings.setLocalInferenceTimeoutMs(30000);
+        QCOMPARE(models.chatTimeoutPolicySnapshot().value("totalMs").toInt(), 30000);
+        QCOMPARE(models.chatTimeoutPolicySnapshot().value("initialMs").toInt(), 30000);
+        QCOMPARE(models.chatTimeoutPolicySnapshot().value("idleMs").toInt(), 30000);
+        models.setSelectedModel({"ollama", "fixture"});
+        QVERIFY(!models.chatTimeoutPolicySnapshot().value("accepted").toBool());
+        QVERIFY(!service.set("models.inference-timeout", extended.json()).accepted);
+        QCOMPARE(InferenceTimeoutProfile::parse(settings.inferenceTimeoutProfileJson()).totalMs,
+                 600000);
+        QVERIFY(service.reset("models.inference-timeout").accepted);
+        QVERIFY(models.chatTimeoutPolicySnapshot().value("accepted").toBool());
+        QCOMPARE(models.chatTimeoutPolicySnapshot().value("totalMs").toInt(), 120000);
+        QCOMPARE(settings.localInferenceTimeoutMs(), 30000); // Reset never edits legacy values.
+    }
+    void adaptiveProviderSupportUsesActualEndpointOwnership() {
+        QTemporaryDir dir;
+        AppSettings settings(std::make_unique<JsonSettingsStore>(dir.filePath("settings.json")),
+                             inMemoryTestCredentialStore());
+        ModelService models(&settings);
+        ModelBinding binding{"cloud-api", "fixture"};
+        binding.capabilities.streaming = CapabilitySupport::Supported;
+        InferenceTimeoutProfile profile;
+        profile.mode = InferenceTimeoutMode::Custom;
+        profile.totalMs = 600000;
+        settings.setCloudApiEndpoint("https://api.anthropic.com");
+        settings.setSelectedCloudProvider("deepseek");
+        QVERIFY(models.chatTimeoutPolicy(binding, true, &profile)
+                    .supported); // Custom URL is ignored for this named endpoint.
+        settings.setSelectedCloudProvider("openai");
+        QVERIFY(!models.chatTimeoutPolicy(binding, true, &profile)
+                     .error.isEmpty()); // Native host actually overrides OpenAI facade.
+        settings.setCloudApiEndpoint("https://fixture.invalid/v1");
+        QVERIFY(models.chatTimeoutPolicy(binding, true, &profile).error.isEmpty());
+        for (const auto* provider : {"ollama", "claude", "gemini", "unknown"}) {
+            binding.providerId = provider;
+            QVERIFY(!models.chatTimeoutPolicy(binding, true, &profile).error.isEmpty());
+        }
+        binding.providerId = "lm-studio";
+        binding.modelId.clear();
+        QVERIFY(!models.chatTimeoutPolicy(binding, true, &profile).error.isEmpty());
+        binding.modelId = "fixture";
+        binding.capabilities.streaming = CapabilitySupport::Unknown;
+        QVERIFY(!models.chatTimeoutPolicy(binding, true, &profile).error.isEmpty());
+    }
+    void adaptiveTimeoutValidationAndParent() {
+        InferenceTimeoutProfile custom;
+        custom.mode = InferenceTimeoutMode::Custom;
+        custom.totalMs = 600000;
+        QVERIFY(InferenceTimeoutProfile::parse(custom.json()).valid());
+        QCOMPARE(resolveChatTimeout(custom, true, 0).totalMs, 600000);
+        QVERIFY(!resolveChatTimeout(custom, false, 0).error.isEmpty());
+        qint64 now = 0;
+        auto parent = std::make_shared<OperationDeadline>(100, [&] { return now; });
+        now = 70;
+        QCOMPARE(resolveChatTimeout(custom, true, 0, parent).totalMs, 30);
+        now = 100;
+        QCOMPARE(resolveChatTimeout(custom, true, 0, parent).error,
+                 QString("inference.total-deadline"));
+        QCOMPARE(resolveChatTimeout(custom, false, 0, parent, true).error,
+                 QString("inference.cancelled"));
+        const auto good = QJsonDocument::fromJson(custom.json().toUtf8()).object();
+        for (const auto& field : {QString("initialMs"), QString("idleMs"), QString("totalMs")}) {
+            for (const auto& bad : {QJsonValue(-1), QJsonValue(2147483648.0), QJsonValue(1.5),
+                                    QJsonValue("10"), QJsonValue()}) {
+                auto object = good;
+                object.insert(field, bad);
+                QVERIFY(!InferenceTimeoutProfile::parse(
+                             QString::fromUtf8(QJsonDocument(object).toJson()))
+                             .valid());
+            }
+        }
+        auto future = good;
+        future.insert("version", 2);
+        QVERIFY(!InferenceTimeoutProfile::parse(QString::fromUtf8(QJsonDocument(future).toJson()))
+                     .valid());
+        auto zero = good;
+        zero.insert("totalMs", 0);
+        QVERIFY(!InferenceTimeoutProfile::parse(QString::fromUtf8(QJsonDocument(zero).toJson()))
+                     .valid());
+        QVERIFY(InferenceTimeoutProfile::parse("").valid());
+        QCOMPARE(resolveChatTimeout(InferenceTimeoutProfile{}, false, 0).totalMs, 120000);
+        QTemporaryDir dir;
+        AppSettings settings(std::make_unique<JsonSettingsStore>(dir.filePath("settings.json")),
+                             inMemoryTestCredentialStore());
+        QVERIFY(settings.setInferenceTimeoutProfileJson(custom.json()));
+        const auto before = settings.inferenceTimeoutProfileJson();
+        QVERIFY(!settings.setInferenceTimeoutProfileJson(
+            QString::fromUtf8(QJsonDocument(future).toJson())));
+        QCOMPARE(settings.inferenceTimeoutProfileJson(), before);
+    }
     void themeCatalogMatchesValidatedChoices() {
         QTemporaryDir dir;
         AppSettings settings(std::make_unique<JsonSettingsStore>(dir.filePath("settings.json")), inMemoryTestCredentialStore());

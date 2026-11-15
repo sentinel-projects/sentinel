@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "sentinel/core/runtime/OperationDeadline.h"
 #include <QNetworkAccessManager>
 
 #include <memory>
@@ -26,6 +27,9 @@ public:
     virtual ~ILocalInferenceNetworkFactory() = default;
 
     virtual std::unique_ptr<QNetworkAccessManager> createManager() const = 0;
+    virtual OperationDeadline::Clock monotonicClock() const {
+        return {};
+    }
 };
 
 } // namespace sentinel::core

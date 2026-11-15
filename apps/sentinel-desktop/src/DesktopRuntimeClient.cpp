@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sentinel/desktop/DesktopRuntimeClient.h"
+#include "sentinel/core/extension/ExtensionService.h"
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDebug>
 #include <QJsonDocument>
 #include <QPermissions>
-#include <cmath>
 #include <algorithm>
-#include "sentinel/core/extension/ExtensionService.h"
+#include <chrono>
+#include <cmath>
 
 namespace sentinel::desktop {
 namespace {
@@ -426,7 +427,17 @@ QVariant DesktopRuntimeClient::settingsService(const QString& action, const QVar
         const bool pending = std::any_of(m_requests.cbegin(), m_requests.cend(), [&](const auto& request) {
             return request.name == "desktop.settings_service" && request.target == key;
         });
+        // Visible settings readers refresh authoritative effective values. Bound
+        // read frequency and avoid a response->projection->query feedback loop.
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now().time_since_epoch())
+                             .count();
+        if (action == QLatin1String("productSettings") &&
+            (m_productSettingsReadAt < 0 || now - m_productSettingsReadAt >= 1000))
+            m_settingsQueries.remove(key);
         if (!m_settingsQueries.contains(key) && !pending) {
+            if (action == QLatin1String("productSettings"))
+                m_productSettingsReadAt = now;
             m_settingsQueries.insert(key);
             send(DaemonClient::Command::desktop_settings_service,
                  {{"action", action}, {"arguments", QJsonArray::fromVariantList(arguments)}}, key);

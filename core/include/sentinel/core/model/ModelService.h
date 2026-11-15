@@ -7,6 +7,7 @@
 #include "sentinel/core/interfaces/IChatProvider.h"
 #include "sentinel/core/model/ModelRouting.h"
 #include "sentinel/core/provider/SelectedEndpointChatProvider.h"
+#include "sentinel/core/runtime/InferenceTimeoutSettings.h"
 #include "sentinel/core/runtime/OllamaRuntime.h"
 
 #include <QHash>
@@ -155,6 +156,9 @@ public:
     ModelBindingResolution resolve(const ModelSelection& selection);
     ModelBindingResolution resolve(const QString& providerId, const QString& modelId);
 
+    ResolvedChatTimeout chatTimeoutPolicy(const ModelBinding& binding, bool textStreaming = true,
+                                          const InferenceTimeoutProfile* requested = nullptr) const;
+    QVariantMap chatTimeoutPolicySnapshot() const;
     // Endpoint/credential configuration used for provider construction.
     LMStudioConfig providerConfig(const ModelBinding& binding) const;
     std::shared_ptr<IChatProvider> constructProvider(const ModelBinding& binding) const;

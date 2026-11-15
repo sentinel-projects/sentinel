@@ -89,6 +89,17 @@ QList<SettingSnapshot> SettingsService::snapshots() const {
         settings_.networkMode(), QStringLiteral("Online"),
         {QStringLiteral("Online"), QStringLiteral("Offline"), QStringLiteral("LocalOnly")},
         {QStringLiteral("connectivity"), QStringLiteral("offline")});
+    add(QStringLiteral("models.inference-timeout"), SettingSection::Models,
+        settings_.inferenceTimeoutProfileJson(), QString{}, {},
+        {QStringLiteral("timeout"), QStringLiteral("slow model")});
+    if (models_) {
+        SettingSnapshot effective;
+        effective.id = QStringLiteral("models.inference-timeout-effective");
+        effective.section = SettingSection::Models;
+        effective.value = models_->chatTimeoutPolicySnapshot();
+        effective.enabled = false;
+        rows.append(effective);
+    }
     const auto retention = RetentionPolicy::effective(settings_);
     for (const auto& domain : {QStringLiteral("chat"), QStringLiteral("agentRuns"),
                                QStringLiteral("diagnostics"),
@@ -183,6 +194,28 @@ SettingActionResult SettingsService::set(const QString& id, const QVariant& valu
     };
     if (!settings_.storageErrorCode().isEmpty())
         return invalid(settings_.storageErrorCode());
+    if (id == QLatin1String("models.inference-timeout")) {
+        if (value.typeId() != QMetaType::QString)
+            return invalid(QStringLiteral("settings.invalid-type"));
+        const auto profile = InferenceTimeoutProfile::parse(value.toString());
+        if (!profile.valid())
+            return invalid(profile.error);
+        if (profile.mode != InferenceTimeoutMode::Compatibility) {
+            if (!models_)
+                return invalid(QStringLiteral("settings.timeout-unsupported"));
+            const auto selected = models_->selectedModel();
+            ModelBinding binding{selected.providerId, selected.modelId};
+            binding.capabilities = models_->capabilities(selected.providerId, selected.modelId);
+            const auto effective = models_->chatTimeoutPolicy(binding, true, &profile);
+            if (!effective.error.isEmpty())
+                return invalid(effective.error);
+        }
+        if (!settings_.setInferenceTimeoutProfileJson(value.toString()))
+            return invalid(settings_.storageErrorCode().isEmpty()
+                               ? QStringLiteral("settings.timeout-save-failed")
+                               : settings_.storageErrorCode());
+        return applied();
+    }
     if (id.startsWith(QLatin1String("privacy.retention."))) {
         const auto domain = id.mid(QStringLiteral("privacy.retention.").size());
         if (!RetentionPolicy::set(settings_, domain, value.toString()))

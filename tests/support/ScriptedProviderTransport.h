@@ -45,6 +45,7 @@ struct ScriptedHttpResponse {
     bool emitRequestSentSignal = false;
     bool emitMetadataSignal = false;
     bool immediateFinish = false;
+    std::function<void(int)> beforeFrame;
 
     static ScriptedHttpResponse body(const QByteArray& payload, int status = 200) {
         ScriptedHttpResponse response;
@@ -135,6 +136,8 @@ private:
             if (response_.error != QNetworkReply::NoError)
                 emit errorOccurred(response_.error);
         }
+        if (response_.beforeFrame)
+            response_.beforeFrame(frameIndex_);
         if (frameIndex_ < response_.frames.size()) {
             buffer_.append(response_.frames.at(frameIndex_++));
             emit readyRead();
@@ -166,6 +169,7 @@ struct ScriptedTransportState {
     QList<RecordedProviderRequest> requests;
     std::function<ScriptedHttpResponse(const RecordedProviderRequest&)> responder;
     std::function<void()> onCreateManager;
+    core::OperationDeadline::Clock clock;
 };
 
 class ScriptedNetworkAccessManager final : public QNetworkAccessManager {
@@ -213,6 +217,9 @@ public:
         if (state_->onCreateManager)
             state_->onCreateManager();
         return std::make_unique<ScriptedNetworkAccessManager>(state_);
+    }
+    core::OperationDeadline::Clock monotonicClock() const override {
+        return state_->clock;
     }
     std::shared_ptr<ScriptedTransportState> state_;
 };

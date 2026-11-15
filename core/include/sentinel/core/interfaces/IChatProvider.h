@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "sentinel/core/runtime/InferenceTimeout.h"
 #include "sentinel/core/runtime/OperationDeadline.h"
 
 #include "sentinel/core/runtime/ToolDescriptor.h"
@@ -157,6 +158,7 @@ struct ChatImage {
 };
 
 struct ChatRequestOptions {
+    InferenceTimeoutOptions inferenceTimeout;
     QList<ChatImage> images;
     std::shared_ptr<std::atomic_bool> cancellationToken;
     // Nonzero bounds are mandatory capabilities: providers must enforce or reject them.
@@ -246,8 +248,9 @@ public:
         if (auto stopped =
                 stoppedProviderOperation(options.cancellationToken, options.operationDeadline))
             return *stopped;
-        if (options.deadlineMs > 0 || options.maxOutputTokens > 0 || options.structuredOutput ||
-            options.nativeToolCalling || !options.images.isEmpty() ||
+        if (options.inferenceTimeout.requested() || options.deadlineMs > 0 ||
+            options.maxOutputTokens > 0 || options.structuredOutput || options.nativeToolCalling ||
+            !options.images.isEmpty() ||
             (options.operationDeadline && options.operationDeadline->bounded())) {
             ChatProviderReply reply;
             reply.errorMessage =

@@ -54,7 +54,8 @@ public:
     wait(QNetworkReply* reply, int timeoutMs,
          const std::shared_ptr<std::atomic_bool>& cancellationToken = {},
          const std::function<void()>& onReadyRead = {}, ProviderTransportTrace* trace = nullptr,
-         const std::shared_ptr<const OperationDeadline>& operation = {});
+         const std::shared_ptr<const OperationDeadline>& operation = {},
+         InferenceProgressWatch* progress = nullptr);
     static ChatProviderErrorCategory classify(int httpStatus,
                                                QNetworkReply::NetworkError error,
                                                bool timedOut = false,

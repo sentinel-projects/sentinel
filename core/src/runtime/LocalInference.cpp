@@ -720,6 +720,14 @@ OllamaLocalInferenceClient::OllamaLocalInferenceClient(OllamaConfig config, int 
 
 LocalInferenceResponse OllamaLocalInferenceClient::infer(const LocalInferenceRequest& request) {
     LocalInferenceResponse response;
+    if (request.options.inferenceTimeout.requested()) {
+        response.status = LocalInferenceStatus::Refused;
+        response.error = LocalInferenceError::RequestFailed;
+        response.providerErrorCategory = int(ChatProviderErrorCategory::CapabilityUnsupported);
+        response.summary =
+            QStringLiteral("Progress timeout policy requires compatible text streaming.");
+        return response;
+    }
     response.endpoint = config_.endpoint.toString();
     response.model = request.options.model.trimmed();
     response.timeoutMs =
@@ -945,6 +953,14 @@ LocalInferenceStreamResult OllamaLocalInferenceStreamClient::startStream(
     const LocalInferenceRequest& request,
     const std::function<void(const LocalInferenceStreamChunk&)>& onChunk) {
     LocalInferenceStreamResult result;
+    if (request.options.inferenceTimeout.requested()) {
+        result.status = LocalInferenceStreamStatus::Refused;
+        result.lifecycle = ChatRequestLifecycle::Failed;
+        result.error = LocalInferenceError::RequestFailed;
+        result.providerErrorCategory = int(ChatProviderErrorCategory::CapabilityUnsupported);
+        result.summary = QStringLiteral("Progress timeout policy is not supported for Ollama.");
+        return result;
+    }
     result.requestId = ProviderRequestRuntime::requestId();
     result.status = LocalInferenceStreamStatus::NotStarted;
     result.model = request.options.model.trimmed();
@@ -1418,6 +1434,14 @@ LMStudioLocalInferenceClient::completeNativeChat(
 
 LocalInferenceResponse LMStudioLocalInferenceClient::infer(const LocalInferenceRequest& request) {
     LocalInferenceResponse response;
+    if (request.options.inferenceTimeout.requested()) {
+        response.status = LocalInferenceStatus::Refused;
+        response.error = LocalInferenceError::RequestFailed;
+        response.providerErrorCategory = int(ChatProviderErrorCategory::CapabilityUnsupported);
+        response.summary =
+            QStringLiteral("Progress timeout policy requires compatible text streaming.");
+        return response;
+    }
     response.endpoint = config_.toString();
     response.model = request.options.model.trimmed();
     response.timeoutMs =
@@ -1859,6 +1883,27 @@ LocalInferenceStreamResult LMStudioLocalInferenceStreamClient::startStream(
         return result;
     }
 
+    const bool compatible =
+        config_.endpoint.host().compare(QLatin1String("api.anthropic.com"), Qt::CaseInsensitive) !=
+            0 &&
+        config_.endpoint.host().compare(QLatin1String("generativelanguage.googleapis.com"),
+                                        Qt::CaseInsensitive) != 0;
+    const EffectiveInferenceTimeout policy{
+        request.options.inferenceTimeout,
+        compatible ? InferenceProgressSupport::ParsedVisibleText
+                   : InferenceProgressSupport::Unavailable,
+        config_.isCloud() ? InferenceLocation::Remote : InferenceLocation::Local, result.timeoutMs};
+    if (!policy.accepted(request.options.operationDeadline &&
+                         request.options.operationDeadline->bounded())) {
+        result.status = LocalInferenceStreamStatus::Refused;
+        result.lifecycle = ChatRequestLifecycle::Failed;
+        result.providerErrorCategory = int(ChatProviderErrorCategory::CapabilityUnsupported);
+        result.error = LocalInferenceError::RequestFailed;
+        result.summary =
+            QStringLiteral("Invalid or unsupported inference progress timeout policy.");
+        return result;
+    }
+
     ProviderTransportTrace transportTrace;
     const auto networkDecision = NetworkPolicyService::instance().check(config_.endpoint);
     transportTrace.policyDecision(networkDecision == NetworkDecision::Allowed);
@@ -1974,11 +2019,30 @@ LocalInferenceStreamResult LMStudioLocalInferenceStreamClient::startStream(
         result.summary = stopped->errorMessage;
         return result;
     }
+    InferenceProgressWatch progress(policy, request.options.operationDeadline,
+                                    config_.networkFactory
+                                        ? config_.networkFactory->monotonicClock()
+                                        : OperationDeadline::Clock{});
     QNetworkReply* reply = manager->post(networkRequest, serializedBody);
+    // Independent memory/protocol safety bounds, never extended by progress.
+    constexpr qsizetype maxFrameBytes = 1024 * 1024;
+    constexpr qsizetype maxStreamBytes = 8 * 1024 * 1024;
+    constexpr qsizetype maxTextBytes = 4 * 1024 * 1024;
+    constexpr int maxRetainedChunks = 4096;
+    qsizetype receivedBytes = 0;
+    qsizetype textBytes = 0;
+    bool resourceLimit = false;
+    reply->setReadBufferSize(64 * 1024);
+    const auto failResource = [&] {
+        resourceLimit = true;
+        streamError = true;
+        reply->abort();
+    };
 
     auto processLine = [&](const QByteArray& line) {
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        if (status < 200 || status >= 300 || streamError)
+        if (status < 200 || status >= 300 || streamError ||
+            progress.check(cancellationRequested(request)) != InferenceStopReason::None)
             return;
         const auto trimmedLine = line.trimmed();
         if (trimmedLine.isEmpty()) {
@@ -1998,6 +2062,10 @@ LocalInferenceStreamResult LMStudioLocalInferenceStreamClient::startStream(
         QJsonParseError parseError;
         const auto document = QJsonDocument::fromJson(dataPayload, &parseError);
         if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+            if (result.chunks.size() >= maxRetainedChunks) {
+                failResource();
+                return;
+            }
             ++sequence;
             ++result.malformedChunkCount;
             LocalInferenceStreamChunk chunk{
@@ -2014,6 +2082,11 @@ LocalInferenceStreamResult LMStudioLocalInferenceStreamClient::startStream(
 
         const auto object = document.object();
         provider::preserveReportedUsage(object, result.diagnostics);
+        if (done)
+            return; // Usage may follow completion; late text cannot reopen it.
+        if (compatible && !object.contains(QStringLiteral("choices")) &&
+            !object.contains(QStringLiteral("error")))
+            return;
         if (object.contains(QStringLiteral("error")) ||
             object.value(QStringLiteral("type")).toString() == QLatin1String("error")) {
             streamError = true;
@@ -2087,6 +2160,18 @@ LocalInferenceStreamResult LMStudioLocalInferenceStreamClient::startStream(
             return;
         }
 
+        if (result.chunks.size() >= maxRetainedChunks ||
+            textBytes + text.toUtf8().size() > maxTextBytes) {
+            failResource();
+            return;
+        }
+        // Parsed protocol data only. Headers, comments, role/usage/tool metadata
+        // and malformed/incomplete JSON cannot reset the semantic idle clock.
+        if (compatible && !text.trimmed().isEmpty() && !progress.visibleText(text))
+            return;
+        if (progress.check(cancellationRequested(request)) != InferenceStopReason::None)
+            return;
+        textBytes += text.toUtf8().size();
         ++sequence;
         done = done || finalChunk;
         result.accumulatedText.append(text);
@@ -2108,15 +2193,31 @@ LocalInferenceStreamResult LMStudioLocalInferenceStreamClient::startStream(
     };
 
     auto consumeReady = [&]() {
-        pending.append(reply->readAll());
-        while (true) {
-            const auto newlineIndex = pending.indexOf('\n');
-            if (newlineIndex < 0) {
+        while (reply->bytesAvailable() > 0 && !resourceLimit &&
+               progress.check(cancellationRequested(request)) == InferenceStopReason::None) {
+            const auto bytes = reply->read(64 * 1024);
+            if (bytes.isEmpty())
+                break;
+            receivedBytes += bytes.size();
+            if (receivedBytes > maxStreamBytes) {
+                failResource();
                 break;
             }
-            const auto line = pending.left(newlineIndex);
-            pending.remove(0, newlineIndex + 1);
-            processLine(line);
+            pending.append(bytes);
+            while (!resourceLimit) {
+                const auto newlineIndex = pending.indexOf('\n');
+                if (newlineIndex < 0)
+                    break;
+                if (newlineIndex > maxFrameBytes) {
+                    failResource();
+                    break;
+                }
+                const auto line = pending.left(newlineIndex);
+                pending.remove(0, newlineIndex + 1);
+                processLine(line);
+            }
+            if (pending.size() > maxFrameBytes)
+                failResource();
         }
     };
     const auto timeoutMs = result.timeoutMs > 0 ? result.timeoutMs : timeoutMs_;
@@ -2125,16 +2226,33 @@ LocalInferenceStreamResult LMStudioLocalInferenceStreamClient::startStream(
     result.lifecycle = ChatRequestLifecycle::Running;
     const auto transport = ProviderRequestRuntime::wait(
         reply, timeoutMs, request.options.cancellationToken, consumeReady, &transportTrace,
-        request.options.operationDeadline);
+        request.options.operationDeadline, &progress);
     result.diagnostics.insert(QStringLiteral("transport_attempts"),
                               QJsonArray{transport.diagnostics});
+    result.diagnostics.insert(QStringLiteral("inference_timeout"), progress.diagnostics());
+    result.diagnostics.insert(QStringLiteral("partial_output"), !result.accumulatedText.isEmpty());
+    result.diagnostics.insert(QStringLiteral("stream_resource_limit"), resourceLimit);
     result.httpStatus = transport.httpStatus;
     result.providerErrorCategory = static_cast<int>(transport.category);
     result.lifecycle = transport.lifecycle;
     result.latencyMs = elapsed.elapsed();
     provider::applyOutcomeToDiagnostics(streamOutcome, result.diagnostics);
 
+    if (resourceLimit && !transport.cancelled && !cancellationRequested(request)) {
+        result.status = LocalInferenceStreamStatus::Error;
+        result.lifecycle = ChatRequestLifecycle::Failed;
+        result.providerErrorCategory = int(ChatProviderErrorCategory::RequestRejected);
+        result.error = LocalInferenceError::InvalidResponse;
+        result.summary =
+            QStringLiteral("Streaming response exceeded a bounded parser/output limit.");
+        reply->deleteLater();
+        return result;
+    }
     if (transport.cancelled || cancellationRequested(request)) {
+        progress.check(true);
+        result.diagnostics.insert(QStringLiteral("inference_timeout"), progress.diagnostics());
+        result.lifecycle = ChatRequestLifecycle::Cancelled;
+        result.providerErrorCategory = int(ChatProviderErrorCategory::Cancelled);
         result.status = LocalInferenceStreamStatus::Cancelled;
         result.error = LocalInferenceError::RequestFailed;
         result.cancelled = true;
@@ -2147,15 +2265,41 @@ LocalInferenceStreamResult LMStudioLocalInferenceStreamClient::startStream(
         result.status = LocalInferenceStreamStatus::Error;
         result.error = LocalInferenceError::Timeout;
         result.summary =
-            QStringLiteral("Local LM Studio streaming generation timed out after %1 ms.")
+            QStringLiteral(
+                "Inference stream timed out: %1 (initial %2 ms, idle %3 ms, explicit total %4 ms).")
+                .arg(progress.diagnostics().value(QStringLiteral("stop_reason")).toString())
+                .arg(policy.requested.initialResponseMs)
+                .arg(policy.requested.usefulProgressIdleMs)
                 .arg(timeoutMs);
         reply->deleteLater();
         return result;
     }
 
-    pending.append(reply->readAll());
-    if (!pending.trimmed().isEmpty()) {
+    consumeReady();
+    if (!pending.trimmed().isEmpty() && !resourceLimit)
         processLine(pending);
+    result.diagnostics.insert(QStringLiteral("inference_timeout"), progress.diagnostics());
+    result.diagnostics.insert(QStringLiteral("partial_output"), !result.accumulatedText.isEmpty());
+    result.diagnostics.insert(QStringLiteral("stream_resource_limit"), resourceLimit);
+    if (resourceLimit ||
+        progress.check(cancellationRequested(request)) != InferenceStopReason::None) {
+        const bool cancelled = cancellationRequested(request);
+        result.status =
+            cancelled ? LocalInferenceStreamStatus::Cancelled : LocalInferenceStreamStatus::Error;
+        result.cancelled = cancelled;
+        result.lifecycle = cancelled       ? ChatRequestLifecycle::Cancelled
+                           : resourceLimit ? ChatRequestLifecycle::Failed
+                                           : ChatRequestLifecycle::TimedOut;
+        result.providerErrorCategory =
+            int(cancelled       ? ChatProviderErrorCategory::Cancelled
+                : resourceLimit ? ChatProviderErrorCategory::RequestRejected
+                                : ChatProviderErrorCategory::Timeout);
+        result.error =
+            resourceLimit ? LocalInferenceError::InvalidResponse : LocalInferenceError::Timeout;
+        result.diagnostics.insert(QStringLiteral("inference_timeout"), progress.diagnostics());
+        result.summary = QStringLiteral("Stream stopped before completion could be accepted.");
+        reply->deleteLater();
+        return result;
     }
 
     if (hasRedirectStatus(reply)) {

@@ -63,6 +63,7 @@ QString localInferenceErrorName(LocalInferenceError error);
 
 struct LocalInferenceOptions {
     struct NoPrevalidation {};
+    InferenceTimeoutOptions inferenceTimeout;
     QString model;
     std::variant<NoPrevalidation, OllamaModelDiscoveryResult> modelValidation = NoPrevalidation{};
     const OllamaModelDiscoveryResult* discoverySnapshot() const {

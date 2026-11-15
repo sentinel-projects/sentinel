@@ -29,6 +29,300 @@ class ProviderContractsTest final : public QObject {
     Q_OBJECT
 private slots:
 
+    void adaptiveClockBoundaries() {
+        qint64 now = 0;
+        const auto clock = [&] { return now; };
+        EffectiveInferenceTimeout policy{
+            {10, 5}, InferenceProgressSupport::ParsedVisibleText, InferenceLocation::Local, 0};
+        QVERIFY(policy.accepted());
+        InferenceProgressWatch noResponse(policy, {}, clock);
+        now = 9;
+        QCOMPARE(noResponse.check(), InferenceStopReason::None);
+        now = 10;
+        QCOMPARE(noResponse.check(), InferenceStopReason::InitialResponse);
+        QVERIFY(!noResponse.visibleText("late"));
+        QCOMPARE(noResponse.check(true), InferenceStopReason::Cancelled);
+
+        now = 0;
+        InferenceProgressWatch headerOnly(policy, {}, clock);
+        headerOnly.responseObserved();
+        now = 4;
+        headerOnly.responseObserved(); // Duplicate metadata cannot reset idle.
+        QVERIFY(!headerOnly.visibleText(" \n"));
+        now = 5;
+        QVERIFY(!headerOnly.visibleText("exact boundary"));
+        QCOMPARE(headerOnly.check(), InferenceStopReason::UsefulProgressIdle);
+
+        now = 0;
+        auto parent = std::make_shared<OperationDeadline>(12, clock);
+        InferenceProgressWatch generating(policy, parent, clock);
+        now = 4;
+        QVERIFY(generating.visibleText("one"));
+        now = 8;
+        QVERIFY(generating.visibleText("two"));
+        now = 12;
+        QVERIFY(!generating.visibleText("three"));
+        QCOMPARE(generating.check(), InferenceStopReason::TotalDeadline);
+        QCOMPARE(generating.check(true), InferenceStopReason::Cancelled);
+
+        now = 0;
+        policy.requested = {};
+        InferenceProgressWatch legacy(policy, {}, clock);
+        now = 10000000;
+        QCOMPARE(legacy.check(), InferenceStopReason::None);
+        QCOMPARE(legacy.check(true), InferenceStopReason::Cancelled);
+        now = 0;
+        policy.explicitTotalMs = 15;
+        InferenceProgressWatch configured(policy, {}, clock);
+        now = 15;
+        QCOMPARE(configured.check(), InferenceStopReason::TotalDeadline);
+        // A separately owned cold-start operation does not consume an inference
+        // watch that has not been dispatched. The shared parent still would.
+        now = 10000;
+        policy.explicitTotalMs = 20;
+        InferenceProgressWatch afterColdStart(policy, {}, clock);
+        now = 10019;
+        QCOMPARE(afterColdStart.check(), InferenceStopReason::None);
+        now = 10020;
+        QCOMPARE(afterColdStart.check(), InferenceStopReason::TotalDeadline);
+        policy.explicitTotalMs = 0;
+        policy.requested = {10, 0};
+        QVERIFY(!policy.accepted());    // Headers cannot leave a new profile unbounded.
+        QVERIFY(policy.accepted(true)); // A finite existing parent is sufficient.
+        policy.operation = InferenceOperation::ModelStartup;
+        QVERIFY(!policy.accepted(true));
+        policy.operation = InferenceOperation::VisibleTextStreaming;
+        policy.requested = {10, 5};
+        policy.requested.initialResponseMs = -1;
+        QVERIFY(!policy.accepted());
+        policy.requested.initialResponseMs = 1;
+        policy.support = InferenceProgressSupport::Unavailable;
+        QVERIFY(!policy.accepted());
+    }
+
+    void adaptiveStreaming_data() {
+        QTest::addColumn<QString>("backend");
+        QTest::addColumn<QString>("scenario");
+        for (const auto* backend : {"local", "cloud", "llama"})
+            for (const auto* scenario :
+                 {"progress", "idle-boundary", "heartbeats", "headers", "no-response",
+                  "partial-json", "tool-fragment", "total", "cancel", "late", "truncated",
+                  "oversized", "missing-usage", "empty-usage"})
+                QTest::newRow(qPrintable(QString("%1-%2").arg(backend, scenario)))
+                    << QString(backend) << QString(scenario);
+    }
+    void adaptiveStreaming() {
+        QFETCH(QString, backend);
+        QFETCH(QString, scenario);
+        sentinel::test::ScopedOnlineNetworkMode online;
+        qint64 now = 0;
+        auto token = std::make_shared<std::atomic_bool>(false);
+        auto state = std::make_shared<sentinel::test::ScriptedTransportState>();
+        state->clock = [&] { return now; };
+        const QByteArray text = "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n";
+        const QByteArray done =
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+        state->responder = [&](const auto&) {
+            auto response = sentinel::test::ScriptedHttpResponse::streaming({text, text, done});
+            response.emitMetadataSignal = scenario != "no-response";
+            if (scenario == "headers" || scenario == "no-response")
+                response.frames = {};
+            if (scenario == "heartbeats")
+                response.frames = {": heartbeat\n\n",
+                                   "data: "
+                                   "{\"choices\":[{\"delta\":{\"role\":\"assistant\",\"reasoning_"
+                                   "content\":\"private\"}}]}\n\n",
+                                   "data: {\"choices\":[{\"delta\":{\"content\":\"   \"}}]}\n\n"};
+            if (scenario == "partial-json")
+                response.frames = {"data: {\"choices\":", "[", "{"};
+            if (scenario == "tool-fragment")
+                response.frames = {"data: "
+                                   "{\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":{"
+                                   "\"arguments\":\"{\"}}]}}]}\n\n",
+                                   ": ping\n\n", ": ping\n\n"};
+            if (scenario == "oversized")
+                response.frames = {QByteArray(1024 * 1024 + 1, 'x')};
+            if (scenario == "empty-usage")
+                response.frames.last() =
+                    "data: "
+                    "{\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{}}\n\n";
+            if (scenario == "truncated")
+                response.frames.last() =
+                    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n";
+            if (scenario == "headers" || scenario == "no-response")
+                response.finish = false;
+            response.beforeFrame = [&](int index) {
+                now = (index + 1) * 4;
+                if (scenario == "headers")
+                    now = 5;
+                if (scenario == "no-response")
+                    now = 10;
+                if (scenario == "idle-boundary" && index == 1)
+                    now = 9;
+                if (scenario == "cancel" && index == 1) {
+                    now = 9;
+                    token->store(true);
+                }
+                if (scenario == "late" && index == 2)
+                    now = 20;
+                if (scenario == "oversized")
+                    now = 1;
+            };
+            return response;
+        };
+        LMStudioConfig config;
+        if (backend == "cloud") {
+            config.endpoint = QUrl("https://api.openai.com");
+            config.apiKey = "fixture";
+        }
+        config.networkFactory = std::make_shared<sentinel::test::ScriptedNetworkFactory>(state);
+        LocalInferenceRequest request;
+        request.prompt = "fixture";
+        request.options.model = "fixture";
+        request.options.reasoningEndpoint =
+            backend == "llama" ? ProviderEndpoint::LlamaCpp : ProviderEndpoint::LmStudio;
+        request.options.inferenceTimeout = {10, 5};
+        request.options.cancellationToken = token;
+        request.options.operationDeadline =
+            std::make_shared<OperationDeadline>(scenario == "total" ? 12 : 20, [&] { return now; });
+        LMStudioLocalInferenceStreamClient client(config);
+        int chunks = 0;
+        const auto result = client.startStream(request, [&](const auto& chunk) {
+            if (!chunk.text.isEmpty())
+                ++chunks;
+        });
+        QCOMPARE(state->requests.size(), 1);
+        QCOMPARE(result.attempts, 1); // Partial output never triggers another POST.
+        const auto diag = result.diagnostics.value("inference_timeout").toObject();
+        QVERIFY(!diag.isEmpty());
+        QVERIFY(!QJsonDocument(diag).toJson().contains("hello"));
+        if (scenario == "progress" || scenario == "missing-usage" || scenario == "empty-usage") {
+            QCOMPARE(result.status, LocalInferenceStreamStatus::Completed);
+            QCOMPARE(chunks, 2);
+            QCOMPARE(diag.value("progress_events").toInt(), 2);
+            QVERIFY(!result.diagnostics.contains("total_tokens"));
+        } else if (scenario == "truncated") {
+            QCOMPARE(result.status, LocalInferenceStreamStatus::Error);
+            QVERIFY(result.outputLimitReached);
+        } else if (scenario == "oversized") {
+            QCOMPARE(result.status, LocalInferenceStreamStatus::Error);
+            QVERIFY(result.diagnostics.value("stream_resource_limit").toBool());
+        } else if (scenario == "cancel") {
+            QCOMPARE(result.status, LocalInferenceStreamStatus::Cancelled);
+            QCOMPARE(diag.value("stop_reason").toString(), QString("cancelled"));
+            QCOMPARE(chunks, 1);
+        } else {
+            QCOMPARE(result.status, LocalInferenceStreamStatus::Error);
+            QCOMPARE(result.error, LocalInferenceError::Timeout);
+            QCOMPARE(diag.value("stop_reason").toString(),
+                     scenario == "total" || scenario == "late" ? QString("total_deadline")
+                     : scenario == "no-response"               ? QString("initial_response")
+                                                               : QString("useful_progress_idle"));
+            if (scenario == "heartbeats" || scenario == "partial-json" ||
+                scenario == "tool-fragment" || scenario == "headers" || scenario == "no-response")
+                QCOMPARE(chunks, 0);
+        }
+    }
+
+    void adaptiveProviderCapabilityContract() {
+        sentinel::test::ScopedOnlineNetworkMode online;
+        auto state = std::make_shared<sentinel::test::ScriptedTransportState>();
+        qint64 now = 0;
+        state->clock = [&] { return now; };
+        state->responder = [&](const auto&) {
+            auto response = sentinel::test::ScriptedHttpResponse::streaming(
+                {"data: {\"choices\":[{\"delta\":{\"content\":\"prefix\"}}]}\n\n",
+                 ": heartbeat\n\n"});
+            response.emitMetadataSignal = true;
+            response.beforeFrame = [&](int index) { now = index == 0 ? 1 : 6; };
+            return response;
+        };
+        LMStudioConfig config;
+        config.networkFactory = std::make_shared<sentinel::test::ScriptedNetworkFactory>(state);
+        ModelBinding binding{"lm-studio", "fixture"};
+        binding.capabilities.streaming = CapabilitySupport::Supported;
+        const auto provider = makeSelectedEndpointChatProvider(binding, config, 0);
+        ChatRequestOptions options;
+        options.inferenceTimeout = {10, 5};
+        int deltas = 0;
+        const auto failed =
+            provider->sendMessageStreaming("fixture", [&](const auto&) { ++deltas; }, {}, options);
+        QVERIFY(!failed.success);
+        QCOMPARE(failed.category, ChatProviderErrorCategory::Timeout);
+        QVERIFY(failed.toolCalls.isEmpty());
+        QVERIFY(failed.message.isEmpty());
+        QCOMPARE(deltas, 1);
+        QCOMPARE(state->requests.size(), 1);
+        QCOMPARE(failed.diagnostics.value("inference_timeout")
+                     .toObject()
+                     .value("stop_reason")
+                     .toString(),
+                 QString("useful_progress_idle"));
+        QVERIFY(!provider->sendRequest("fixture", options).success);
+        options.structuredOutput = true;
+        QVERIFY(!provider->sendMessageStreaming("fixture", {}, {}, options).success);
+        QCOMPARE(state->requests.size(), 1);
+        options.structuredOutput = false;
+        for (const auto* host :
+             {"https://api.anthropic.com", "https://generativelanguage.googleapis.com"}) {
+            config.endpoint = QUrl(host);
+            config.apiKey = "fixture";
+            const auto native = makeSelectedEndpointChatProvider(binding, config, 0);
+            const auto refused = native->sendMessageStreaming("fixture", {}, {}, options);
+            QVERIFY(!refused.success);
+            QCOMPARE(refused.category, ChatProviderErrorCategory::CapabilityUnsupported);
+        }
+        auto ollamaConfig = OllamaConfig::fromEndpoint("http://127.0.0.1:11434");
+        ollamaConfig.healthCheckEnabled = ollamaConfig.modelDiscoveryEnabled = false;
+        ollamaConfig.networkFactory = config.networkFactory;
+        OllamaChatProvider ollama(ollamaConfig, 0);
+        ollama.setSelectedModel("fixture");
+        QCOMPARE(ollama.sendMessageStreaming("fixture", {}, {}, options).category,
+                 ChatProviderErrorCategory::CapabilityUnsupported);
+        QCOMPARE(state->requests.size(), 1);
+    }
+
+    void adaptiveWorkerTerminal_data() {
+        QTest::addColumn<bool>("threaded");
+        QTest::newRow("synchronous") << false;
+        QTest::newRow("asynchronous") << true;
+    }
+    void adaptiveWorkerTerminal() {
+        QFETCH(bool, threaded);
+        qint64 now = 0;
+        auto state = std::make_shared<sentinel::test::ScriptedTransportState>();
+        state->clock = [&] { return now; };
+        state->responder = [&](const auto&) {
+            auto response = sentinel::test::ScriptedHttpResponse::streaming(
+                {"data: {\"choices\":[{\"delta\":{\"content\":\"prefix\"}}]}\n\n", ": ping\n\n"});
+            response.emitMetadataSignal = true;
+            response.beforeFrame = [&](int index) { now = index == 0 ? 1 : 6; };
+            return response;
+        };
+        LMStudioConfig config;
+        config.networkFactory = std::make_shared<sentinel::test::ScriptedNetworkFactory>(state);
+        LocalInferenceWorker worker(std::make_unique<NullLocalInferenceClient>(),
+                                    std::make_unique<LMStudioLocalInferenceStreamClient>(config),
+                                    this, false, threaded);
+        LocalInferenceRequest request;
+        request.prompt = "fixture";
+        request.options.model = "fixture";
+        request.options.inferenceTimeout = {10, 5};
+        int terminals = 0;
+        LocalInferenceStreamResult terminal;
+        QVERIFY(worker.startStream(request, {}, [&](const auto&, const auto& result) {
+            ++terminals;
+            terminal = result;
+        }));
+        QTRY_COMPARE_WITH_TIMEOUT(terminals, 1, 1000);
+        QCOMPARE(terminal.status, LocalInferenceStreamStatus::Error);
+        QCOMPARE(terminal.error, LocalInferenceError::Timeout);
+        QCOMPARE(terminal.accumulatedText, QString("prefix"));
+        QCoreApplication::processEvents();
+        QCOMPARE(terminals, 1);
+        QCOMPARE(state->requests.size(), 1);
+    }
+
     void reportedUsageRemainsOptionalAndStrict() {
         QVERIFY(!provider::normalizeOpenAiOutcome(
                      QJsonObject{{"usage", QJsonObject{{"completion_tokens", 1.5}}}})

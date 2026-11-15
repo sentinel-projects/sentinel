@@ -519,6 +519,43 @@ void ModelService::setSelectedModelId(const QString& modelId) {
     emit selectedModelChanged();
 }
 
+ResolvedChatTimeout
+ModelService::chatTimeoutPolicy(const ModelBinding& binding, bool textStreaming,
+                                const InferenceTimeoutProfile* requested) const {
+    const auto profile =
+        requested ? *requested
+                  : InferenceTimeoutProfile::parse(
+                        settings_ ? settings_->inferenceTimeoutProfileJson() : QString{});
+    const auto* descriptor = ProviderRegistry::builtins().endpointDescriptor(
+        binding.providerId, settings_ ? settings_->selectedCloudProvider() : QString{});
+    bool compatible = descriptor && descriptor->protocol == ProviderProtocol::OpenAiCompatible;
+    // SelectedCloud resolves its actual dialect; custom gateway hosts use the
+    // compatible parser, while the two native hosts cannot honor AT-03 timing.
+    if (descriptor && descriptor->protocol == ProviderProtocol::SelectedCloud)
+        compatible = true;
+    const auto host = settings_ ? QUrl(settings_->cloudApiEndpoint()).host().toLower() : QString{};
+    if (binding.providerId == QLatin1String("cloud-api") && settings_ &&
+        settings_->selectedCloudProvider().trimmed().toLower() == QLatin1String("openai") &&
+        (host == QLatin1String("api.anthropic.com") ||
+         host == QLatin1String("generativelanguage.googleapis.com")))
+        compatible = false;
+    auto result = resolveChatTimeout(
+        profile,
+        textStreaming && compatible && !binding.modelId.isEmpty() &&
+            binding.capabilities.streaming == CapabilitySupport::Supported,
+        settings_ ? settings_->localInferenceTimeoutMs() : localInferenceTimeoutMs_);
+    if (descriptor)
+        result.executionClass = descriptor->kind == ProviderKind::Local
+                                    ? InferenceExecutionClass::LocalProvider
+                                    : InferenceExecutionClass::CloudProvider;
+    return result;
+}
+QVariantMap ModelService::chatTimeoutPolicySnapshot() const {
+    ModelBinding binding{selection_.providerId, selection_.modelId};
+    binding.capabilities = capabilities(binding.providerId, binding.modelId);
+    return chatTimeoutPolicy(binding).snapshot();
+}
+
 ModelBindingResolution ModelService::resolve(const ModelSelection& selection) {
     return resolve(selection.providerId, selection.modelId);
 }

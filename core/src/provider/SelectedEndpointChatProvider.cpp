@@ -428,6 +428,10 @@ public:
 
     ChatProviderReply sendRequest(const QString& message,
                                   const ChatRequestOptions& options) override {
+        if (options.inferenceTimeout.requested())
+            return providerFailure(
+                QStringLiteral("Progress timeouts require compatible text streaming."),
+                ChatProviderErrorCategory::CapabilityUnsupported);
         if (auto stopped =
                 stoppedProviderOperation(options.cancellationToken, options.operationDeadline))
             return *stopped;
@@ -674,6 +678,9 @@ public:
     sendMessageStreaming(const QString& message, const std::function<void(const QString&)>& onDelta,
                          const std::shared_ptr<std::atomic_bool>& cancellationToken,
                          const ChatRequestOptions& options) override {
+        if (!options.inferenceTimeout.valid())
+            return providerFailure(QStringLiteral("Invalid inference timeout policy."),
+                                   ChatProviderErrorCategory::RequestRejected);
         if (binding_.capabilities.streaming != CapabilitySupport::Supported) {
             return providerFailure(QStringLiteral("Selected model does not support streaming."),
                                    ChatProviderErrorCategory::CapabilityUnsupported,
@@ -699,11 +706,11 @@ public:
         }
         const auto token = cancellationToken ? cancellationToken : options.cancellationToken;
         const int deadlineMs = options.deadlineMs > 0 ? options.deadlineMs : timeoutMs_;
-        return enforceProviderOperationStop(streamSelected(message, onDelta, token, options.images,
-                                                           deadlineMs, options.maxOutputTokens,
-                                                           options.requireBoundedStreaming,
-                                                           options.operationDeadline),
-                                            token, options.operationDeadline);
+        return enforceProviderOperationStop(
+            streamSelected(message, onDelta, token, options.images, deadlineMs,
+                           options.maxOutputTokens, options.requireBoundedStreaming,
+                           options.operationDeadline, options.inferenceTimeout),
+            token, options.operationDeadline);
     }
 
 private:
@@ -712,13 +719,15 @@ private:
                                      const std::shared_ptr<std::atomic_bool>& cancellationToken,
                                      const QList<ChatImage>& images, int deadlineMs,
                                      int maxOutputTokens, bool requireBoundedStreaming,
-                                     std::shared_ptr<const OperationDeadline> operation = {}) {
+                                     std::shared_ptr<const OperationDeadline> operation = {},
+                                     InferenceTimeoutOptions inferenceTimeout = {}) {
         LocalInferenceRequest request;
         request.prompt = message;
         request.images = images;
         request.options.model = binding_.modelId;
         request.options.timeoutMs = deadlineMs;
         request.options.requireBoundedStreaming = requireBoundedStreaming;
+        request.options.inferenceTimeout = inferenceTimeout;
         if (maxOutputTokens > 0) {
             request.options.maxTokens = maxOutputTokens;
         }

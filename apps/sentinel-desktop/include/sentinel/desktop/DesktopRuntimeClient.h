@@ -94,6 +94,7 @@ private:
     QJsonObject m_settings;
     QHash<QString, QVariantMap> m_settingsStates;
     QSet<QString> m_settingsQueries;
+    qint64 m_productSettingsReadAt = -1;
     QString m_sessionId, m_preferredSession, m_runId, m_state, m_kind, m_output, m_generation;
     QString m_submissionError, m_submissionErrorSummary;
     QString m_extensionActionPending;
