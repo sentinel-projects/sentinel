@@ -117,6 +117,8 @@ int main(int argc, char** argv) {
     QCoreApplication::setApplicationName("Sentinel Settings Certification");
     QStandardPaths::setTestModeEnabled(true);
     const bool daemonE2e = argc == 2 && QString::fromLocal8Bit(argv[1]) == "--daemon-e2e";
+    const bool panelObservation =
+        argc == 3 && QString::fromLocal8Bit(argv[1]) == "--quick-panel-observation";
 #ifndef Q_OS_UNIX
     if (daemonE2e) {
         qInfo("P606_BLOCKED: production daemon peer authentication requires Unix");
@@ -154,14 +156,14 @@ int main(int argc, char** argv) {
         argc == 2 && QString::fromLocal8Bit(argv[1]) == "--accessibility-smoke";
     Phase1Diagnostic diagnostic(phase1Smoke);
     QTemporaryDir temporaryProfile{shortSocketDirTemplate("profile")};
-    if (argc != 2 ||
-        (!daemonE2e && !shellSmoke && !extensionsSmoke && !phase1Smoke && !focusSmoke &&
-         !navigationSmoke && !chatSmoke && !modelsSmoke && !settingsSmoke && !traySmoke &&
-         !accessibilitySmoke && !QDir(QString::fromLocal8Bit(argv[1])).exists()))
+    if ((!panelObservation && argc != 2) ||
+        (!panelObservation && !daemonE2e && !shellSmoke && !extensionsSmoke && !phase1Smoke &&
+         !focusSmoke && !navigationSmoke && !chatSmoke && !modelsSmoke && !settingsSmoke &&
+         !traySmoke && !accessibilitySmoke && !QDir(QString::fromLocal8Bit(argv[1])).exists()))
         return 2;
-    QDir profile(daemonE2e || shellSmoke || extensionsSmoke || phase1Smoke || focusSmoke ||
-                         navigationSmoke || chatSmoke || modelsSmoke || settingsSmoke ||
-                         traySmoke || accessibilitySmoke
+    QDir profile(panelObservation || daemonE2e || shellSmoke || extensionsSmoke || phase1Smoke ||
+                         focusSmoke || navigationSmoke || chatSmoke || modelsSmoke ||
+                         settingsSmoke || traySmoke || accessibilitySmoke
                      ? temporaryProfile.path()
                      : QString::fromLocal8Bit(argv[1]));
     sentinel::core::AppSettings settings(
@@ -214,10 +216,12 @@ int main(int argc, char** argv) {
     translate();
     QObject::connect(&settings, &sentinel::core::AppSettings::appLanguageChanged, &app, translate);
     // Match production bootstrap: translator changes precede viewmodel language signals.
-    sentinel::desktop::DaemonClient transport(profile.filePath("absent.sock"), 500, 10000);
+    sentinel::desktop::DaemonClient transport(panelObservation ? QString::fromLocal8Bit(argv[2])
+                                                               : profile.filePath("absent.sock"),
+                                              500, 10000);
     sentinel::desktop::DesktopRuntimeClient remoteRuntime(transport);
     std::unique_ptr<sentinel::desktop::DesktopShellViewModel> shell =
-        (shellSmoke || daemonE2e)
+        (shellSmoke || daemonE2e || panelObservation)
             ? std::make_unique<sentinel::desktop::DesktopShellViewModel>(remoteRuntime, modes,
                                                                          settings)
             : std::make_unique<sentinel::desktop::DesktopShellViewModel>(*controller, modes,
@@ -261,7 +265,7 @@ int main(int argc, char** argv) {
                              "ollamaModelDetailFetcher", "ollamaPuller", "daemonClient"})
         engine.rootContext()->setContextProperty(name, &emptyLibrary);
     diagnostic.stage("qml-engine-load");
-    if (shellSmoke || daemonE2e) {
+    if (shellSmoke || daemonE2e || panelObservation) {
         engine.rootContext()->setContextProperty("daemonClient", &transport);
         engine.loadFromModule("Sentinel.Desktop", "Main");
     } else
@@ -276,6 +280,32 @@ int main(int argc, char** argv) {
     diagnostic.stage("qml-engine-loaded");
     if (engine.rootObjects().isEmpty())
         return 3;
+    if (panelObservation) {
+        auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().first());
+        auto* panel = engine.rootObjects().first()->findChild<QQuickWindow*>("sentinelQuickPanel");
+        if (!window || !panel)
+            return 249;
+        window->hide();
+        panel->resize(580, 442);
+        panel->show();
+        auto* readyTimer = new QTimer(&app);
+        QElapsedTimer deadline;
+        deadline.start();
+        QObject::connect(readyTimer, &QTimer::timeout, &app, [&, panel, readyTimer, deadline] {
+            if (remoteRuntime.ready() && transport.daemonReachable() && panel->isVisible()) {
+                std::fprintf(stderr, "PANEL_OBSERVATION_READY %d %d\n", panel->width(),
+                             panel->height());
+                std::fflush(stderr);
+                readyTimer->stop();
+            } else if (deadline.elapsed() > 10000) {
+                std::fprintf(stderr, "PANEL_OBSERVATION_FAILED readiness\n");
+                std::fflush(stderr);
+                readyTimer->stop();
+                app.exit(250);
+            }
+        });
+        readyTimer->start(50);
+    }
     if (daemonE2e) {
         auto* window = qobject_cast<QQuickWindow*>(engine.rootObjects().first());
         QTimer::singleShot(250, &app, [&, window] {

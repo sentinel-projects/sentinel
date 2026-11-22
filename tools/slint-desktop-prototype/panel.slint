@@ -1,0 +1,1218 @@
+import { Button, CheckBox, ComboBox, LineEdit, Palette, TextEdit } from "std-widgets.slint";
+
+export component Panel inherits Window {
+    title: root.compact ? "Sentinel Quick Panel" : "Sentinel";
+    preferred-width: root.compact ? 580px : 1160px;
+    preferred-height: root.compact ? 500px : 780px;
+    min-width: root.compact ? 350px : 640px;
+    min-height: root.compact ? 340px : 480px;
+    background: Palette.background;
+    changed theme-name => {
+        Palette.color-scheme = root.theme-name == "dark" ? ColorScheme.dark
+            : (root.theme-name == "light" ? ColorScheme.light : ColorScheme.unknown);
+    }
+
+    in property <bool> compact;
+    in property <string> active-page: "chat";
+    in-out property <string> settings-category: "general";
+    in property <string> endpoint;
+    in property <string> theme-name: "system";
+    in property <string> theme-status: "Loading theme preference…";
+    in-out property <string> response-profile-instructions;
+    in property <string> response-profile-status;
+    in property <string> provider-diagnostics;
+    in property <string> provider-diagnostics-status;
+    in property <bool> provider-diagnostics-capable;
+    in property <bool> runtime-projection-capable;
+    in property <string> runtime-projection-status;
+    in property <string> runtime-projection-view;
+    in property <bool> workspace-runtime-capable;
+    in property <string> workspace-runtime-status;
+    in property <string> workspace-runtime-view;
+    in property <bool> workspace-revocation-capable;
+    in property <bool> workspace-access-known;
+    in property <bool> workspace-access-enabled;
+    in property <string> workspace-access-status;
+    in property <bool> desktop-settings-capable;
+    in property <bool> dev-backup-capable;
+    in property <bool> dev-backup-set-capable;
+    in property <string> dev-backup-status;
+    in-out property <string> dev-backup-path;
+    in-out property <int> dev-backup-domain: 0;
+    in property <bool> workspace-files-capable;
+    in property <string> workspace-files-view;
+    in property <string> workspace-files-status;
+    in property <string> workspace-files-root;
+    in property <bool> workspace-files-truncated;
+    in property <[string]> attachment-files;
+    in property <int> selected-attachment-candidate: -1;
+    in property <[string]> attachments;
+    in property <int> selected-attachment: -1;
+    in property <string> attachment-status;
+    in property <bool> workspace-changes-capable;
+    in property <string> workspace-changes-view;
+    in property <string> workspace-changes-status;
+    in property <string> workspace-changes-root;
+    in property <bool> workspace-changes-truncated;
+    in property <bool> workspace-selection-capable;
+    in property <[string]> workspaces;
+    in property <int> selected-workspace: -1;
+    in property <string> workspace-selection-status;
+    in property <bool> extension-catalog-capable;
+    in property <string> extension-catalog-status;
+    in property <string> extension-catalog-view;
+    in property <bool> extension-catalog-truncated;
+    in property <bool> memory-capable;
+    in property <bool> chat-revisions-capable;
+    in property <bool> session-management-capable;
+    in property <bool> can-regenerate-latest;
+    in property <bool> can-retry-latest;
+    in property <[string]> memory-entries;
+    in property <int> selected-memory: -1;
+    in property <string> memory-status;
+    in property <bool> memory-item-selected;
+    in property <bool> memory-next-page;
+    in property <string> status: "Connecting…";
+    in property <string> transcript;
+    in property <[string]> sessions;
+    in property <int> selected-session: -1;
+    in-out property <string> session-title;
+    in-out property <string> session-delete-confirmation;
+    in property <[string]> models;
+    in property <int> selected-model: -1;
+    in property <string> model-status: "Loading saved model selection…";
+    in property <bool> ollama-helper-capable;
+    in property <bool> ollama-pulling;
+    in property <string> ollama-active-model;
+    in property <string> ollama-progress-text;
+    in property <string> ollama-helper-status;
+    in-out property <string> ollama-model-input;
+    in-out property <string> ollama-remove-confirmation;
+    in property <string> history-status;
+    in property <bool> agent-capable;
+    in property <bool> agent-restricted;
+    in property <bool> agent-multi-file;
+    in property <bool> agent-directory-capable;
+    in property <bool> agent-create-capable;
+    in property <bool> agent-process-capable;
+    in property <bool> agent-classify-capable;
+    in property <bool> agent-classify-mode;
+    in property <bool> agent-search-capable;
+    in property <bool> agent-search-mode;
+    in property <string> agent-search-evidence;
+    in property <bool> agent-edit-capable;
+    in property <bool> agent-edit-mode;
+    in property <string> agent-edit-evidence;
+    in property <bool> agent-glob-capable;
+    in property <bool> agent-glob-mode;
+    in property <string> agent-glob-evidence;
+    in property <bool> agent-read-plan-capable;
+    in property <bool> agent-read-plan-mode;
+    in property <string> agent-read-plan-evidence;
+    in property <bool> agent-work-plan-capable;
+    in property <bool> agent-work-plan-mode;
+    in property <string> agent-work-plan-evidence;
+    in property <bool> agent-process-mode;
+    in property <string> agent-process-program: "/usr/bin/wc";
+    in property <bool> agent-history-capable;
+    in property <string> agent-history-status;
+    in property <string> agent-history-view;
+    in property <string> agent-plan-lifecycle;
+    in property <[string]> agent-runs;
+    in property <int> selected-agent-run: -1;
+    in property <bool> agent-runs-has-more;
+    in property <bool> agent-directory-mode;
+    in property <bool> agent-create-mode;
+    in property <bool> agent-include-hidden;
+    in property <bool> agent-mode;
+    in property <string> agent-label;
+    in property <string> agent-status;
+    in property <string> composer-placeholder: "Message";
+    in property <string> agent-activity;
+    in property <string> agent-progress;
+    in property <string> approval-detail;
+    in property <bool> approval-pending;
+    in property <bool> approval-capable;
+    in property <bool> connected;
+    in property <bool> running;
+    in property <bool> waiting: true;
+    in-out property <string> draft;
+    in-out property <string> agent-paths;
+    in-out property <string> agent-content;
+    in-out property <string> agent-search-path;
+    in-out property <string> agent-search-pattern;
+    in-out property <string> agent-edit-path;
+    in-out property <string> agent-edit-expected;
+    in-out property <string> agent-edit-proposed;
+    in-out property <string> agent-glob-path;
+    in-out property <string> agent-glob-pattern;
+    in-out property <string> agent-read-plan-steps;
+    in-out property <string> agent-work-plan-steps;
+    in-out property <string> memory-key;
+    in-out property <string> memory-value;
+    in-out property <string> memory-delete-confirmation;
+
+    callback reconnect();
+    callback quit-app();
+    callback navigate(string);
+    callback set-theme(int);
+    callback save-response-profile(string);
+    callback refresh-provider-diagnostics();
+    callback refresh-settings-status();
+    callback set-dev-workspace-access(bool);
+    callback export-dev-backup(int, string);
+    callback refresh-memory();
+    callback select-memory(int);
+    callback new-memory();
+    callback save-memory();
+    callback delete-memory();
+    callback load-more-memory();
+    callback refresh-sessions();
+    callback select-session(int);
+    callback rename-session(string);
+    callback delete-session(string);
+    callback refresh-models();
+    callback select-model(int);
+    callback refresh-workspace-files();
+    callback refresh-attachment-files();
+    callback select-attachment-candidate(int);
+    callback add-attachment();
+    callback select-attachment(int);
+    callback remove-attachment();
+    callback clear-attachments();
+    callback refresh-workspace-changes();
+    callback select-workspace(int);
+    callback refresh-extensions();
+    callback refresh-ollama-helper();
+    callback pull-ollama-model(string);
+    callback cancel-ollama-pull();
+    callback remove-ollama-model(string, string);
+    callback set-agent-mode(bool);
+    callback set-agent-directory-mode(bool);
+    callback set-agent-create-mode(bool);
+    callback set-agent-include-hidden(bool);
+    callback set-agent-process-mode(bool);
+    callback set-agent-process-program(int);
+    callback set-agent-classify-mode(bool);
+    callback set-agent-search-mode(bool);
+    callback set-agent-edit-mode(bool);
+    callback set-agent-glob-mode(bool);
+    callback set-agent-read-plan-mode(bool);
+    callback set-agent-work-plan-mode(bool);
+    callback refresh-agent-history();
+    callback select-agent-run(int);
+    callback load-older-agent-runs();
+    callback respond-approval(bool);
+    callback new-session();
+    callback send(string);
+    callback stop();
+    callback regenerate-latest();
+    callback retry-latest();
+    callback edit-latest(string);
+
+    changed active-page => {
+        if root.active-page == "chat" || root.active-page == "agent" {
+            root.focus-composer();
+        }
+    }
+    changed connected => {
+        if root.connected && (root.active-page == "chat" || root.active-page == "agent") {
+            root.focus-composer();
+        }
+    }
+    public function focus-composer() {
+        if root.active-page == "agent" && root.agent-mode && root.agent-restricted {
+            if root.agent-search-mode {
+                agent-search-pattern-input.focus();
+            } else if root.agent-edit-mode {
+                agent-edit-path-input.focus();
+            } else if root.agent-glob-mode {
+                agent-glob-pattern-input.focus();
+            } else if root.agent-read-plan-mode {
+                agent-read-plan-editor.focus();
+            } else if root.agent-work-plan-mode {
+                agent-work-plan-editor.focus();
+            } else {
+                agent-composer.focus();
+            }
+        } else {
+            composer.focus();
+        }
+    }
+
+    keyboard-scope := FocusScope {
+        capture-key-pressed(event) => {
+            if event.modifiers.control && event.text == "n" {
+                root.navigate("chat");
+                root.new-session();
+                EventResult.accept
+            } else if event.modifiers.control && event.text == "w" {
+                root.quit-app();
+                EventResult.accept
+            } else if event.modifiers.control && event.text == Key.Return {
+                if root.connected && !root.running && !root.waiting
+                    && (root.active-page == "chat" || (root.active-page == "agent" && root.agent-capable))
+                    && (root.agent-mode && root.agent-restricted
+                        ? (root.agent-work-plan-mode || root.agent-read-plan-mode
+                            ? (root.agent-work-plan-mode ? root.agent-work-plan-steps != "" : root.agent-read-plan-steps != "")
+                            : (root.agent-search-mode
+                            ? root.agent-search-path != "" && root.agent-search-pattern != ""
+                            : (root.agent-edit-mode
+                                ? root.agent-edit-path != "" && root.agent-edit-expected != ""
+                                : (root.agent-glob-mode
+                                    ? root.agent-glob-path != "" && root.agent-glob-pattern != ""
+                                    : root.agent-paths != ""))))
+                        : root.draft != "") {
+                    root.send(root.agent-mode && root.agent-restricted
+                        ? (root.agent-work-plan-mode ? root.agent-work-plan-steps
+                            : (root.agent-read-plan-mode ? root.agent-read-plan-steps
+                            : (root.agent-search-mode ? root.agent-search-pattern
+                            : (root.agent-edit-mode ? root.agent-edit-path
+                                : (root.agent-glob-mode ? root.agent-glob-pattern : root.agent-paths)))))
+                        : root.draft);
+                }
+                EventResult.accept
+            } else if event.text == Key.Escape && root.running && !root.waiting {
+                root.stop();
+                EventResult.accept
+            } else {
+                EventResult.reject
+            }
+        }
+        VerticalLayout {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        padding: root.compact ? 12px : 20px;
+        spacing: 12px;
+
+        if !root.compact && root.width >= 820px : HorizontalLayout {
+            spacing: 8px;
+            Text { text: "SENTINEL"; font-size: 18px; color: Palette.foreground; vertical-alignment: center; }
+            Button { text: "Chat"; clicked => { root.navigate("chat"); } }
+            Button { text: "Models"; clicked => { root.navigate("models"); } }
+            Button { text: "Agent"; enabled: root.agent-capable || root.agent-history-capable; clicked => { root.navigate("agent"); } }
+            if root.workspace-files-capable || root.workspace-changes-capable || root.workspace-selection-capable : Button {
+                text: "Workspace";
+                enabled: root.connected && !root.running && !root.waiting;
+                clicked => { root.navigate("workspace"); }
+            }
+            Button { text: "Memory"; enabled: root.memory-capable; clicked => { root.navigate("memory"); } }
+            if root.extension-catalog-capable : Button { text: "Extensions"; clicked => { root.navigate("extensions"); } }
+            Button { text: "Settings"; clicked => { root.navigate("settings"); } }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: root.connected ? "Connected" : "Disconnected"; vertical-alignment: center; }
+            Button { text: "Reconnect"; enabled: !root.waiting; clicked => { root.reconnect(); } }
+        }
+        if !root.compact && root.width < 820px : VerticalLayout {
+            spacing: 4px;
+            HorizontalLayout {
+                spacing: 6px;
+                Text { text: "SENTINEL"; font-size: 16px; color: Palette.foreground; vertical-alignment: center; }
+                Button { text: "Chat"; clicked => { root.navigate("chat"); } }
+                Button { text: "Models"; clicked => { root.navigate("models"); } }
+                Button { text: "Agent"; enabled: root.agent-capable || root.agent-history-capable; clicked => { root.navigate("agent"); } }
+                if root.workspace-files-capable || root.workspace-changes-capable || root.workspace-selection-capable : Button {
+                    text: "Workspace";
+                    enabled: root.connected && !root.running && !root.waiting;
+                    clicked => { root.navigate("workspace"); }
+                }
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                Button { text: "Memory"; enabled: root.memory-capable; clicked => { root.navigate("memory"); } }
+                if root.extension-catalog-capable : Button { text: "Extensions"; clicked => { root.navigate("extensions"); } }
+                Button { text: "Settings"; clicked => { root.navigate("settings"); } }
+                Rectangle { horizontal-stretch: 1; }
+                Text { text: root.connected ? "Connected" : "Disconnected"; vertical-alignment: center; }
+                Button { text: "Reconnect"; enabled: !root.waiting; clicked => { root.reconnect(); } }
+            }
+        }
+        if !root.compact : Text {
+            text: root.active-page == "chat" ? "Chat"
+                : (root.active-page == "models" ? "Models"
+                : (root.active-page == "agent" ? "Agent"
+                : (root.active-page == "workspace" ? "Workspace"
+                : (root.active-page == "extensions" ? "Extensions" : "Settings"))));
+            font-size: 24px;
+            color: Palette.foreground;
+        }
+        Text { text: root.status; color: Palette.foreground; wrap: word-wrap; }
+
+        if root.compact || root.active-page == "chat" : HorizontalLayout {
+            spacing: 8px;
+            ComboBox {
+                model: root.sessions;
+                current-index: root.selected-session;
+                enabled: root.connected && !root.running && !root.waiting && root.sessions.length > 0;
+                accessible-label: "Saved sessions";
+                selected(value) => { root.select-session(self.current-index); }
+            }
+            Button { text: "Refresh"; enabled: root.connected && !root.running && !root.waiting; clicked => { root.refresh-sessions(); } }
+            Button { text: "New"; enabled: root.connected && !root.running && !root.waiting; clicked => { root.new-session(); } }
+        }
+        if root.active-page == "chat" && !root.compact && root.session-management-capable && root.width >= 820px : HorizontalLayout {
+            spacing: 8px;
+            LineEdit {
+                text <=> root.session-title;
+                placeholder-text: "Chat session title";
+                accessible-label: "Current Chat session title";
+                enabled: root.connected && !root.running && !root.waiting && root.selected-session >= 0;
+            }
+            Button { text: "Rename"; enabled: root.connected && !root.running && !root.waiting && root.selected-session >= 0; clicked => { root.rename-session(root.session-title); } }
+            LineEdit {
+                text <=> root.session-delete-confirmation;
+                placeholder-text: "Type DELETE to remove this session";
+                accessible-label: "Confirm permanent Chat session deletion by typing DELETE";
+                enabled: root.connected && !root.running && !root.waiting && root.selected-session >= 0;
+            }
+            Button { text: "Delete permanently"; enabled: root.connected && !root.running && !root.waiting && root.selected-session >= 0 && root.session-delete-confirmation == "DELETE"; clicked => { root.delete-session(root.session-delete-confirmation); } }
+        }
+        if root.active-page == "chat" && !root.compact && root.session-management-capable && root.width < 820px : VerticalLayout {
+            spacing: 6px;
+            LineEdit {
+                text <=> root.session-title;
+                placeholder-text: "Chat session title";
+                accessible-label: "Current Chat session title";
+                enabled: root.connected && !root.running && !root.waiting && root.selected-session >= 0;
+            }
+            Button { text: "Rename"; enabled: root.connected && !root.running && !root.waiting && root.selected-session >= 0; clicked => { root.rename-session(root.session-title); } }
+            LineEdit {
+                text <=> root.session-delete-confirmation;
+                placeholder-text: "Type DELETE to remove this session";
+                accessible-label: "Confirm permanent Chat session deletion by typing DELETE";
+                enabled: root.connected && !root.running && !root.waiting && root.selected-session >= 0;
+            }
+            Button { text: "Delete permanently"; enabled: root.connected && !root.running && !root.waiting && root.selected-session >= 0 && root.session-delete-confirmation == "DELETE"; clicked => { root.delete-session(root.session-delete-confirmation); } }
+        }
+        if root.active-page == "chat" && !root.compact && root.workspace-files-capable : VerticalLayout {
+            spacing: 6px;
+            Text { text: "Text attachments"; font-size: 18px; }
+            Text { text: "Choose only from the authorized workspace snapshot. Up to 4 text files, 8 KiB each and 32 KiB total. The daemon validates paths, text content and limits before a request is accepted."; wrap: word-wrap; }
+            Text { text: root.attachment-status; wrap: word-wrap; }
+            if root.width >= 820px : HorizontalLayout {
+                spacing: 8px;
+                ComboBox {
+                    model: root.attachment-files;
+                    current-index: root.selected-attachment-candidate;
+                    enabled: root.connected && !root.running && !root.waiting && root.attachment-files.length > 0;
+                    accessible-label: "Authorized workspace file to attach";
+                    selected(value) => { root.select-attachment-candidate(self.current-index); }
+                }
+                Button { text: "Refresh files"; enabled: root.connected && !root.running && !root.waiting; clicked => { root.refresh-attachment-files(); } }
+                Button { text: "Add"; enabled: root.connected && !root.running && !root.waiting && root.selected-session >= 0 && root.attachment-files.length > 0 && root.attachments.length < 4; clicked => { root.add-attachment(); } }
+                ComboBox {
+                    model: root.attachments;
+                    current-index: root.selected-attachment;
+                    enabled: root.connected && !root.running && !root.waiting && root.attachments.length > 0;
+                    accessible-label: "Selected Chat attachments";
+                    selected(value) => { root.select-attachment(self.current-index); }
+                }
+                Button { text: "Remove"; enabled: root.connected && !root.running && !root.waiting && root.selected-attachment >= 0; clicked => { root.remove-attachment(); } }
+                Button { text: "Clear"; enabled: root.connected && !root.running && !root.waiting && root.attachments.length > 0; clicked => { root.clear-attachments(); } }
+            }
+            if root.width < 820px : VerticalLayout {
+                spacing: 6px;
+                ComboBox {
+                    model: root.attachment-files;
+                    current-index: root.selected-attachment-candidate;
+                    enabled: root.connected && !root.running && !root.waiting && root.attachment-files.length > 0;
+                    accessible-label: "Authorized workspace file to attach";
+                    selected(value) => { root.select-attachment-candidate(self.current-index); }
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    Button { text: "Refresh files"; enabled: root.connected && !root.running && !root.waiting; clicked => { root.refresh-attachment-files(); } }
+                    Button { text: "Add"; enabled: root.connected && !root.running && !root.waiting && root.selected-session >= 0 && root.attachment-files.length > 0 && root.attachments.length < 4; clicked => { root.add-attachment(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                    Button { text: "Remove"; enabled: root.connected && !root.running && !root.waiting && root.selected-attachment >= 0; clicked => { root.remove-attachment(); } }
+                    Button { text: "Clear"; enabled: root.connected && !root.running && !root.waiting && root.attachments.length > 0; clicked => { root.clear-attachments(); } }
+                }
+                ComboBox {
+                    model: root.attachments;
+                    current-index: root.selected-attachment;
+                    enabled: root.connected && !root.running && !root.waiting && root.attachments.length > 0;
+                    accessible-label: "Selected Chat attachments";
+                    selected(value) => { root.select-attachment(self.current-index); }
+                }
+            }
+        }
+        if root.compact || root.active-page == "models" : HorizontalLayout {
+            spacing: 8px;
+            ComboBox {
+                model: root.models;
+                current-index: root.selected-model;
+                enabled: root.connected && !root.running && !root.waiting && root.models.length > 0;
+                accessible-label: "Model";
+                selected(value) => { root.select-model(self.current-index); }
+            }
+            Button { text: "Refresh models"; enabled: root.connected && !root.running && !root.waiting; clicked => { root.refresh-models(); } }
+        }
+        if root.compact || root.active-page == "models" : Text { text: root.model-status; wrap: word-wrap; }
+        if root.active-page == "models" && !root.compact && root.ollama-helper-capable : VerticalLayout {
+            spacing: 8px;
+            Text { text: "Ollama model operations"; font-size: 18px; }
+            Text { text: "Pull and remove models on the configured local Ollama service. Catalog availability does not mean a model is loaded."; wrap: word-wrap; }
+            Text { text: root.ollama-active-model != "" ? "Active pull: " + root.ollama-active-model : "No active pull"; wrap: word-wrap; }
+            Text { text: root.ollama-helper-status + (root.ollama-pulling ? " · " + root.ollama-progress-text : ""); wrap: word-wrap; }
+            HorizontalLayout {
+                spacing: 8px;
+                LineEdit { text <=> root.ollama-model-input; placeholder-text: "Ollama model ID"; accessible-label: "Ollama model ID for pull or removal"; enabled: root.connected && !root.running && !root.waiting; }
+                Button { text: "Pull"; enabled: root.connected && root.ollama-helper-capable && !root.running && !root.ollama-pulling && !root.waiting && root.ollama-model-input != ""; clicked => { root.pull-ollama-model(root.ollama-model-input); } }
+                Button { text: "Refresh status"; enabled: root.connected && !root.running && !root.waiting; clicked => { root.refresh-ollama-helper(); } }
+                if root.ollama-pulling : Button { text: "Cancel local wait"; enabled: root.connected && !root.running && !root.waiting; clicked => { root.cancel-ollama-pull(); } }
+            }
+            if !root.ollama-pulling : HorizontalLayout {
+                spacing: 8px;
+                LineEdit { text <=> root.ollama-remove-confirmation; placeholder-text: "Type exact model ID to confirm removal"; accessible-label: "Confirm Ollama model removal by entering the exact model ID"; enabled: root.connected && !root.running && !root.waiting; }
+                Button { text: "Remove model"; enabled: root.connected && !root.running && !root.waiting && root.ollama-model-input != "" && root.ollama-remove-confirmation == root.ollama-model-input; clicked => { root.remove-ollama-model(root.ollama-model-input, root.ollama-remove-confirmation); } }
+            }
+            Text { text: "Cancel ends only Sentinel's local wait; Ollama may continue the pull. Refresh model status and catalog before trying again."; wrap: word-wrap; }
+        }
+        if root.active-page == "workspace" && !root.compact && root.workspace-files-capable : VerticalLayout {
+            spacing: 8px;
+            Text { text: "Authorized workspace snapshot"; font-size: 18px; }
+            Text {
+                text: "Read-only recursive listing of regular files from the explicitly configured workspace. Hidden entries and symlinks are excluded; file contents are not loaded.";
+                wrap: word-wrap;
+            }
+            Text { text: root.workspace-files-status; wrap: word-wrap; }
+            if root.workspace-files-root != "" : Text { text: "Root: " + root.workspace-files-root; wrap: word-wrap; }
+            if root.workspace-files-truncated : Text {
+                text: "This snapshot is truncated. Omitted paths may exist.";
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Button {
+                    text: "Refresh snapshot";
+                    enabled: root.connected && root.workspace-files-capable && !root.running && !root.waiting;
+                    clicked => { root.refresh-workspace-files(); }
+                }
+            }
+            TextEdit {
+                text: root.workspace-files-view;
+                placeholder-text: "Select Refresh snapshot to inspect authorized workspace paths.";
+                read-only: true;
+                wrap: word-wrap;
+                vertical-stretch: 1;
+                accessible-label: "Read-only authorized workspace file snapshot";
+            }
+        }
+        if root.active-page == "workspace" && !root.compact && root.workspace-selection-capable : VerticalLayout {
+            spacing: 8px;
+            Text { text: "Configured workspace"; font-size: 18px; }
+            Text { text: "Selection is limited to daemon-configured roots. Selecting a workspace cannot grant access to an unconfigured path."; wrap: word-wrap; }
+            Text { text: root.workspace-selection-status; wrap: word-wrap; }
+            ComboBox {
+                model: root.workspaces;
+                current-index: root.selected-workspace;
+                enabled: root.connected && !root.running && !root.waiting && root.workspaces.length > 0;
+                accessible-label: "Configured workspace selection";
+                selected(value) => { root.select-workspace(self.current-index); }
+            }
+        }
+        if root.active-page == "workspace" && !root.compact && root.workspace-changes-capable : VerticalLayout {
+            spacing: 8px;
+            Text { text: "Accepted Agent run comparison"; font-size: 18px; }
+            Text {
+                text: "Changes are compared with the in-memory baseline captured immediately before an accepted Agent run. This is not a complete filesystem diff; deletions are not inferred.";
+                wrap: word-wrap;
+            }
+            Text { text: root.workspace-changes-status; wrap: word-wrap; }
+            if root.workspace-changes-root != "" : Text { text: "Root: " + root.workspace-changes-root; wrap: word-wrap; }
+            if root.workspace-changes-truncated : Text {
+                text: "This comparison is truncated. Omitted changes may exist.";
+                wrap: word-wrap;
+            }
+            Button {
+                text: "Refresh comparison";
+                enabled: root.connected && root.workspace-changes-capable && !root.running && !root.waiting;
+                clicked => { root.refresh-workspace-changes(); }
+            }
+            TextEdit {
+                text: root.workspace-changes-view;
+                placeholder-text: "Select Refresh comparison to check for changes from the last accepted Agent run.";
+                read-only: true;
+                wrap: word-wrap;
+                vertical-stretch: 1;
+                accessible-label: "Read-only accepted-run workspace comparison";
+            }
+        }
+        if root.active-page == "extensions" && !root.compact && root.extension-catalog-capable : VerticalLayout {
+            spacing: 8px;
+            Text { text: "Extension catalog"; font-size: 18px; }
+            Text {
+                text: "Read-only metadata from the explicitly configured local plugin root. This view does not load, enable, or start extensions or tools.";
+                wrap: word-wrap;
+            }
+            Text { text: root.extension-catalog-status; wrap: word-wrap; }
+            if root.extension-catalog-truncated : Text {
+                text: "This inventory is incomplete; unsupported, invalid, or omitted entries may exist.";
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Button {
+                    text: "Refresh catalog";
+                    enabled: root.connected && root.extension-catalog-capable && !root.running && !root.waiting;
+                    accessible-label: "Refresh read-only extension catalog";
+                    clicked => { root.refresh-extensions(); }
+                }
+            }
+            TextEdit {
+                text: root.extension-catalog-view;
+                placeholder-text: "Refresh the catalog to inspect configured extension and tool metadata.";
+                read-only: true;
+                wrap: word-wrap;
+                vertical-stretch: 1;
+                accessible-label: "Read-only extension and tool inventory";
+            }
+        }
+        if root.compact || root.active-page == "agent" : HorizontalLayout {
+            spacing: 8px;
+            CheckBox {
+                text: root.agent-label;
+                checked: root.agent-mode;
+                enabled: root.connected && root.agent-capable && !root.running && !root.waiting;
+                accessible-label: "Agent mode";
+                toggled => { root.set-agent-mode(self.checked); }
+            }
+            Text { text: root.agent-status; wrap: word-wrap; }
+        }
+        if (root.agent-mode && root.agent-create-capable && !root.agent-classify-mode && (root.compact || root.active-page == "agent")) : CheckBox {
+            text: "Create a new file";
+            checked: root.agent-create-mode;
+            enabled: root.connected && !root.running && !root.waiting;
+            toggled => { root.set-agent-create-mode(self.checked); }
+        }
+        if (root.agent-mode && root.agent-classify-capable && !root.agent-read-plan-mode && (root.compact || root.active-page == "agent")) : VerticalLayout {
+            CheckBox {
+                text: "Classify goal into approved file reads";
+                checked: root.agent-classify-mode;
+                enabled: root.connected && !root.running && !root.waiting;
+                accessible-label: "Classify a goal into approved read-only file inspections";
+                toggled => { root.set-agent-classify-mode(self.checked); }
+            }
+            if root.agent-classify-mode : Text {
+                text: "This mode proposes up to four read-only file inspections. You approve every file. The original goal is not assessed; coverage is unknown.";
+                wrap: word-wrap;
+            }
+        }
+        if (root.agent-mode && root.agent-search-capable && !root.agent-read-plan-mode && (root.compact || root.active-page == "agent")) : VerticalLayout {
+            CheckBox {
+                text: "Search workspace text";
+                checked: root.agent-search-mode;
+                enabled: root.connected && !root.running && !root.waiting;
+                accessible-label: "Search workspace using literal text only";
+                toggled => { root.set-agent-search-mode(self.checked); }
+            }
+        }
+        agent-search-path-input := LineEdit {
+            visible: root.agent-mode && root.agent-search-capable && root.agent-search-mode && (root.compact || root.active-page == "agent");
+            text <=> root.agent-search-path;
+            placeholder-text: "Workspace-relative folder (default .)";
+            accessible-label: "Folder to search, relative to the authorized workspace";
+            enabled: root.connected && !root.running && !root.waiting;
+        }
+        agent-search-pattern-input := LineEdit {
+            visible: root.agent-mode && root.agent-search-capable && root.agent-search-mode && (root.compact || root.active-page == "agent");
+            text <=> root.agent-search-pattern;
+            placeholder-text: "Literal text to find";
+            accessible-label: "Literal search text; regex syntax is not supported";
+            enabled: root.connected && !root.running && !root.waiting;
+        }
+        if root.agent-mode && root.agent-search-capable && root.agent-search-mode && (root.compact || root.active-page == "agent") : Text {
+            text: "Read-only recursive search. Hidden entries and symbolic links are excluded. Regex syntax is rejected; you must approve the search.";
+            wrap: word-wrap;
+        }
+        if (root.agent-mode && root.agent-edit-capable && !root.agent-read-plan-mode && (root.compact || root.active-page == "agent")) : CheckBox {
+            text: "Edit an existing file";
+            checked: root.agent-edit-mode;
+            enabled: root.connected && !root.running && !root.waiting;
+            accessible-label: "Prepare an exact approved replacement for an existing workspace file";
+            toggled => { root.set-agent-edit-mode(self.checked); }
+        }
+        agent-edit-path-input := LineEdit {
+            visible: root.agent-mode && root.agent-edit-capable && root.agent-edit-mode && (root.compact || root.active-page == "agent");
+            text <=> root.agent-edit-path;
+            placeholder-text: "Existing workspace-relative file path";
+            accessible-label: "Existing file path relative to the authorized workspace";
+            enabled: root.connected && !root.running && !root.waiting;
+        }
+        if root.agent-mode && root.agent-edit-capable && root.agent-edit-mode && (root.compact || root.active-page == "agent") : Text {
+            text: "Expected text is the complete current file and must match exactly. Proposed text replaces it. Both appear in the required approval. Existing files only; no creation.";
+            wrap: word-wrap;
+        }
+        if root.agent-mode && root.agent-edit-capable && root.agent-edit-mode && (root.compact || root.active-page == "agent") : TextEdit {
+            text <=> root.agent-edit-expected;
+            placeholder-text: "Expected current file text (complete preimage)";
+            accessible-label: "Expected complete current file text for exact-match validation";
+            read-only: !root.connected || root.running || root.waiting;
+            wrap: word-wrap;
+            min-height: 90px;
+        }
+        if root.agent-mode && root.agent-edit-capable && root.agent-edit-mode && (root.compact || root.active-page == "agent") : TextEdit {
+            text <=> root.agent-edit-proposed;
+            placeholder-text: "Proposed replacement text (may be empty)";
+            accessible-label: "Proposed complete replacement file text";
+            read-only: !root.connected || root.running || root.waiting;
+            wrap: word-wrap;
+            min-height: 90px;
+        }
+        if (root.agent-mode && root.agent-glob-capable && !root.agent-read-plan-mode && (root.compact || root.active-page == "agent")) : CheckBox {
+            text: "Find files by name pattern";
+            checked: root.agent-glob-mode;
+            enabled: root.connected && !root.running && !root.waiting;
+            accessible-label: "Search file names recursively using a bounded basename pattern";
+            toggled => { root.set-agent-glob-mode(self.checked); }
+        }
+        agent-glob-path-input := LineEdit {
+            visible: root.agent-mode && root.agent-glob-capable && root.agent-glob-mode && (root.compact || root.active-page == "agent");
+            text <=> root.agent-glob-path;
+            placeholder-text: "Workspace-relative folder (default .)";
+            accessible-label: "Folder to search for file names";
+            enabled: root.connected && !root.running && !root.waiting;
+        }
+        agent-glob-pattern-input := LineEdit {
+            visible: root.agent-mode && root.agent-glob-capable && root.agent-glob-mode && (root.compact || root.active-page == "agent");
+            text <=> root.agent-glob-pattern;
+            placeholder-text: "Basename pattern, for example *.rs";
+            accessible-label: "Case-sensitive file basename pattern; star and question mark are wildcards";
+            enabled: root.connected && !root.running && !root.waiting;
+        }
+        if root.agent-mode && root.agent-glob-capable && root.agent-glob-mode && (root.compact || root.active-page == "agent") : Text {
+            text: "Recursive and case-sensitive. Only * and ? act as wildcards. Hidden entries and symbolic links are excluded; you must approve each search.";
+            wrap: word-wrap;
+        }
+        if (root.agent-mode && root.agent-read-plan-capable && !root.agent-work-plan-mode && (root.compact || root.active-page == "agent")) : VerticalLayout {
+            CheckBox {
+                text: "Run an explicit read-only plan";
+                checked: root.agent-read-plan-mode;
+                enabled: root.connected && !root.running && !root.waiting;
+                accessible-label: "Enable a bounded sequence of read-only workspace steps";
+                toggled => { root.set-agent-read-plan-mode(self.checked); }
+            }
+        }
+        agent-read-plan-editor := TextEdit {
+            visible: root.agent-mode && root.agent-read-plan-capable && root.agent-read-plan-mode && !root.agent-work-plan-mode && (root.compact || root.active-page == "agent");
+            text <=> root.agent-read-plan-steps;
+            placeholder-text: "[ {\"task\":{\"operation\":\"inspect-file\",\"path\":\"README.md\"},\"dependsOn\":[]} ]";
+            accessible-label: "JSON list of one to four read-only steps and earlier-step dependencies";
+            read-only: !root.connected || root.running || root.waiting;
+            wrap: word-wrap;
+            min-height: 100px;
+            max-height: 220px;
+        }
+        if root.agent-mode && root.agent-read-plan-capable && root.agent-read-plan-mode && !root.agent-work-plan-mode && (root.compact || root.active-page == "agent") : Text {
+            text: "Use a JSON array of 1–4 steps. Allowed tasks: inspect-file, inspect-files, inspect-directory, search-literal, glob, stat-path. Each step has task and dependsOn; dependencies are zero-based indexes of earlier steps. All steps are read-only and each requires its own approval. A failed step skips dependent steps.";
+            wrap: word-wrap;
+        }
+        if root.active-page == "agent" && !root.compact && root.agent-read-plan-evidence != "" : VerticalLayout {
+            Text { text: "Read-plan step results"; font-size: 16px; }
+            TextEdit {
+                text: root.agent-read-plan-evidence;
+                read-only: true;
+                wrap: word-wrap;
+                min-height: 120px;
+                accessible-label: "Per-step results from the explicit read-only plan";
+            }
+        }
+        if (root.agent-mode && root.agent-work-plan-capable && !root.agent-read-plan-mode && (root.compact || root.active-page == "agent")) : VerticalLayout {
+            CheckBox {
+                text: "Run an explicit workspace work plan";
+                checked: root.agent-work-plan-mode;
+                enabled: root.connected && !root.running && !root.waiting;
+                accessible-label: "Enable a typed multi-step plan that may create or edit files after individual approval";
+                toggled => { root.set-agent-work-plan-mode(self.checked); }
+            }
+        }
+        agent-work-plan-editor := TextEdit {
+            visible: root.agent-mode && root.agent-work-plan-capable && root.agent-work-plan-mode && !root.agent-read-plan-mode && (root.compact || root.active-page == "agent");
+            text <=> root.agent-work-plan-steps;
+            placeholder-text: "[{\"task\":{\"operation\":\"inspect-file\",\"path\":\"README.md\"},\"dependsOn\":[]},{\"task\":{\"operation\":\"create-file\",\"path\":\"notes/new.txt\",\"content\":\"text\"},\"dependsOn\":[0]}]";
+            accessible-label: "JSON list of one to four typed read or exact write steps";
+            read-only: !root.connected || root.running || root.waiting;
+            wrap: word-wrap;
+            min-height: 100px;
+            max-height: 220px;
+        }
+        if root.agent-mode && root.agent-work-plan-capable && root.agent-work-plan-mode && !root.agent-read-plan-mode && (root.compact || root.active-page == "agent") : Text {
+            text: "This plan may only inspect files, create a new file without overwriting, or replace an existing file after an exact full preimage match. Every write requires its own exact approval and independent read-back. A failed dependency blocks later steps; an uncertain write stops the whole plan. No shell or arbitrary task text is accepted.";
+            wrap: word-wrap;
+        }
+        if root.active-page == "agent" && !root.compact && root.agent-work-plan-evidence != "" : VerticalLayout {
+            Text { text: "Workspace work-plan results"; font-size: 16px; }
+            TextEdit {
+                text: root.agent-work-plan-evidence;
+                read-only: true;
+                wrap: word-wrap;
+                min-height: 120px;
+                accessible-label: "Per-step work-plan output with verified write results";
+            }
+        }
+        if (root.agent-mode && root.agent-process-capable && !root.agent-read-plan-mode && !root.agent-classify-mode && (root.compact || root.active-page == "agent")) : VerticalLayout {
+            CheckBox {
+                text: "Run one read-only process";
+                checked: root.agent-process-mode;
+                enabled: root.connected && !root.running && !root.waiting;
+                toggled => { root.set-agent-process-mode(self.checked); }
+            }
+            if root.agent-process-mode : HorizontalLayout {
+                spacing: 8px;
+                Text { text: "Command"; vertical-alignment: center; }
+                ComboBox {
+                    model: ["/usr/bin/wc", "/usr/bin/head", "/usr/bin/tail", "/usr/bin/grep"];
+                    current-index: root.agent-process-program == "/usr/bin/head" ? 1
+                        : (root.agent-process-program == "/usr/bin/tail" ? 2
+                        : (root.agent-process-program == "/usr/bin/grep" ? 3 : 0));
+                    enabled: root.connected && !root.running && !root.waiting;
+                    accessible-label: "Read-only process executable";
+                    selected(value) => { root.set-agent-process-program(self.current-index); }
+                }
+                Text { text: "Approval is required for every invocation; no shell is used."; wrap: word-wrap; }
+            }
+        }
+        if (root.agent-mode && !root.agent-read-plan-mode && !root.agent-create-mode && !root.agent-classify-mode && !root.agent-search-mode && root.agent-directory-capable && (root.compact || root.active-page == "agent")) : HorizontalLayout {
+            spacing: 8px;
+            CheckBox {
+                text: "List a directory";
+                checked: root.agent-directory-mode;
+                enabled: root.connected && !root.running && !root.waiting;
+                toggled => { root.set-agent-directory-mode(self.checked); }
+            }
+            if root.agent-directory-mode : CheckBox {
+                text: "Include hidden entries";
+                checked: root.agent-include-hidden;
+                enabled: root.connected && !root.running && !root.waiting;
+                toggled => { root.set-agent-include-hidden(self.checked); }
+            }
+        }
+        if root.active-page == "settings" && !root.compact : VerticalLayout {
+            spacing: 8px;
+            HorizontalLayout {
+                spacing: 6px;
+                Button { text: root.settings-category == "general" ? "• General" : "General"; clicked => { root.settings-category = "general"; } }
+                Button { text: root.settings-category == "chat" ? "• Chat" : "Chat"; clicked => { root.settings-category = "chat"; } }
+                Button { text: root.settings-category == "provider" ? "• Provider" : "Provider"; clicked => { root.settings-category = "provider"; } }
+                Button { text: root.settings-category == "workspace" ? "• Workspace" : "Workspace"; clicked => { root.settings-category = "workspace"; } }
+            }
+            if root.settings-category == "general" : VerticalLayout {
+                spacing: 8px;
+                Text { text: "Application and connection"; font-size: 18px; }
+                Text { text: root.connected ? "Connected to the selected local daemon endpoint." : "Disconnected. Reconnect to inspect current session and model state."; wrap: word-wrap; }
+                Text { text: "Endpoint: " + root.endpoint; wrap: word-wrap; }
+                Text { text: "Model: " + root.model-status; wrap: word-wrap; }
+                Text { text: root.approval-capable ? "Agent approvals: supported by this daemon." : "Agent approvals: not advertised by this daemon."; wrap: word-wrap; }
+                Text { text: "Appearance"; font-size: 18px; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Theme"; vertical-alignment: center; }
+                    ComboBox {
+                        model: ["System", "Light", "Dark"];
+                        current-index: root.theme-name == "light" ? 1 : (root.theme-name == "dark" ? 2 : 0);
+                        enabled: root.connected && root.desktop-settings-capable && !root.waiting;
+                        accessible-label: "Application theme";
+                        selected(value) => { root.set-theme(self.current-index); }
+                    }
+                }
+                Text { text: root.theme-status; wrap: word-wrap; }
+                Text { text: "Theme choice is saved in this daemon profile and applied to the Slint palette."; wrap: word-wrap; }
+                if root.dev-backup-capable : VerticalLayout {
+                    spacing: 6px;
+                    Text { text: "Development profile snapshot"; font-size: 18px; }
+                    Text { text: root.dev-backup-set-capable ? "Export one private store or all four development stores as a bounded local archive. It may contain sensitive data and is not a Qt portable backup." : "Export one private SQLite store to a new local file. Snapshots may contain sensitive data and are not Qt backups."; wrap: word-wrap; }
+                    ComboBox {
+                        model: root.dev-backup-set-capable ? ["Chat", "Settings", "Memory", "Agent audit", "Entire dev profile"] : ["Chat", "Settings", "Memory", "Agent audit"];
+                        current-index <=> root.dev-backup-domain;
+                        enabled: root.connected && !root.running && !root.waiting;
+                        accessible-label: "Development snapshot scope";
+                    }
+                    LineEdit { text <=> root.dev-backup-path; placeholder-text: "Absolute path for a new snapshot file"; enabled: root.connected && !root.running && !root.waiting; accessible-label: "New snapshot file path"; }
+                    Button { text: "Export snapshot"; enabled: root.connected && !root.running && !root.waiting && root.dev-backup-path != ""; clicked => { root.export-dev-backup(root.dev-backup-domain, root.dev-backup-path); } }
+                    Text { text: root.dev-backup-status; wrap: word-wrap; }
+                }
+                Text { text: "Runtime readiness"; font-size: 18px; }
+                Text { text: root.runtime-projection-status; wrap: word-wrap; }
+                TextEdit {
+                    text: root.runtime-projection-view;
+                    placeholder-text: "Runtime readiness is not available from this daemon.";
+                    read-only: true;
+                    wrap: word-wrap;
+                    min-height: 72px;
+                    max-height: 140px;
+                    accessible-label: "Read-only runtime readiness from daemon projection";
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button {
+                        text: "Refresh runtime and workspace status";
+                        enabled: root.connected && !root.waiting && (root.runtime-projection-capable || root.workspace-runtime-capable);
+                        clicked => { root.refresh-settings-status(); }
+                    }
+                    Button { text: "Reconnect"; enabled: !root.waiting; clicked => { root.reconnect(); } }
+                }
+            }
+            if root.settings-category == "chat" : VerticalLayout {
+                spacing: 8px;
+                Text { text: "Chat response style"; font-size: 18px; }
+                Text { text: "Optional instructions apply only to subsequent Chat requests. They do not change Agent permissions or tool access. Maximum 2,000 UTF-16 units; whitespace is trimmed when saved."; wrap: word-wrap; }
+                TextEdit {
+                    text <=> root.response-profile-instructions;
+                    placeholder-text: "For example: Prefer concise answers with a short summary first.";
+                    read-only: !root.connected || !root.desktop-settings-capable || root.running || root.waiting;
+                    wrap: word-wrap;
+                    min-height: 96px;
+                    max-height: 180px;
+                    accessible-label: "Optional Chat response style instructions";
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button {
+                        text: "Save Chat instructions";
+                        enabled: root.connected && root.desktop-settings-capable && !root.running && !root.waiting;
+                        clicked => { root.save-response-profile(root.response-profile-instructions); }
+                    }
+                    Button {
+                        text: "Clear";
+                        enabled: root.connected && root.desktop-settings-capable && !root.running && !root.waiting
+                            && root.response-profile-instructions != "";
+                        clicked => { root.save-response-profile(""); }
+                    }
+                }
+                Text { text: root.response-profile-status; wrap: word-wrap; }
+            }
+            if root.settings-category == "provider" : VerticalLayout {
+                spacing: 8px;
+                Text { text: "Provider status"; font-size: 18px; }
+                Text { text: "Read-only provider readiness and cached discovery. Connectivity is shown only as reported; this panel does not probe the service."; wrap: word-wrap; }
+                Text { text: root.provider-diagnostics-status; wrap: word-wrap; }
+                TextEdit {
+                    text: root.provider-diagnostics;
+                    placeholder-text: "Refresh to inspect cached local provider configuration.";
+                    read-only: true;
+                    wrap: word-wrap;
+                    min-height: 72px;
+                    max-height: 140px;
+                    accessible-label: "Read-only cached provider diagnostics; live connectivity is unknown";
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button {
+                        text: "Refresh provider diagnostics";
+                        enabled: root.connected && root.provider-diagnostics-capable && !root.waiting;
+                        clicked => { root.refresh-provider-diagnostics(); }
+                    }
+                    Button { text: "Open Models"; clicked => { root.navigate("models"); } }
+                }
+                Text { text: "Model pull and removal controls are in Models and are available only for the configured Ollama helper."; wrap: word-wrap; }
+            }
+            if root.settings-category == "workspace" : VerticalLayout {
+                spacing: 8px;
+                Text { text: "Workspace access"; font-size: 18px; }
+                Text { text: "These values report the daemon's configured workspace and permission policy. They do not grant, change, or broaden filesystem access."; wrap: word-wrap; }
+                Text { text: root.workspace-runtime-status; wrap: word-wrap; }
+                TextEdit {
+                    text: root.workspace-runtime-view;
+                    placeholder-text: "Workspace runtime details are not available.";
+                    read-only: true;
+                    wrap: word-wrap;
+                    min-height: 88px;
+                    max-height: 160px;
+                    accessible-label: "Read-only configured workspace and permission status";
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button {
+                        text: "Refresh workspace status";
+                        enabled: root.connected && root.workspace-runtime-capable && !root.waiting;
+                        clicked => { root.refresh-settings-status(); }
+                    }
+                    Button { text: "Open Workspace"; enabled: root.workspace-selection-capable || root.workspace-files-capable; clicked => { root.navigate("workspace"); } }
+                }
+                if root.workspace-revocation-capable : VerticalLayout {
+                    spacing: 6px;
+                    Text { text: "Development Agent access"; font-size: 16px; }
+                    Text { text: root.workspace-access-status; wrap: word-wrap; }
+                    Text {
+                        text: "Changes apply only to the selected configured workspace. Revocation is not a quiescence barrier: an operation already in flight may finish.";
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        if root.workspace-access-known && root.workspace-access-enabled : Button {
+                            text: "Revoke selected workspace";
+                            enabled: root.connected && !root.waiting;
+                            clicked => { root.set-dev-workspace-access(false); }
+                        }
+                        if root.workspace-access-known && !root.workspace-access-enabled : Button {
+                            text: "Re-enable selected workspace";
+                            enabled: root.connected && !root.running && !root.waiting;
+                            clicked => { root.set-dev-workspace-access(true); }
+                        }
+                    }
+                }
+            }
+        }
+        if root.active-page == "agent" && !root.compact && root.agent-history-capable : VerticalLayout {
+            spacing: 8px;
+            Text { text: "Agent run audit"; font-size: 18px; }
+            Text { text: root.agent-history-status; wrap: word-wrap; }
+            HorizontalLayout {
+                spacing: 8px;
+                ComboBox {
+                    model: root.agent-runs;
+                    current-index: root.selected-agent-run;
+                    enabled: root.connected && !root.running && !root.waiting && root.agent-runs.length > 0;
+                    accessible-label: "Agent runs";
+                    selected(value) => { root.select-agent-run(self.current-index); }
+                }
+                Button { text: "Refresh runs"; enabled: root.connected && !root.waiting; clicked => { root.refresh-agent-history(); } }
+                Button { text: "Load older"; enabled: root.connected && !root.waiting && root.agent-runs-has-more; clicked => { root.load-older-agent-runs(); } }
+            }
+            Text { text: "Plan step lifecycle"; font-size: 16px; }
+            TextEdit {
+                text: root.agent-plan-lifecycle;
+                read-only: true;
+                wrap: word-wrap;
+                min-height: 72px;
+                max-height: 180px;
+                accessible-label: "Persisted plan step operations, dependencies, and lifecycle states";
+            }
+            Text { text: "Raw audit record"; font-size: 16px; }
+            TextEdit { text: root.agent-history-view; read-only: true; wrap: word-wrap; vertical-stretch: 1; min-height: 120px; accessible-label: "Persisted Agent audit details"; }
+        }
+        if root.active-page == "memory" && !root.compact : VerticalLayout {
+            spacing: 8px;
+            Text { text: "Session memory"; font-size: 18px; }
+            Text { text: "These notes belong to the selected chat and are never added to model context automatically."; wrap: word-wrap; }
+            Text { text: root.memory-status; wrap: word-wrap; }
+            HorizontalLayout {
+                spacing: 8px;
+                ComboBox {
+                    model: root.memory-entries;
+                    current-index: root.selected-memory;
+                    enabled: root.connected && !root.running && !root.waiting && root.memory-entries.length > 0;
+                    accessible-label: "Session memory records";
+                    selected(value) => { root.select-memory(self.current-index); }
+                }
+                Button { text: "Refresh"; enabled: root.connected && !root.running && !root.waiting && root.memory-capable; clicked => { root.refresh-memory(); } }
+                Button { text: "Load more"; enabled: root.connected && !root.running && !root.waiting && root.memory-next-page; clicked => { root.load-more-memory(); } }
+                Button { text: "New"; enabled: root.connected && !root.running && !root.waiting && root.memory-capable; clicked => { root.new-memory(); } }
+            }
+            LineEdit {
+                text <=> root.memory-key;
+                placeholder-text: "Memory key";
+                accessible-label: "Memory key";
+                enabled: root.connected && !root.running && !root.waiting && root.memory-capable;
+            }
+            TextEdit {
+                text <=> root.memory-value;
+                placeholder-text: "Write a note for this chat";
+                accessible-label: "Memory value";
+                read-only: !root.connected || root.running || root.waiting || !root.memory-capable;
+                wrap: word-wrap;
+                vertical-stretch: 1;
+                min-height: 120px;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Button { text: root.memory-item-selected ? "Save correction" : "Create memory"; enabled: root.connected && !root.running && !root.waiting && root.memory-capable && root.memory-key != ""; clicked => { root.save-memory(); } }
+                if root.memory-item-selected : HorizontalLayout {
+                    spacing: 8px;
+                    LineEdit {
+                        text <=> root.memory-delete-confirmation;
+                        placeholder-text: "Type DELETE to confirm";
+                        accessible-label: "Confirm memory deletion by typing DELETE";
+                        enabled: root.connected && !root.running && !root.waiting;
+                    }
+                    Button { text: "Delete"; enabled: root.connected && !root.running && !root.waiting && root.memory-delete-confirmation == "DELETE"; clicked => { root.delete-memory(); } }
+                }
+            }
+        }
+        if root.approval-detail != "" && root.approval-pending : VerticalLayout {
+            spacing: 6px;
+            Text { text: "One-time tool approval required"; font-size: 16px; }
+            Text {
+                text: "Review the tool, risk, resources, and exact action. Approve once or deny. An unconfirmed response is never replayed.";
+                wrap: word-wrap;
+            }
+            TextEdit {
+                text: root.approval-detail;
+                read-only: true;
+                wrap: word-wrap;
+                min-height: 72px;
+                max-height: 180px;
+                accessible-label: "Exact action and resources awaiting one-time approval";
+            }
+        }
+        if root.active-page == "agent" && !root.compact && root.agent-search-evidence != "" : VerticalLayout {
+            Text { text: "Observed search evidence"; font-size: 16px; }
+            TextEdit {
+                text: root.agent-search-evidence;
+                read-only: true;
+                wrap: word-wrap;
+                vertical-stretch: 1;
+                min-height: 120px;
+                accessible-label: "Source-labelled literal search results from the daemon";
+            }
+        }
+        if root.active-page == "agent" && !root.compact && root.agent-edit-evidence != "" : VerticalLayout {
+            Text { text: "Verified file edit result"; font-size: 16px; }
+            TextEdit {
+                text: root.agent-edit-evidence;
+                read-only: true;
+                wrap: word-wrap;
+                vertical-stretch: 1;
+                min-height: 120px;
+                accessible-label: "Source-labelled file edit read-back result";
+            }
+        }
+        if root.active-page == "agent" && !root.compact && root.agent-glob-evidence != "" : VerticalLayout {
+            Text { text: "Observed filename search evidence"; font-size: 16px; }
+            TextEdit {
+                text: root.agent-glob-evidence;
+                read-only: true;
+                wrap: word-wrap;
+                vertical-stretch: 1;
+                min-height: 120px;
+                accessible-label: "Source-labelled filename pattern search results";
+            }
+        }
+        if (root.compact || root.active-page == "agent") && root.agent-progress != "" : Text {
+            text: "Current Agent status: " + root.agent-progress;
+            wrap: word-wrap;
+        }
+        if (root.compact || root.active-page == "agent") && root.agent-activity != "" : VerticalLayout {
+            spacing: 4px;
+            Text { text: "Agent activity"; font-size: 16px; }
+            TextEdit {
+                text: root.agent-activity;
+                read-only: true;
+                wrap: word-wrap;
+                min-height: 90px;
+                max-height: 200px;
+                accessible-label: "Ordered Agent steps and tool activity";
+            }
+        }
+        if (root.compact || root.active-page == "chat" || root.active-page == "agent") : Text { text: root.history-status; wrap: word-wrap; }
+        if root.compact || root.active-page == "chat" || root.active-page == "agent" : TextEdit {
+            text: root.transcript;
+            placeholder-text: "Your conversation will appear here.";
+            read-only: true;
+            wrap: word-wrap;
+            vertical-stretch: 1;
+            accessible-label: "Conversation transcript";
+        }
+        if (root.compact || root.active-page == "chat") && root.chat-revisions-capable : HorizontalLayout {
+            spacing: 8px;
+            Button {
+                text: "Regenerate latest";
+                enabled: root.connected && root.chat-revisions-capable && root.can-regenerate-latest
+                    && !root.running && !root.waiting;
+                clicked => { root.regenerate-latest(); }
+            }
+            Button {
+                text: "Edit latest & send";
+                enabled: root.connected && root.chat-revisions-capable && root.can-regenerate-latest
+                    && root.draft != "" && !root.running && !root.waiting;
+                clicked => { root.edit-latest(root.draft); }
+            }
+            Button {
+                text: "Retry failed latest";
+                enabled: root.connected && root.chat-revisions-capable && root.can-retry-latest
+                    && !root.running && !root.waiting;
+                clicked => { root.retry-latest(); }
+            }
+        }
+        agent-composer := TextEdit {
+            visible: (root.compact || root.active-page == "agent") && root.agent-mode && root.agent-restricted && !root.agent-search-mode && !root.agent-edit-mode && !root.agent-glob-mode && !root.agent-read-plan-mode && !root.agent-work-plan-mode;
+            text <=> root.agent-paths;
+            placeholder-text: root.agent-classify-mode
+                ? "Describe the file-inspection goal (1–2,048 UTF-8 bytes)"
+                : (root.agent-process-mode
+                ? "One argv item per line, for example: -c then relative/file.txt"
+                : (root.agent-directory-mode
+                ? "Relative workspace directory (use . for workspace root)"
+                : (root.agent-create-mode
+                    ? "New relative file path"
+                    : (root.agent-multi-file
+                    ? "Relative workspace paths, one per line (up to 4)"
+                    : "Relative workspace path"))));
+            read-only: root.waiting && !root.running;
+            wrap: word-wrap;
+            min-height: 64px;
+            max-height: 96px;
+            accessible-label: root.agent-classify-mode ? "Goal to classify for approved file inspection" : "Workspace files to inspect";
+        }
+        agent-content-editor := TextEdit {
+            visible: (root.compact || root.active-page == "agent") && root.agent-mode && root.agent-create-mode;
+            text <=> root.agent-content;
+            placeholder-text: "File contents (up to 2,048 UTF-8 bytes)";
+            read-only: root.waiting && !root.running;
+            wrap: word-wrap;
+            min-height: 80px;
+            max-height: 140px;
+            accessible-label: "New file contents";
+        }
+        composer := LineEdit {
+            visible: (root.compact || root.active-page == "chat" || (root.active-page == "agent" && root.agent-capable))
+                && !(root.agent-mode && root.agent-restricted);
+            text <=> root.draft;
+            placeholder-text: root.composer-placeholder;
+            accessible-label: "Message";
+            read-only: root.waiting && !root.running;
+            accepted => {
+                if root.connected && !root.running && !root.waiting {
+                    root.send(self.text);
+                }
+            }
+        }
+        if root.compact || root.active-page == "chat" || (root.active-page == "agent" && root.agent-capable) : HorizontalLayout {
+            spacing: 8px;
+            if root.compact : Button { text: "Reconnect"; enabled: !root.waiting; clicked => { root.reconnect(); } }
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                text: root.approval-pending ? "Cancel request" : "Stop";
+                enabled: root.connected && root.running && !root.waiting;
+                clicked => { root.stop(); }
+            }
+            Button {
+                text: "Send";
+                enabled: root.connected && !root.running && !root.waiting
+                    && (root.agent-mode && root.agent-restricted
+                        ? (root.agent-work-plan-mode || root.agent-read-plan-mode
+                            ? (root.agent-work-plan-mode ? root.agent-work-plan-steps != "" : root.agent-read-plan-steps != "")
+                            : (root.agent-search-mode
+                            ? root.agent-search-path != "" && root.agent-search-pattern != ""
+                            : (root.agent-edit-mode
+                                ? root.agent-edit-path != "" && root.agent-edit-expected != ""
+                                : (root.agent-glob-mode
+                                    ? root.agent-glob-path != "" && root.agent-glob-pattern != ""
+                                    : root.agent-paths != "")))) : root.draft != "");
+                clicked => {
+                    root.send(root.agent-mode && root.agent-restricted
+                        ? (root.agent-work-plan-mode ? root.agent-work-plan-steps
+                            : (root.agent-read-plan-mode ? root.agent-read-plan-steps
+                            : (root.agent-search-mode ? root.agent-search-pattern
+                            : (root.agent-edit-mode ? root.agent-edit-path
+                                : (root.agent-glob-mode ? root.agent-glob-pattern : root.agent-paths)))))
+                        : root.draft);
+                }
+            }
+        }
+        if root.compact || root.active-page == "chat" || root.active-page == "agent" : Text {
+            text: "Keyboard: Ctrl/⌘+Enter send · Esc stop · Ctrl/⌘+N new Chat · Ctrl/⌘+W close";
+            color: Palette.foreground;
+            wrap: word-wrap;
+        }
+        if root.approval-detail != "" && root.approval-pending : HorizontalLayout {
+            spacing: 8px;
+            Rectangle { horizontal-stretch: 1; }
+            Button { text: "Deny"; enabled: root.connected && !root.waiting; clicked => { root.respond-approval(false); } }
+            Button { text: "Approve once"; enabled: root.connected && !root.waiting; clicked => { root.respond-approval(true); } }
+        }
+        }
+    }
+}

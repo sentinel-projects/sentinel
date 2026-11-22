@@ -1,0 +1,16 @@
+[workspace]
+
+[package]
+name = "sentinel-slint-prototype"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+sentinel-ipc = { path = "../../cli/crates/sentinel-ipc" }
+serde_json = "1"
+slint = { version = "=1.19.0", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "renderer-software", "accessibility"] }
+
+[build-dependencies]
+slint-build = "=1.19.0"
