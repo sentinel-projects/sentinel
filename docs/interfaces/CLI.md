@@ -13,15 +13,34 @@ sentinel tui
 
 CLI and TUI retain daemon-owned conversations, immutable model bindings, permissions and AgentRuntime execution. Chat and Agent are explicit modes. Enter sends; Ctrl+O inserts a composer newline. Ctrl+C requests cancellation during active work and preserves an idle draft, exiting only when empty. Esc preserves a pending approval. Unsupported compaction/revert operations are not simulated.
 
+`sentinel voice state` queries daemon speech readiness. `sentinel voice transcribe
+/path/to/audio.pcm` sends an explicitly supplied, nonempty, at most 60-second
+16 kHz mono signed 16-bit little-endian PCM file through the daemon's existing
+voice IPC and prints the resulting transcript. It assumes the supplied audio
+contains speech; it does not capture a microphone or run VAD. The daemon must
+have an actual configured speech runtime. The Rust development daemon does not
+yet provide transcription; this command does not install or launch one.
+
 The terminal uses additive IPC 1.1 operations. `terminal.attach` returns the bounded safe session snapshot, avoiding Desktop's full presentation projection; `session.attach` retains its existing Desktop behavior. `terminal.state` uses cached ModelService readiness without inspecting unobserved cloud credentials. Discovery and runtime preflight remain explicit existing authoritative operations.
 
 ## Legacy C++ CLI
 
 `sentinel-cli` remains the existing in-process diagnostic/configuration/model interface for Desktop compatibility. Its commands are documented in the [legacy CLI reference](../reference/CLI_REFERENCE.md). It is separate from the daemon-connected Rust binary. Chat timeout and model-pull failure can still return exit code 0; do not use that code as proof of completion.
 
-Core Warden is a presentation component with terminal graphics/text fallback, not provider health or inference authority. Native Windows Rust named-pipe transport is not implemented. The TUI explicitly leaves `/plan`, `/compact`, `/undo`, `/redo`, `/skills`, `/init`, `/grill-me` and `/editor` unavailable; inspect the user guides for supported commands.
+Core Warden is a presentation component with terminal graphics/text fallback, not provider health or inference authority. The Rust IPC client has Windows named-pipe code and cross-compiles, but native CLI/TUI connection to the Qt daemon and Windows runtime behavior remain unverified; Windows CLI/TUI support is not certified. The TUI explicitly leaves `/plan`, `/compact`, `/undo`, `/redo`, `/skills`, `/init`, `/grill-me` and `/editor` unavailable; inspect the user guides for supported commands.
 
 ## Local release-candidate evaluation
+
+For a Rust development-evaluation stage, build for an explicit target and a new
+absolute destination with `tools/terminal/build-stage.sh TARGET /absolute/new/stage`
+(PowerShell: `tools/terminal/build-stage.ps1`). Then run
+`sentinel update verify-stage /absolute/stage --lockfile cli/Cargo.lock` from a
+CLI built for that same target/version. Verification checks the schema, app version,
+target triple, exact CLI/daemon artifact set, and their SHA-256 bytes; `--lockfile`
+also compares the declared lockfile digest. Its output labels these hashes as byte
+integrity only: the manifest has no publisher signature, does not authenticate
+provenance, and does not establish asset integrity. The command is offline and never
+installs or executes staged files.
 
 Build with `cargo build --release --locked --manifest-path cli/Cargo.toml`, then run
 `./tools/terminal/stage-release.sh /absolute/new/stage-directory`. The script only

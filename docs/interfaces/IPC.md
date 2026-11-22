@@ -6,7 +6,7 @@ Sentinel's headless daemon composes the existing C++ services with `ApplicationC
 
 [`protocol/ipc-v1.json`](../../protocol/ipc-v1.json) is the canonical versioned field/enum definition. Run `python3 tools/ipc/generate.py` after changes; `--check` fails on drift. It generates the daemon C++ request validator/command enum, the shared Qt client command/response/event field contracts, and Rust request, response and event payload enums. Generation is checked by CTest and Rust CI, and does not add a generator dependency to ordinary CMake builds. The Cargo package version is derived from `SENTINEL_APP_VERSION`; protocol version is independent: **1.1**.
 
-Transport is local Unix-domain sockets on macOS/Linux through Qt `QLocalServer` and Rust `UnixStream`. Windows Rust transport currently reports unsupported/unavailable; no Windows runtime certification is claimed.
+Transport uses local Unix-domain sockets on macOS/Linux through Qt `QLocalServer` and Rust `UnixStream`. The Rust IPC client now has a Windows named-pipe implementation and cross-compiles for Windows; native interoperation with the Qt daemon and Windows security/runtime acceptance have not been run. The Rust daemon listener remains Unix-only.
 
 Each frame is one compact UTF-8 JSON object followed by LF:
 

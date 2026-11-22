@@ -202,6 +202,7 @@ fn help_is_offline_and_successful() {
         "tui",
         "doctor",
         "model",
+        "update",
         "completions",
         "shutdown",
     ] {
@@ -440,4 +441,122 @@ fn id_based_mutations_and_queries_do_not_require_accepted() {
             payload
         );
     }
+}
+
+#[test]
+fn voice_state_text_is_human_readable_and_does_not_claim_availability() {
+    let root = std::env::temp_dir().join(format!(
+        "sentinel-voice-state-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let socket = root.join("daemon.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        for name in ["hello", "voice.state"] {
+            let mut line = String::new();
+            assert!(reader.read_line(&mut line).unwrap() > 0);
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["name"], name);
+            let payload = if name == "hello" {
+                json!({"major":1,"minor":0,"daemon_version":"fixture","capabilities":[]})
+            } else {
+                json!({"state":"Unavailable","available":false,"owned":false,"transcript":"","failure":"RuntimeUnavailable","input_device_id":"","vad_enabled":true})
+            };
+            writeln!(
+                stream,
+                "{}",
+                json!({"version":{"major":1,"minor":0},"type":"response","id":request["id"],"name":name,"payload":payload})
+            )
+            .unwrap();
+        }
+    });
+    let result = Command::new(env!("CARGO_BIN_EXE_sentinel"))
+        .arg("--socket")
+        .arg(&socket)
+        .args(["voice", "state"])
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let stdout = String::from_utf8(result.stdout).unwrap();
+    assert!(stdout.contains("Voice: Unavailable"));
+    assert!(stdout.contains("Available: no"));
+    assert!(stdout.contains("Owner: none"));
+    assert!(!stdout.contains("\"available\":false"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn voice_pcm_uses_bounded_canonical_daemon_protocol() {
+    let root = std::env::temp_dir().join(format!(
+        "sentinel-voice-cli-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let socket = root.join("daemon.sock");
+    let pcm = root.join("audio.pcm");
+    std::fs::write(&pcm, [0u8, 255, 1, 0]).unwrap();
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        for name in [
+            "hello",
+            "voice.action",
+            "voice.audio",
+            "voice.state",
+            "voice.action",
+        ] {
+            let mut line = String::new();
+            assert!(reader.read_line(&mut line).unwrap() > 0);
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["name"], name);
+            let payload = match name {
+                "hello" => {
+                    json!({"major":1,"minor":0,"daemon_version":"fixture","capabilities":[]})
+                }
+                "voice.action" => json!({"accepted":true}),
+                "voice.audio" => {
+                    assert_eq!(
+                        request["payload"],
+                        json!({"pcm":"AP8BAA==","final":true,"speech":true})
+                    );
+                    json!({"accepted":true})
+                }
+                "voice.state" => {
+                    json!({"state":"Completed","available":true,"owned":true,"transcript":"fixture words","failure":"None","input_device_id":"","vad_enabled":true})
+                }
+                _ => unreachable!(),
+            };
+            writeln!(stream,"{}",json!({"version":{"major":1,"minor":0},"type":"response","id":request["id"],"name":name,"payload":payload})).unwrap();
+        }
+    });
+    let result = Command::new(env!("CARGO_BIN_EXE_sentinel"))
+        .arg("--socket")
+        .arg(&socket)
+        .args(["--output", "json", "voice", "transcribe"])
+        .arg(&pcm)
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let value: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(value["transcript"], "fixture words");
+    std::fs::remove_dir_all(root).unwrap();
 }

@@ -27,7 +27,7 @@ Cargo installs `sentinel` under its install root's `bin` directory, normally `$H
 
 Release source installations use the same Cargo path command on the chosen release checkout. There is currently no claim that `cargo install sentinel-cli` from crates.io or a prebuilt release package is available. The IPC build script obtains the version from the source checkout's canonical CMake version. Packaging/updating remains outside this phase.
 
-Build the C++ daemon as described in [Building](../development/BUILDING.md). Start `sentinel-daemon` externally. After updating this checkout, rebuild and restart the daemon before using new terminal operations; an already-running older daemon is not replaced automatically. Coordinate the socket and profile; do not start multiple daemons against one profile. Clients support `--socket PATH`; the Unix default is `~/.sentinel/run/daemon.sock`. Windows named-pipe transport is not implemented in the Rust client.
+Build the C++ daemon as described in [Building](../development/BUILDING.md). Start `sentinel-daemon` externally. After updating this checkout, rebuild and restart the daemon before using new terminal operations; an already-running older daemon is not replaced automatically. Coordinate the socket and profile; do not start multiple daemons against one profile. Clients support `--socket PATH`; the Unix default is `~/.sentinel/run/daemon.sock`. Windows named-pipe transport code exists and cross-compiles, but native CLI/TUI connection to the Qt daemon and Windows runtime behavior remain unverified; Windows CLI/TUI support is not certified.
 
 ## Commands
 
@@ -54,6 +54,9 @@ All major commands have offline `--help`. Omitting a command retains the histori
 | `attach ID`, `tui --session ID`, `tui` | Interactive terminal interface |
 | `changes ID` | Bounded, read-only change review for a session's most recent in-memory Agent baseline |
 | `doctor` | Connection/protocol, installation PATH, model/provider, workspace, registry, MCP, permissions and network diagnostics |
+| `voice state` | Daemon speech readiness; does not capture a microphone or run VAD |
+| `voice transcribe PCM` | Send an explicit nonempty ≤60 s 16 kHz mono signed 16-bit little-endian PCM file through the daemon voice IPC |
+| `update verify-stage DIR [--lockfile PATH]` | Offline SHA-256 integrity check of a development-evaluation stage; never installs, executes or authenticates staged files |
 | `completions zsh\|bash\|fish` | Write shell completion source to stdout |
 | `shutdown` | Request daemon shutdown explicitly |
 

@@ -1,10 +1,11 @@
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use sentinel_ipc::{Client, Error, default_socket_path};
 use serde_json::{Value, json};
+mod update_stage;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     io::{self, IsTerminal, Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -16,7 +17,7 @@ enum Output {
     StreamJson,
 }
 #[derive(Parser)]
-#[command(name="sentinel", version=sentinel_ipc::APP_VERSION, about="Sentinel terminal client for the authoritative local daemon", after_help="Examples:\n  sentinel status --output json\n  echo 'inspect this repository' | sentinel run --output stream-json\n  sentinel model select ollama <installed-model>\n  sentinel tui\n\nStart sentinel-daemon externally before runtime commands. No daemon or provider fallback is launched.")]
+#[command(name="sentinel", version=sentinel_ipc::APP_VERSION, about="Sentinel terminal client for the authoritative local daemon", after_help="Examples:\n  sentinel status --output json\n  echo 'inspect this repository' | sentinel run --output stream-json\n  sentinel model select ollama <installed-model>\n  sentinel update verify-stage /path/to/stage --lockfile cli/Cargo.lock\n  sentinel backup export chat /path/to/new-backup.sqlite3\n  sentinel backup export profile /path/to/new-profile-archive.sqlite3\n  sentinel tui\n\nStart sentinel-daemon externally before runtime commands. No daemon or provider fallback is launched.")]
 struct Cli {
     /// Output format; machine formats contain no human prose on stdout
     #[arg(long, global = true, value_enum, default_value = "text")]
@@ -52,6 +53,21 @@ enum Commands {
         #[command(subcommand)]
         command: ProviderCommand,
     },
+    /// Verify a local development stage; never downloads, installs, or executes artifacts
+    Update {
+        #[command(subcommand)]
+        command: UpdateCommand,
+    },
+    /// Export one development daemon data domain to a new local file
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommand,
+    },
+    /// Inspect voice readiness or transcribe explicit raw PCM through the daemon
+    Voice {
+        #[command(subcommand)]
+        command: VoiceCommand,
+    },
     /// Send a Chat message (no Agent execution)
     Chat(Task),
     /// Execute a task through AgentRuntime
@@ -74,6 +90,52 @@ enum Commands {
     },
     /// Request authoritative daemon shutdown
     Shutdown,
+}
+#[derive(Subcommand)]
+enum VoiceCommand {
+    /// Inspect daemon voice readiness
+    State,
+    /// Transcribe an existing 16 kHz mono signed 16-bit little-endian PCM file
+    Transcribe { pcm: PathBuf },
+}
+#[derive(Subcommand)]
+enum UpdateCommand {
+    /// Verify the stage manifest and required binary bytes (integrity only)
+    VerifyStage {
+        directory: PathBuf,
+        /// Also compare the lockfile digest with this local file
+        #[arg(long)]
+        lockfile: Option<PathBuf>,
+    },
+}
+#[derive(Subcommand)]
+enum BackupCommand {
+    /// Export and verify one domain or a coordinated development profile before creating a new file
+    Export {
+        #[arg(value_enum)]
+        domain: BackupDomain,
+        /// New file path; existing files are never replaced
+        destination: PathBuf,
+    },
+}
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum BackupDomain {
+    Chat,
+    Settings,
+    Memory,
+    Agent,
+    Profile,
+}
+impl BackupDomain {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+            Self::Settings => "settings",
+            Self::Memory => "memory",
+            Self::Agent => "agent",
+            Self::Profile => "profile",
+        }
+    }
 }
 #[derive(clap::Args)]
 struct Task {
@@ -219,14 +281,106 @@ fn emit(value: Value, output: Output, name: &str) {
                     );
                 }
             }
+            "voice.state" => {
+                let transcript = value["transcript"]
+                    .as_str()
+                    .filter(|text| !text.is_empty())
+                    .map(|text| format!("\nTranscript: {text}"))
+                    .unwrap_or_default();
+                println!(
+                    "Voice: {}\nAvailable: {}\nOwner: {}\nInput: {}\nVAD: {}\nFailure: {}{}",
+                    value["state"].as_str().unwrap_or("unknown"),
+                    if value["available"].as_bool().unwrap_or(false) {
+                        "yes"
+                    } else {
+                        "no"
+                    },
+                    if value["owned"].as_bool().unwrap_or(false) {
+                        "this client"
+                    } else {
+                        "none"
+                    },
+                    value["input_device_id"]
+                        .as_str()
+                        .filter(|id| !id.is_empty())
+                        .unwrap_or("none"),
+                    if value["vad_enabled"].as_bool().unwrap_or(false) {
+                        "on"
+                    } else {
+                        "off"
+                    },
+                    value["failure"].as_str().unwrap_or("none"),
+                    transcript
+                );
+            }
             _ => println!("{}", serde_json::to_string_pretty(&value).unwrap()),
         },
+    }
+}
+fn validate_new_destination(destination: &Path) -> Result<PathBuf, Error> {
+    let parent = destination
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let parent = parent.canonicalize().map_err(|error| {
+        Error::Usage(format!(
+            "Backup destination directory is unavailable: {error}"
+        ))
+    })?;
+    let name = destination
+        .file_name()
+        .filter(|name| *name != "." && *name != "..")
+        .ok_or_else(|| Error::Usage("Choose a backup file path, not a directory.".into()))?;
+    let path = parent.join(name);
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => Err(Error::Usage(
+            "Backup destination already exists; choose a new file path.".into(),
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(path),
+        Err(error) => Err(Error::Usage(format!(
+            "Cannot inspect backup destination: {error}"
+        ))),
     }
 }
 fn run(cli: Cli) -> Result<(), Error> {
     let output = cli.output;
     let socket = cli.socket;
     let command = cli.command.unwrap_or(Commands::Status);
+    let backup_destination = if let Commands::Backup {
+        command: BackupCommand::Export { destination, .. },
+    } = &command
+    {
+        Some(validate_new_destination(destination)?)
+    } else {
+        None
+    };
+    if let Commands::Update {
+        command: UpdateCommand::VerifyStage {
+            directory,
+            lockfile,
+        },
+    } = &command
+    {
+        let verification = update_stage::verify_stage(directory, lockfile.as_deref())
+            .map_err(|detail| Error::Failed(format!("Stage verification failed: {detail}")))?;
+        let value = serde_json::to_value(&verification)
+            .map_err(|error| Error::Protocol(error.to_string()))?;
+        if output == Output::Text {
+            let artifacts = verification.artifacts_verified.join(", ");
+            let lockfile = if verification.lockfile_checked {
+                "checked against the supplied file"
+            } else {
+                "digest format checked; bytes not compared"
+            };
+            println!(
+                "Verified development stage {} for {}.\nArtifacts: {}\nLockfile: {}\nSHA-256 confirms integrity only; publisher authenticity and provenance are unverified. Nothing was installed or executed.",
+                verification.app_version, verification.target, artifacts, lockfile
+            );
+        } else {
+            emit(value, output, "update.verify-stage");
+        }
+        return Ok(());
+    }
     match &command {
         Commands::Completions { shell } => {
             clap_complete::generate(*shell, &mut Cli::command(), "sentinel", &mut io::stdout());
@@ -263,10 +417,129 @@ fn run(cli: Cli) -> Result<(), Error> {
             return Err(Error::Usage("Task must contain 1..65536 UTF-8 bytes. Supply text or pipe stdin; positional text takes precedence.".into()));
         }
     }
+    let voice_pcm = if let Commands::Voice {
+        command: VoiceCommand::Transcribe { pcm },
+    } = &command
+    {
+        let mut bytes = Vec::new();
+        std::fs::File::open(pcm)
+            .map_err(|e| Error::Usage(format!("Cannot open PCM file: {e}")))?
+            .take((sentinel_ipc::voice::MAX_PCM_CAPTURE + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|e| Error::Usage(format!("Cannot read PCM file: {e}")))?;
+        if bytes.is_empty()
+            || bytes.len() > sentinel_ipc::voice::MAX_PCM_CAPTURE
+            || !bytes.len().is_multiple_of(2)
+        {
+            return Err(Error::Usage(
+                "PCM must be nonempty, even-length, and no longer than 60 seconds".into(),
+            ));
+        }
+        Some(bytes)
+    } else {
+        None
+    };
     let mut client = Client::connect(&socket, "sentinel-cli")?;
     client.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+    if let Commands::Backup {
+        command: BackupCommand::Export { domain, .. },
+    } = &command
+    {
+        let snapshot = if matches!(domain, BackupDomain::Profile) {
+            sentinel_ipc::backup::export_profile(&mut client)?
+        } else {
+            sentinel_ipc::backup::export(&mut client, domain.as_str())?
+        };
+        let destination = sentinel_ipc::backup::write_new(
+            backup_destination
+                .as_deref()
+                .expect("validated backup destination"),
+            &snapshot,
+        )?;
+        let result = json!({
+            "domain": snapshot.domain,
+            "format": snapshot.format,
+            "size": snapshot.bytes.len(),
+            "sha256": snapshot.sha256,
+            "path": destination,
+            "verified": true,
+        });
+        if output == Output::Text {
+            println!(
+                "Exported {} development data ({} bytes, SHA-256 {}) to {}. Integrity verified; this is not a production Qt backup.",
+                if snapshot.domain == "profile" {
+                    "the coordinated profile"
+                } else {
+                    &snapshot.domain
+                },
+                snapshot.bytes.len(),
+                snapshot.sha256,
+                destination.display()
+            );
+        } else {
+            emit(result, output, "backup.export");
+        }
+        return Ok(());
+    }
+    if let Some(pcm) = voice_pcm {
+        let started = client.request("voice.action", json!({"action":"start"}))?;
+        if started["accepted"] != true {
+            return Err(Error::Remote("voice-unavailable".into()));
+        }
+        let result = (|| -> Result<Value, Error> {
+            let chunks = pcm.chunks(sentinel_ipc::voice::MAX_PCM_CHUNK);
+            let count = chunks.len();
+            for (index, chunk) in chunks.enumerate() {
+                let reply = client.request(
+                    "voice.audio",
+                    sentinel_ipc::voice::pcm_payload(chunk, index + 1 == count, true)?,
+                )?;
+                if reply["accepted"] != true {
+                    return Err(Error::Remote("voice-unavailable".into()));
+                }
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+            loop {
+                let state = client.request("voice.state", json!({}))?;
+                serde_json::from_value::<sentinel_ipc::contract::ResponsePayload>(
+                    json!({"name":"voice.state","payload":&state}),
+                )
+                .map_err(|error| Error::Protocol(error.to_string()))?;
+                if state["owned"] != true {
+                    return Err(Error::Remote("voice-not-owned".into()));
+                }
+                match state["state"].as_str() {
+                    Some("Completed")
+                        if state["transcript"].as_str().is_some_and(|s| !s.is_empty()) =>
+                    {
+                        return Ok(state);
+                    }
+                    Some("Failed" | "Cancelled") => {
+                        return Err(Error::Failed(format!(
+                            "Voice transcription failed: {}",
+                            state["failure"].as_str().unwrap_or("unknown")
+                        )));
+                    }
+                    _ if std::time::Instant::now() >= deadline => return Err(Error::Timeout),
+                    _ => std::thread::sleep(std::time::Duration::from_millis(250)),
+                }
+            }
+        })();
+        // Release the daemon's owner even after a failed or completed capture.
+        let _ = client.request("voice.action", json!({"action":"cancel"}));
+        let state = result?;
+        if output == Output::Text {
+            println!("{}", state["transcript"].as_str().unwrap_or_default());
+        } else {
+            emit(state, output, "voice.state");
+        }
+        return Ok(());
+    }
     let request = match &command {
         Commands::Status => Some(("daemon.status", json!({}))),
+        Commands::Voice {
+            command: VoiceCommand::State,
+        } => Some(("voice.state", json!({}))),
         Commands::Models => Some(("model.list", json!({}))),
         Commands::Sessions => Some(("session.list", json!({}))),
         Commands::Workspace {
