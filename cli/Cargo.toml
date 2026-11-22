@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/sentinel-ipc", "crates/sentinel-cli", "crates/sentinel-tui", "crates/sentinel-mascot"]
+members = ["crates/sentinel-ipc", "crates/sentinel-daemon-dev", "crates/sentinel-cli", "crates/sentinel-tui", "crates/sentinel-mascot"]
 resolver = "2"
 
 [workspace.package]

@@ -1,15 +1,21 @@
 //! Bounded local-user IPC client. Disconnect never implies cancellation.
 #[rustfmt::skip]
 pub mod contract;
+pub mod backup;
+pub mod server;
+pub mod voice;
 pub const APP_VERSION: &str = env!("SENTINEL_APP_VERSION");
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
+#[cfg(not(windows))]
+use std::path::Path;
+use std::path::PathBuf;
+#[cfg(unix)]
 use std::{
     collections::VecDeque,
     io::{BufRead, BufReader, Write},
-    path::{Path, PathBuf},
 };
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -175,8 +181,13 @@ impl Error {
         }
     }
 }
+#[cfg(not(windows))]
 pub fn default_socket_path() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".sentinel/run/daemon.sock")
+}
+#[cfg(windows)]
+pub fn default_socket_path() -> PathBuf {
+    windows::default_socket_path()
 }
 pub fn decode(bytes: &[u8]) -> Result<Envelope, Error> {
     if bytes.len() > contract::MAX_FRAME_BYTES {
@@ -205,6 +216,51 @@ pub fn decode(bytes: &[u8]) -> Result<Envelope, Error> {
     }
     Ok(message)
 }
+#[cfg(any(unix, windows, test))]
+fn validate_request(name: &str, payload: &Value) -> Result<(), Error> {
+    let _: contract::RequestPayload =
+        serde_json::from_value(json!({"name":name,"payload":payload}))
+            .map_err(|e| Error::Protocol(e.to_string()))?;
+    Ok(())
+}
+#[cfg(any(unix, windows, test))]
+fn encode_request(name: &str, payload: Value, id: &str) -> Result<Vec<u8>, Error> {
+    let message = Envelope {
+        version: Version {
+            major: contract::MAJOR,
+            minor: contract::MINOR,
+        },
+        kind: MessageType::Request,
+        id: id.into(),
+        name: name.into(),
+        payload,
+    };
+    let mut frame = serde_json::to_vec(&message).map_err(|e| Error::Protocol(e.to_string()))?;
+    if frame.len() + 1 > contract::MAX_FRAME_BYTES {
+        return Err(Error::Protocol("oversized request".into()));
+    }
+    frame.push(b'\n');
+    Ok(frame)
+}
+#[cfg(any(unix, windows, test))]
+fn correlate_response(message: Envelope, id: &str, name: &str) -> Result<Value, Error> {
+    if message.id != id {
+        return Err(Error::Protocol("response correlation mismatch".into()));
+    }
+    if message.kind == MessageType::Error {
+        let code = message.payload["code"].as_str().unwrap_or("unknown");
+        return Err(if code == "incompatible-major" {
+            Error::Incompatible
+        } else {
+            Error::Remote(code.into())
+        });
+    }
+    if message.kind != MessageType::Response || message.name != name {
+        return Err(Error::Protocol("invalid response".into()));
+    }
+    Ok(message.payload)
+}
+
 #[cfg(unix)]
 fn remaining_budget(deadline: std::time::Instant) -> Result<std::time::Duration, Error> {
     deadline
@@ -230,6 +286,7 @@ pub struct Client {
     incoming: Vec<u8>,
     sequence: u64,
     events: VecDeque<Envelope>,
+    capabilities: Vec<String>,
 }
 #[cfg(unix)]
 impl Client {
@@ -247,12 +304,24 @@ impl Client {
             incoming: Vec::new(),
             sequence: 0,
             events: VecDeque::new(),
+            capabilities: Vec::new(),
         };
-        client.request(
+        let hello = client.request(
             "hello",
             json!({"client_id":identity,"major":contract::MAJOR,"minor":contract::MINOR,"capabilities":contract::CAPABILITIES}),
         )?;
+        client.capabilities = hello["capabilities"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect();
         Ok(client)
+    }
+    /// Capabilities advertised by the daemon during the initial hello exchange.
+    pub fn capabilities(&self) -> &[String] {
+        &self.capabilities
     }
     pub fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> Result<(), Error> {
         self.reader
@@ -293,26 +362,11 @@ impl Client {
         payload: Value,
         deadline: std::time::Instant,
     ) -> Result<Value, Error> {
-        let _: contract::RequestPayload =
-            serde_json::from_value(json!({"name":name,"payload":payload}))
-                .map_err(|e| Error::Protocol(e.to_string()))?;
+        // Validate before consuming a request ID, as on the existing Unix path.
+        validate_request(name, &payload)?;
         self.sequence += 1;
         let id = self.sequence.to_string();
-        let message = Envelope {
-            version: Version {
-                major: contract::MAJOR,
-                minor: contract::MINOR,
-            },
-            kind: MessageType::Request,
-            id: id.clone(),
-            name: name.into(),
-            payload,
-        };
-        let mut frame = serde_json::to_vec(&message).map_err(|e| Error::Protocol(e.to_string()))?;
-        if frame.len() + 1 > contract::MAX_FRAME_BYTES {
-            return Err(Error::Protocol("oversized request".into()));
-        }
-        frame.push(b'\n');
+        let frame = encode_request(name, payload, &id)?;
         let mut remaining = frame.as_slice();
         while !remaining.is_empty() {
             self.writer
@@ -336,21 +390,7 @@ impl Client {
                 self.events.push_back(message);
                 continue;
             }
-            if message.id != id {
-                return Err(Error::Protocol("response correlation mismatch".into()));
-            }
-            if message.kind == MessageType::Error {
-                let code = message.payload["code"].as_str().unwrap_or("unknown");
-                return Err(if code == "incompatible-major" {
-                    Error::Incompatible
-                } else {
-                    Error::Remote(code.into())
-                });
-            }
-            if message.kind != MessageType::Response || message.name != name {
-                return Err(Error::Protocol("invalid response".into()));
-            }
-            return Ok(message.payload);
+            return correlate_response(message, &id, name);
         }
     }
     fn read(&mut self) -> Result<Envelope, Error> {
@@ -429,6 +469,64 @@ impl Client {
 mod tests {
     use super::*;
     #[test]
+    fn shared_request_encoding_and_correlation() {
+        validate_request("daemon.status", &json!({})).unwrap();
+        assert!(
+            validate_request(
+                "approval.respond",
+                &json!({"run_id":"r","approval_id":"a","allow":"yes"})
+            )
+            .is_err()
+        );
+        let frame = encode_request("daemon.status", json!({}), "42").unwrap();
+        assert_eq!(frame.last(), Some(&b'\n'));
+        let request: Envelope = serde_json::from_slice(&frame).unwrap();
+        assert_eq!(request.id, "42");
+        assert_eq!(request.name, "daemon.status");
+        let response = || Envelope {
+            version: Version {
+                major: contract::MAJOR,
+                minor: contract::MINOR,
+            },
+            kind: MessageType::Response,
+            id: "42".into(),
+            name: "daemon.status".into(),
+            payload: json!({"running":true}),
+        };
+        assert_eq!(
+            correlate_response(response(), "42", "daemon.status").unwrap()["running"],
+            true
+        );
+        assert!(matches!(
+            correlate_response(response(), "old", "daemon.status"),
+            Err(Error::Protocol(_))
+        ));
+        assert!(matches!(
+            correlate_response(response(), "42", "hello"),
+            Err(Error::Protocol(_))
+        ));
+        let error = Envelope {
+            kind: MessageType::Error,
+            payload: json!({"code":"incompatible-major"}),
+            ..response()
+        };
+        assert!(matches!(
+            correlate_response(error, "42", "daemon.status"),
+            Err(Error::Incompatible)
+        ));
+    }
+
+    #[test]
+    fn shared_request_enforces_wire_size_including_newline() {
+        let payload = json!({"session_id":"s", "text":"\0".repeat(50000)});
+        assert!(validate_request("chat.send", &payload).is_ok());
+        assert!(matches!(
+            encode_request("chat.send", payload, "1"),
+            Err(Error::Protocol(_))
+        ));
+    }
+
+    #[test]
     fn command_reconnection_policy_preserves_business_errors() {
         for error in [
             Error::Timeout,
@@ -485,6 +583,7 @@ mod tests {
             incoming: Vec::new(),
             sequence: 0,
             events: VecDeque::new(),
+            capabilities: Vec::new(),
         };
         let frame = br#"{"version":{"major":1,"minor":1},"type":"event","id":"","name":"run.cancelled","payload":{"run_id":"r","session_id":"s","text":"","state":"cancelled"}}"#;
         peer.write_all(&frame[..30]).unwrap();
@@ -510,6 +609,7 @@ mod tests {
             incoming: Vec::new(),
             sequence: 0,
             events: VecDeque::new(),
+            capabilities: Vec::new(),
         };
         writeln!(peer, "{}", json!({"version":{"major":1,"minor":1},"type":"event","id":"","name":"run.cancelled","payload":{"run_id":"r","session_id":"s","text":"","state":"cancelled"}})).unwrap();
         assert!(matches!(
@@ -531,6 +631,7 @@ mod tests {
             incoming: Vec::new(),
             sequence: 0,
             events: VecDeque::new(),
+            capabilities: Vec::new(),
         };
         assert!(matches!(
             client.request("daemon.status", json!({})),
@@ -553,6 +654,7 @@ mod tests {
             incoming: Vec::new(),
             sequence: 0,
             events: VecDeque::new(),
+            capabilities: Vec::new(),
         };
         writeln!(peer, "{}", json!({"version":{"major":1,"minor":1},"type":"response","id":"1","name":"daemon.status","payload":{"running":true,"daemon_version":APP_VERSION,"uptime_ms":0,"active_runs":0,"sessions":0}})).unwrap();
         assert_eq!(
@@ -590,10 +692,17 @@ mod tests {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::Client;
+#[cfg(not(any(unix, windows)))]
 pub struct Client;
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 impl Client {
+    pub fn capabilities(&self) -> &[String] {
+        &[]
+    }
     pub fn set_read_timeout(&self, _: Option<std::time::Duration>) -> Result<(), Error> {
         Ok(())
     }
@@ -631,10 +740,14 @@ mod transport_tests {
                 if request.name == "daemon.status" {
                     writeln!(stream,"{}",json!({"version":{"major":1,"minor":0},"type":"event","id":"","name":"output.delta","payload":{"text":"test","run_id":"r","session_id":"s"}})).unwrap();
                 }
-                writeln!(stream,"{}",json!({"version":{"major":1,"minor":0},"type":"response","id":request.id,"name":request.name,"payload":if request.name == "hello" { json!({"major":1,"minor":0,"daemon_version":APP_VERSION,"capabilities":[]}) } else { json!({"running":true,"daemon_version":APP_VERSION,"uptime_ms":0,"active_runs":0,"sessions":0}) }})).unwrap();
+                writeln!(stream,"{}",json!({"version":{"major":1,"minor":0},"type":"response","id":request.id,"name":request.name,"payload":if request.name == "hello" { json!({"major":1,"minor":0,"daemon_version":APP_VERSION,"capabilities":["agent","events"]}) } else { json!({"running":true,"daemon_version":APP_VERSION,"uptime_ms":0,"active_runs":0,"sessions":0}) }})).unwrap();
             }
         });
         let mut client = Client::connect(&path, "rust-test").unwrap();
+        assert_eq!(
+            client.capabilities(),
+            &[String::from("agent"), String::from("events")]
+        );
         assert_eq!(
             client.request("daemon.status", json!({})).unwrap()["running"],
             true
@@ -701,6 +814,7 @@ mod close_regression_tests {
             incoming: Vec::new(),
             sequence: 0,
             events: VecDeque::new(),
+            capabilities: Vec::new(),
         }
     }
     fn response(id: &str, name: &str) -> Value {
