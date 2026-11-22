@@ -6,3 +6,7 @@ These lightweight ADRs preserve durable design choices that affect future change
 - [ADR-0002: Separate local persistence domains](ADR-0002-separate-persistence-domains.md)
 - [ADR-0003: Provider and model routing boundaries](ADR-0003-provider-model-routing.md)
 - [ADR-0004: Tool execution gateway](ADR-0004-tool-execution-gateway.md)
+
+## Proposed
+
+- [ADR-0005: Rust desktop and runtime migration](ADR-0005-rust-desktop-runtime-migration.md)

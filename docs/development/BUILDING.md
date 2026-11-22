@@ -60,3 +60,50 @@ clang-tidy -p /tmp/sentinel-cleanup-analysis apps/sentinel-desktop/src/DesktopRu
 ```
 
 The helper strips only CMake PCH flags, preserves other compile arguments and resolves macOS SDK/libc++ paths through xcrun. See the deferred cleanup report for the actually completed five-source scope and narrow QObject ownership analyzer exception. This supersedes the previous PCH blocker for that scope, not whole-repository analysis certification.
+
+## Rust development artifact staging
+
+The following helpers build the locked Rust CLI and the isolated development
+daemon for an explicitly selected target, then create a new local evaluation
+stage. They do not install, sign, publish, replace the Qt daemon, migrate a Qt
+profile, or include the Slint prototype. Use a new absolute destination whose
+parent already exists. Cargo needs the Rust target and its platform linker; Unix
+daemon builds also need a C compiler for bundled SQLite. Set
+`CARGO_NET_OFFLINE=true` only when the complete dependency and toolchain cache is
+already present.
+
+```sh
+RUSTUP_TOOLCHAIN=1.94.0 tools/terminal/build-stage.sh aarch64-apple-darwin /tmp/sentinel-rust-eval
+```
+
+On Windows PowerShell, use a new absolute local-drive destination:
+
+```powershell
+$env:RUSTUP_TOOLCHAIN = '1.94.0'
+./tools/terminal/build-stage.ps1 x86_64-pc-windows-msvc C:\temp\sentinel-rust-eval
+```
+
+The accepted build target strings are `x86_64-unknown-linux-gnu`,
+`aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`,
+`x86_64-pc-windows-gnu`, `x86_64-pc-windows-msvc`, and
+`aarch64-pc-windows-msvc`. This is a build-input matrix, not a support or native
+acceptance matrix. The Unix daemon is isolated development software; the Windows
+daemon currently provides only its limited IPC foundation. Linux native builds,
+Windows native builds and cross-target deployment still require their own
+verification; Windows Qt pipe compatibility and security are not certified.
+
+The stage contains `bin/sentinel[.exe]`, `bin/sentinel-daemon-dev[.exe]`,
+terminal assets, license notices, and `manifest.json`. The manifest is written
+last and records the target, canonical app version, Cargo lockfile hash and the
+SHA-256 of the two binaries. These checksums provide corruption detection only;
+they are not signatures or provenance. The terminal assets and notices are not
+covered by those hashes. A failed staging attempt may leave an incomplete output
+directory without a manifest; remove it manually before retrying.
+
+A scoped macOS arm64 check built and staged with Rust 1.94 using the locked
+local cache. The staged CLI reported the canonical version, and its local
+`update verify-stage` command checked both declared binary hashes and the
+supplied lockfile hash. A separate local packaging adapter produced a tarball
+from an earlier stage. These checks do not establish source provenance,
+signatures, platform-wide runtime behavior, or the integrity of the staged
+terminal assets.
