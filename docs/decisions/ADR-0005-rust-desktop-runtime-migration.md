@@ -200,7 +200,7 @@ does not make the missing live activity streams available.
 | Surface | Present in the development Rust/Slint experiment | Primary parity blockers |
 | --- | --- | --- |
 | Chat | Plain-text streaming, cancellation/reattach, session list/create/attach, bounded transcript, branching edits and historical retry/regeneration, rename/delete, durable history, and bounded workspace UTF-8, FODT, DOCX, text PDF and opt-in PNG/JPEG/static WebP attachments via Slint and CLI | Production runtime ownership, scanned PDF/OCR, broader media and document support, voice, citations and full message presentation |
-| Models/providers | Persisted selection and loopback endpoint editing for supported configured local providers, selected-endpoint discovery, opt-in OpenAI, Groq, Mistral, Claude and Gemini HTTPS for current-prompt text Chat, OpenAI-compatible SSE and Ollama Chat adapters, optional Ollama pull/status/cancel-local-wait/remove helper | Provider/model discovery and lifecycle parity, remaining provider dialects and continuation behavior, native live-provider parity, and explicit outcome reconciliation after a cancelled Ollama wait |
+| Models/providers | Persisted selection and loopback endpoint editing for supported configured local providers, selected-endpoint discovery, opt-in OpenAI, Groq, Mistral, Claude, Gemini and DeepSeek HTTPS for text Chat, OpenAI-compatible SSE and Ollama Chat adapters, optional Ollama pull/status/cancel-local-wait/remove helper | Provider/model discovery and lifecycle parity, remaining provider dialects and continuation behavior, native live-provider parity, and explicit outcome reconciliation after a cancelled Ollama wait |
 | Settings | Persisted theme, Chat response instructions, model selection and configured workspace selection; read-only runtime and provider diagnostics | Remaining Qt settings, credentials and helper workflows |
 | Memory | Explicit session-only create/read/correct/delete, revision checks and bounded paging; never injected automatically | Production memory domains, search/indexing/retrieval, retention and migration are separate and absent |
 | Agent | Typed inspect-file(s), directory, create-file and macOS allowlisted process tasks; per-call approval where required; verified evidence-derived terminal answer; separate audit store and inspector | No generic production AgentRuntime, full ToolExecutionGateway/permission policy, subagent execution; narrow development workspace and provider prerequisites |
@@ -234,11 +234,10 @@ These source checks support the restricted development-agent description; they
 do not prove equivalence with the production C++ Agent runtime or live-model
 reliability.
 
-The Ollama removal UI requires typing the exact model ID, but the current
-`model.helper_action` request does not carry a confirmation field and the
-development daemon does not independently enforce that UI confirmation. This
-is a client-side usability safeguard, not a server authorization boundary for
-other same-user IPC clients.
+The Rust daemon requires the exact model ID as an explicit IPC confirmation
+before starting Ollama model removal. Slint forwards the typed ID. See the
+[Rust migration tracker](../roadmaps/RUST_MIGRATION_TRACKER.md) for the current
+implementation and acceptance backlog.
 
 Remaining full-app gates are AC-P2-03 (provider/model parity and real-model
 reliability), AC-P5-01–05 (shared endpoint/profile ownership and recovery),
