@@ -1,4 +1,4 @@
-import { Button, CheckBox, ComboBox, LineEdit, Palette, TextEdit } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, TextEdit } from "std-widgets.slint";
 
 export component Panel inherits Window {
     title: root.compact ? "Sentinel Quick Panel" : "Sentinel";
@@ -13,6 +13,10 @@ export component Panel inherits Window {
     }
 
     in property <bool> compact;
+    in property <bool> cloud-chat;
+    in property <bool> cloud-history;
+    in property <bool> cloud-documents;
+    in property <string> cloud-provider-name;
     in property <string> active-page: "chat";
     in-out property <string> settings-category: "general";
     in property <string> endpoint;
@@ -49,6 +53,7 @@ export component Panel inherits Window {
     in property <[string]> attachments;
     in property <int> selected-attachment: -1;
     in property <string> attachment-status;
+    in property <string> attachment-formats;
     in property <bool> workspace-changes-capable;
     in property <string> workspace-changes-view;
     in property <string> workspace-changes-status;
@@ -64,6 +69,10 @@ export component Panel inherits Window {
     in property <bool> extension-catalog-truncated;
     in property <bool> memory-capable;
     in property <bool> chat-revisions-capable;
+    in property <bool> session-flags-capable;
+    in property <string> selected-session-id;
+    in property <bool> selected-session-archived;
+    in property <bool> selected-session-pinned;
     in property <bool> session-management-capable;
     in property <bool> can-regenerate-latest;
     in property <bool> can-retry-latest;
@@ -80,6 +89,11 @@ export component Panel inherits Window {
     in-out property <string> session-delete-confirmation;
     in property <[string]> models;
     in property <int> selected-model: -1;
+    in property <[string]> local-providers;
+    in property <string> provider-endpoint-provider;
+    in property <string> saved-provider-endpoint;
+    in property <string> provider-endpoint-status;
+    in property <int> selected-local-provider: -1;
     in property <string> model-status: "Loading saved model selection…";
     in property <bool> ollama-helper-capable;
     in property <bool> ollama-pulling;
@@ -154,6 +168,7 @@ export component Panel inherits Window {
 
     callback reconnect();
     callback quit-app();
+    callback toggle-shell-mode();
     callback navigate(string);
     callback set-theme(int);
     callback save-response-profile(string);
@@ -170,8 +185,11 @@ export component Panel inherits Window {
     callback refresh-sessions();
     callback select-session(int);
     callback rename-session(string);
+    callback set-session-flag(string, string);
     callback delete-session(string);
     callback refresh-models();
+    callback select-local-provider(int);
+    callback save-provider-endpoint(string, string);
     callback select-model(int);
     callback refresh-workspace-files();
     callback refresh-attachment-files();
@@ -211,6 +229,7 @@ export component Panel inherits Window {
     callback edit-latest(string);
 
     changed active-page => {
+        body-scroll.content-y = 0px;
         if root.active-page == "chat" || root.active-page == "agent" {
             root.focus-composer();
         }
@@ -221,7 +240,7 @@ export component Panel inherits Window {
         }
     }
     public function focus-composer() {
-        if root.active-page == "agent" && root.agent-mode && root.agent-restricted {
+        if (root.compact || root.active-page == "agent") && root.agent-mode && root.agent-restricted {
             if root.agent-search-mode {
                 agent-search-pattern-input.focus();
             } else if root.agent-edit-mode {
@@ -240,52 +259,56 @@ export component Panel inherits Window {
         }
     }
 
+    property <bool> can-send: root.connected && !root.running && !root.waiting && !root.selected-session-archived
+        && (root.compact || (root.active-page == "chat" && !root.agent-mode)
+            || (root.active-page == "agent" && root.agent-capable))
+        && root.submission-text != ""
+        && (!(root.agent-mode && root.agent-restricted)
+            || ((!root.agent-search-mode || root.agent-search-path != "")
+                && (!root.agent-edit-mode || root.agent-edit-expected != "")
+                && (!root.agent-glob-mode || root.agent-glob-path != "")));
+    property <string> submission-text: !(root.agent-mode && root.agent-restricted) ? root.draft
+        : root.agent-work-plan-mode ? root.agent-work-plan-steps
+        : root.agent-read-plan-mode ? root.agent-read-plan-steps
+        : root.agent-search-mode ? root.agent-search-pattern
+        : root.agent-edit-mode ? root.agent-edit-path
+        : root.agent-glob-mode ? root.agent-glob-pattern
+        : root.agent-paths;
+
     keyboard-scope := FocusScope {
         capture-key-pressed(event) => {
-            if event.modifiers.control && event.text == "n" {
-                root.navigate("chat");
-                root.new-session();
-                EventResult.accept
-            } else if event.modifiers.control && event.text == "w" {
-                root.quit-app();
-                EventResult.accept
-            } else if event.modifiers.control && event.text == Key.Return {
-                if root.connected && !root.running && !root.waiting
-                    && (root.active-page == "chat" || (root.active-page == "agent" && root.agent-capable))
-                    && (root.agent-mode && root.agent-restricted
-                        ? (root.agent-work-plan-mode || root.agent-read-plan-mode
-                            ? (root.agent-work-plan-mode ? root.agent-work-plan-steps != "" : root.agent-read-plan-steps != "")
-                            : (root.agent-search-mode
-                            ? root.agent-search-path != "" && root.agent-search-pattern != ""
-                            : (root.agent-edit-mode
-                                ? root.agent-edit-path != "" && root.agent-edit-expected != ""
-                                : (root.agent-glob-mode
-                                    ? root.agent-glob-path != "" && root.agent-glob-pattern != ""
-                                    : root.agent-paths != ""))))
-                        : root.draft != "") {
-                    root.send(root.agent-mode && root.agent-restricted
-                        ? (root.agent-work-plan-mode ? root.agent-work-plan-steps
-                            : (root.agent-read-plan-mode ? root.agent-read-plan-steps
-                            : (root.agent-search-mode ? root.agent-search-pattern
-                            : (root.agent-edit-mode ? root.agent-edit-path
-                                : (root.agent-glob-mode ? root.agent-glob-pattern : root.agent-paths)))))
-                        : root.draft);
+            if (event.modifiers.control || event.modifiers.meta) && event.text == "n" {
+                if root.connected && !root.running && !root.waiting {
+                    root.navigate("chat");
+                    root.new-session();
                 }
                 EventResult.accept
-            } else if event.text == Key.Escape && root.running && !root.waiting {
+            } else if (event.modifiers.control || event.modifiers.meta) && event.text == "w" {
+                root.quit-app();
+                EventResult.accept
+            } else if (event.modifiers.control || event.modifiers.meta) && event.text == Key.Return && root.can-send {
+                root.send(root.submission-text);
+                EventResult.accept
+            } else if event.text == Key.Escape && root.connected && root.running && !root.waiting {
                 root.stop();
                 EventResult.accept
             } else {
                 EventResult.reject
             }
         }
+        body-scroll := ScrollView {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
         VerticalLayout {
         x: 0;
         y: 0;
         width: parent.width;
         height: parent.height;
         padding: root.compact ? 12px : 20px;
-        spacing: 12px;
+        padding-right: root.compact ? 16px : 20px;
+        spacing: root.compact ? 8px : 12px;
 
         if !root.compact && root.width >= 820px : HorizontalLayout {
             spacing: 8px;
@@ -338,19 +361,51 @@ export component Panel inherits Window {
             font-size: 24px;
             color: Palette.foreground;
         }
-        Text { text: root.status; color: Palette.foreground; wrap: word-wrap; }
+        HorizontalLayout {
+            spacing: 8px;
+            Text { text: root.status; color: Palette.foreground; wrap: word-wrap; horizontal-stretch: 1; }
+            Button {
+                text: root.compact ? "Desktop" : "Quick Panel";
+                accessible-label: root.compact ? "Switch to the full Sentinel desktop" : "Switch to Sentinel Quick Panel";
+                clicked => { root.toggle-shell-mode(); }
+            }
+        }
 
+        if root.cloud-chat && (root.compact || root.active-page == "chat") : Text {
+            text: root.cloud-provider-name + (root.cloud-history ? " · Earlier turns from this provider and model may be sent." : " · No earlier messages are sent.");
+            wrap: word-wrap;
+        }
+        if root.cloud-chat && root.cloud-documents && (root.compact || root.active-page == "chat") : Text {
+            text: "Text from selected documents is sent with this message.";
+            wrap: word-wrap;
+        }
         if root.compact || root.active-page == "chat" : HorizontalLayout {
             spacing: 8px;
             ComboBox {
                 model: root.sessions;
                 current-index: root.selected-session;
                 enabled: root.connected && !root.running && !root.waiting && root.sessions.length > 0;
+                horizontal-stretch: 1;
                 accessible-label: "Saved sessions";
                 selected(value) => { root.select-session(self.current-index); }
             }
             Button { text: "Refresh"; enabled: root.connected && !root.running && !root.waiting; clicked => { root.refresh-sessions(); } }
             Button { text: "New"; enabled: root.connected && !root.running && !root.waiting; clicked => { root.new-session(); } }
+        }
+        if (root.compact || root.active-page == "chat") && root.session-flags-capable
+            && root.selected-session-id != "" : HorizontalLayout {
+            spacing: 8px;
+            Button {
+                text: root.selected-session-pinned ? "Unpin" : "Pin";
+                enabled: root.connected && !root.running && !root.waiting;
+                clicked => { root.set-session-flag(root.selected-session-id, root.selected-session-pinned ? "unpinConversation" : "pinConversation"); }
+            }
+            Button {
+                text: root.selected-session-archived ? "Unarchive" : "Archive";
+                enabled: root.connected && !root.running && !root.waiting;
+                clicked => { root.set-session-flag(root.selected-session-id, root.selected-session-archived ? "unarchiveConversation" : "archiveConversation"); }
+            }
+            Text { text: root.selected-session-archived ? "Unarchive to send messages." : ""; wrap: word-wrap; }
         }
         if root.active-page == "chat" && !root.compact && root.session-management-capable && root.width >= 820px : HorizontalLayout {
             spacing: 8px;
@@ -388,8 +443,8 @@ export component Panel inherits Window {
         }
         if root.active-page == "chat" && !root.compact && root.workspace-files-capable : VerticalLayout {
             spacing: 6px;
-            Text { text: "Text attachments"; font-size: 18px; }
-            Text { text: "Choose only from the authorized workspace snapshot. Up to 4 text files, 8 KiB each and 32 KiB total. The daemon validates paths, text content and limits before a request is accepted."; wrap: word-wrap; }
+            Text { text: "Attachments"; font-size: 18px; }
+            Text { text: "Choose up to 4 files from the authorized workspace. Supported formats: " + root.attachment-formats + ". The daemon validates each file before sending."; wrap: word-wrap; }
             Text { text: root.attachment-status; wrap: word-wrap; }
             if root.width >= 820px : HorizontalLayout {
                 spacing: 8px;
@@ -438,12 +493,53 @@ export component Panel inherits Window {
                 }
             }
         }
+        if root.compact && !root.agent-mode && root.attachments.length > 0 : VerticalLayout {
+            spacing: 4px;
+            HorizontalLayout {
+                spacing: 8px;
+                Text { text: "Chat attachments"; horizontal-stretch: 1; vertical-alignment: center; }
+                Button {
+                    text: "Clear";
+                    enabled: !root.running && !root.waiting;
+                    accessible-label: "Clear all Chat attachments";
+                    clicked => { root.clear-attachments(); }
+                }
+            }
+            for attachment in root.attachments : Text {
+                text: attachment;
+                wrap: word-wrap;
+            }
+        }
+        if root.active-page == "models" && !root.compact && root.local-providers.length > 0 : ComboBox {
+            model: root.local-providers;
+            current-index: root.selected-local-provider;
+            enabled: root.connected && !root.running && !root.waiting;
+            accessible-label: "Local provider";
+            selected(value) => { root.select-local-provider(self.current-index); }
+        }
+        if root.active-page == "models" && !root.compact && root.provider-endpoint-provider != "" : VerticalLayout {
+            spacing: 6px;
+            Text { text: "Local provider endpoint"; }
+            endpoint-editor := LineEdit {
+                text: root.saved-provider-endpoint;
+                placeholder-text: "http://127.0.0.1:11434";
+                accessible-label: "Local provider endpoint";
+                enabled: root.connected && !root.running && !root.waiting;
+            }
+            Button {
+                text: "Save endpoint";
+                enabled: endpoint-editor.enabled && endpoint-editor.text != "" && endpoint-editor.text != root.saved-provider-endpoint;
+                clicked => { root.save-provider-endpoint(root.provider-endpoint-provider, endpoint-editor.text); }
+            }
+            Text { text: root.provider-endpoint-status; wrap: word-wrap; }
+        }
         if root.compact || root.active-page == "models" : HorizontalLayout {
             spacing: 8px;
             ComboBox {
                 model: root.models;
                 current-index: root.selected-model;
                 enabled: root.connected && !root.running && !root.waiting && root.models.length > 0;
+                horizontal-stretch: 1;
                 accessible-label: "Model";
                 selected(value) => { root.select-model(self.current-index); }
             }
@@ -1046,6 +1142,12 @@ export component Panel inherits Window {
                 max-height: 180px;
                 accessible-label: "Exact action and resources awaiting one-time approval";
             }
+            HorizontalLayout {
+                spacing: 8px;
+                Rectangle { horizontal-stretch: 1; }
+                Button { text: "Deny"; enabled: root.connected && !root.waiting; clicked => { root.respond-approval(false); } }
+                Button { text: "Approve once"; enabled: root.connected && !root.waiting; clicked => { root.respond-approval(true); } }
+            }
         }
         if root.active-page == "agent" && !root.compact && root.agent-search-evidence != "" : VerticalLayout {
             Text { text: "Observed search evidence"; font-size: 16px; }
@@ -1105,22 +1207,26 @@ export component Panel inherits Window {
             vertical-stretch: 1;
             accessible-label: "Conversation transcript";
         }
-        if (root.compact || root.active-page == "chat") && root.chat-revisions-capable : HorizontalLayout {
+        if (root.compact || root.active-page == "chat") && !root.selected-session-archived && !root.agent-mode && root.chat-revisions-capable
+            && (root.can-regenerate-latest || root.can-retry-latest) : HorizontalLayout {
             spacing: 8px;
             Button {
-                text: "Regenerate latest";
+                text: root.compact ? "Regenerate" : "Regenerate latest";
+                accessible-label: "Regenerate latest";
                 enabled: root.connected && root.chat-revisions-capable && root.can-regenerate-latest
                     && !root.running && !root.waiting;
                 clicked => { root.regenerate-latest(); }
             }
             Button {
-                text: "Edit latest & send";
+                text: root.compact ? "Edit & send" : "Edit latest & send";
+                accessible-label: "Edit latest & send";
                 enabled: root.connected && root.chat-revisions-capable && root.can-regenerate-latest
                     && root.draft != "" && !root.running && !root.waiting;
                 clicked => { root.edit-latest(root.draft); }
             }
             Button {
-                text: "Retry failed latest";
+                text: root.compact ? "Retry" : "Retry failed latest";
+                accessible-label: "Retry failed latest";
                 enabled: root.connected && root.chat-revisions-capable && root.can-retry-latest
                     && !root.running && !root.waiting;
                 clicked => { root.retry-latest(); }
@@ -1156,6 +1262,10 @@ export component Panel inherits Window {
             max-height: 140px;
             accessible-label: "New file contents";
         }
+        if !root.compact && root.active-page == "chat" && root.agent-mode : Text {
+            text: "Agent mode is active. Open Agent to follow the current task.";
+            wrap: word-wrap;
+        }
         composer := LineEdit {
             visible: (root.compact || root.active-page == "chat" || (root.active-page == "agent" && root.agent-capable))
                 && !(root.agent-mode && root.agent-restricted);
@@ -1164,8 +1274,8 @@ export component Panel inherits Window {
             accessible-label: "Message";
             read-only: root.waiting && !root.running;
             accepted => {
-                if root.connected && !root.running && !root.waiting {
-                    root.send(self.text);
+                if root.can-send {
+                    root.send(root.submission-text);
                 }
             }
         }
@@ -1179,39 +1289,16 @@ export component Panel inherits Window {
                 clicked => { root.stop(); }
             }
             Button {
-                text: "Send";
-                enabled: root.connected && !root.running && !root.waiting
-                    && (root.agent-mode && root.agent-restricted
-                        ? (root.agent-work-plan-mode || root.agent-read-plan-mode
-                            ? (root.agent-work-plan-mode ? root.agent-work-plan-steps != "" : root.agent-read-plan-steps != "")
-                            : (root.agent-search-mode
-                            ? root.agent-search-path != "" && root.agent-search-pattern != ""
-                            : (root.agent-edit-mode
-                                ? root.agent-edit-path != "" && root.agent-edit-expected != ""
-                                : (root.agent-glob-mode
-                                    ? root.agent-glob-path != "" && root.agent-glob-pattern != ""
-                                    : root.agent-paths != "")))) : root.draft != "");
-                clicked => {
-                    root.send(root.agent-mode && root.agent-restricted
-                        ? (root.agent-work-plan-mode ? root.agent-work-plan-steps
-                            : (root.agent-read-plan-mode ? root.agent-read-plan-steps
-                            : (root.agent-search-mode ? root.agent-search-pattern
-                            : (root.agent-edit-mode ? root.agent-edit-path
-                                : (root.agent-glob-mode ? root.agent-glob-pattern : root.agent-paths)))))
-                        : root.draft);
-                }
+                text: root.agent-mode ? "Send to Agent" : "Send";
+                enabled: root.can-send;
+                clicked => { root.send(root.submission-text); }
             }
         }
-        if root.compact || root.active-page == "chat" || root.active-page == "agent" : Text {
+        if !root.compact && (root.active-page == "chat" || root.active-page == "agent") : Text {
             text: "Keyboard: Ctrl/⌘+Enter send · Esc stop · Ctrl/⌘+N new Chat · Ctrl/⌘+W close";
             color: Palette.foreground;
             wrap: word-wrap;
         }
-        if root.approval-detail != "" && root.approval-pending : HorizontalLayout {
-            spacing: 8px;
-            Rectangle { horizontal-stretch: 1; }
-            Button { text: "Deny"; enabled: root.connected && !root.waiting; clicked => { root.respond-approval(false); } }
-            Button { text: "Approve once"; enabled: root.connected && !root.waiting; clicked => { root.respond-approval(true); } }
         }
         }
     }

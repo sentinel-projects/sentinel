@@ -51,6 +51,7 @@ enum Command {
     RemoveAttachment,
     ClearAttachments,
     RenameSession(String),
+    SetSessionFlag { id: String, action: String },
     DeleteSession(String),
     EditLatest(String),
     RefreshOllamaHelper,
@@ -64,6 +65,8 @@ enum Command {
     Select(usize),
     RefreshModels,
     SelectModel(usize),
+    SelectProvider(usize),
+    SaveProviderEndpoint { provider: String, endpoint: String },
     SetAgentMode(bool),
     SetAgentDirectoryMode(bool),
     SetAgentCreateMode(bool),
@@ -78,7 +81,7 @@ enum Command {
     SetAgentWorkPlanMode(bool),
     RespondApproval(bool),
     New,
-    Send(String),
+    Send { text: String, agent: bool },
     Stop,
 }
 
@@ -97,6 +100,10 @@ struct View {
     provider_diagnostics: String,
     provider_diagnostics_status: String,
     provider_diagnostics_capable: bool,
+    provider_endpoints_capable: bool,
+    provider_endpoint: String,
+    provider_endpoint_provider: String,
+    provider_endpoint_status: String,
     runtime_projection_capable: bool,
     runtime_projection_status: String,
     runtime_projection_view: String,
@@ -111,8 +118,11 @@ struct View {
     memory_capable: bool,
     chat_revisions_capable: bool,
     session_management_capable: bool,
+    session_flags_capable: bool,
+    session_flags: std::collections::HashMap<String, (bool, bool)>,
     session_delete_confirmation: String,
     ollama_helper_capable: bool,
+    ollama_helper_advertised: bool,
     ollama_pulling: bool,
     ollama_active_model: String,
     ollama_progress: f64,
@@ -152,6 +162,7 @@ struct View {
     selected_attachment: usize,
     attachments: Vec<String>,
     attachment_status: String,
+    attachment_formats: String,
     workspace_changes_capable: bool,
     workspace_changes_view: String,
     workspace_changes_status: String,
@@ -171,6 +182,11 @@ struct View {
     models: Vec<(String, String, String)>,
     selected_provider: String,
     selected_model: String,
+    local_provider_catalog: bool,
+    cloud_chat: bool,
+    cloud_history: bool,
+    cloud_documents: bool,
+    local_providers: Vec<String>,
     model_status: String,
     agent_capable: bool,
     agent_restricted: bool,
@@ -371,6 +387,7 @@ impl PanelUpdates {
                         view.selected_attachment as i32
                     });
                     panel.set_attachment_status(view.attachment_status.clone().into());
+                    panel.set_attachment_formats(view.attachment_formats.clone().into());
                     panel.set_workspace_changes_capable(view.workspace_changes_capable);
                     panel.set_workspace_changes_view(view.workspace_changes_view.clone().into());
                     panel
@@ -465,6 +482,9 @@ impl PanelUpdates {
                     panel.set_approval_pending(view.approval_pending);
                     panel.set_approval_capable(view.approval_capable);
                     panel.set_model_status(view.model_status.into());
+                    panel.set_provider_endpoint_provider(view.provider_endpoint_provider.into());
+                    panel.set_saved_provider_endpoint(view.provider_endpoint.into());
+                    panel.set_provider_endpoint_status(view.provider_endpoint_status.into());
                     panel.set_ollama_helper_capable(view.ollama_helper_capable);
                     panel.set_ollama_pulling(view.ollama_pulling);
                     panel.set_ollama_active_model(view.ollama_active_model.clone().into());
@@ -483,10 +503,27 @@ impl PanelUpdates {
                     panel.set_sessions(slint::ModelRc::new(slint::VecModel::from(
                         view.sessions
                             .iter()
-                            .map(|(_, title)| slint::SharedString::from(title.clone()))
+                            .map(|(id, title)| {
+                                let (archived, pinned) =
+                                    view.session_flags.get(id).copied().unwrap_or_default();
+                                let archive_label = if archived { "Archived · " } else { "" };
+                                let pin_label = if pinned { "Pinned · " } else { "" };
+                                slint::SharedString::from(format!(
+                                    "{archive_label}{pin_label}{title}"
+                                ))
+                            })
                             .collect::<Vec<_>>(),
                     )));
+                    let (archived, pinned) = view
+                        .session_flags
+                        .get(&view.selected_id)
+                        .copied()
+                        .unwrap_or_default();
                     panel.set_selected_session(selected);
+                    panel.set_selected_session_id(view.selected_id.clone().into());
+                    panel.set_selected_session_archived(archived);
+                    panel.set_selected_session_pinned(pinned);
+                    panel.set_session_flags_capable(view.session_flags_capable);
                     panel.set_session_management_capable(view.session_management_capable);
                     panel.set_session_title(
                         view.sessions
@@ -513,6 +550,30 @@ impl PanelUpdates {
                             .collect::<Vec<_>>(),
                     )));
                     panel.set_selected_model(selected_model);
+                    let selected_local_provider = view
+                        .local_providers
+                        .iter()
+                        .position(|provider| provider == &view.selected_provider)
+                        .map_or(-1, |index| index as i32);
+                    panel.set_local_providers(slint::ModelRc::new(slint::VecModel::from(
+                        view.local_providers
+                            .into_iter()
+                            .map(slint::SharedString::from)
+                            .collect::<Vec<_>>(),
+                    )));
+                    panel.set_selected_local_provider(selected_local_provider);
+                    let cloud_provider = match view.selected_provider.as_str() {
+                        "openai" => "OpenAI",
+                        "groq" => "Groq",
+                        "mistral" => "Mistral",
+                        "claude" => "Claude",
+                        "gemini" => "Gemini",
+                        _ => "Cloud provider",
+                    };
+                    panel.set_cloud_provider_name(cloud_provider.into());
+                    panel.set_cloud_chat(view.connected && view.cloud_chat);
+                    panel.set_cloud_history(view.cloud_history);
+                    panel.set_cloud_documents(view.cloud_documents);
                     panel.set_connected(view.connected);
                     panel.set_running(view.running);
                     panel.set_waiting(view.stopping);
@@ -551,6 +612,17 @@ fn refresh(client: &mut Client, view: &mut View) -> Result<(), Error> {
     let rows = data["sessions"]
         .as_array()
         .ok_or_else(|| Error::Protocol("invalid session list".into()))?;
+    view.session_flags = rows
+        .iter()
+        .take(128)
+        .filter_map(|row| {
+            let id = row["session_id"].as_str()?;
+            Some((
+                id.to_owned(),
+                (row["archived"] == true, row["pinned"] == true),
+            ))
+        })
+        .collect();
     view.sessions = rows
         .iter()
         .take(128)
@@ -676,8 +748,8 @@ fn add_attachment(view: &mut View) -> Result<(), Error> {
         return Ok(());
     }
     if view.attachments.len() >= 4 {
-        view.attachment_status = "At most 4 text files can be attached.".into();
-        return Err(Error::Usage("At most 4 text files can be attached.".into()));
+        view.attachment_status = "At most 4 files can be attached.".into();
+        return Err(Error::Usage("At most 4 files can be attached.".into()));
     }
     view.attachments.push(path);
     view.selected_attachment = view.attachments.len() - 1;
@@ -1227,7 +1299,91 @@ fn select_workspace(
     }
     Ok(())
 }
+fn provider_endpoint_key(provider: &str) -> Option<&'static str> {
+    match provider {
+        "ollama" => Some("ollamaEndpoint"),
+        "lm-studio" => Some("lmStudioEndpoint"),
+        "llama-cpp-server" => Some("llamaCppEndpoint"),
+        _ => None,
+    }
+}
+
+fn refresh_provider_endpoint(client: &mut Client, view: &mut View) -> Result<(), Error> {
+    view.provider_endpoint_provider.clear();
+    view.provider_endpoint.clear();
+    view.provider_endpoint_status.clear();
+    if view.provider_endpoints_capable
+        && let Some(key) = provider_endpoint_key(&view.selected_provider)
+    {
+        let response = request(client, RequestPayload::DesktopSettings {})?;
+        if let Some(endpoint) = response["values"][key].as_str().filter(|s| !s.is_empty()) {
+            view.provider_endpoint_provider = view.selected_provider.clone();
+            view.provider_endpoint = endpoint.into();
+        }
+    }
+    Ok(())
+}
+
+fn save_provider_endpoint(
+    client: &mut Client,
+    view: &mut View,
+    provider: &str,
+    endpoint: &str,
+) -> Result<(), Error> {
+    let key = provider_endpoint_key(provider)
+        .filter(|_| view.provider_endpoints_capable && provider == view.provider_endpoint_provider)
+        .ok_or_else(|| {
+            Error::Usage("The editable local provider changed. Refresh the Models page.".into())
+        })?;
+    let endpoint = endpoint.trim();
+    let address = endpoint.strip_prefix("http://").unwrap_or_default();
+    let address = address
+        .strip_suffix('/')
+        .unwrap_or(address)
+        .parse::<std::net::SocketAddr>();
+    let expected = address
+        .ok()
+        .filter(|address| address.ip().is_loopback() && address.port() != 0)
+        .map(|address| format!("http://{address}"))
+        .ok_or_else(|| Error::Usage("Use a loopback HTTP address with a port.".into()))?;
+    let response = request(
+        client,
+        RequestPayload::DesktopSetting {
+            key: key.into(),
+            value: expected.clone().into(),
+        },
+    )?;
+    if response["accepted"] != true {
+        return Err(Error::Failed(
+            "The daemon did not save the provider endpoint.".into(),
+        ));
+    }
+    refresh_provider_endpoint(client, view)?;
+    if view.provider_endpoint_provider != provider || view.provider_endpoint != expected {
+        return Err(Error::Failed(
+            "The saved endpoint could not be read back.".into(),
+        ));
+    }
+    let model_refresh = refresh_models(client, view);
+    view.provider_endpoint_status = if model_refresh.is_ok() {
+        "Saved endpoint and refreshed models.".into()
+    } else {
+        "Saved endpoint. Model discovery is currently unavailable.".into()
+    };
+    Ok(())
+}
+
 fn refresh_models(client: &mut Client, view: &mut View) -> Result<(), Error> {
+    if view.local_provider_catalog {
+        let state = request(client, RequestPayload::TerminalState {})?;
+        view.local_providers = state["providers"]
+            .as_array()
+            .ok_or_else(|| Error::Protocol("invalid local provider list".into()))?
+            .iter()
+            .take(4)
+            .filter_map(|row| row["provider_id"].as_str().map(str::to_owned))
+            .collect();
+    }
     clear_provider_diagnostics(
         view,
         "Refresh diagnostics after checking the selected provider.",
@@ -1236,8 +1392,19 @@ fn refresh_models(client: &mut Client, view: &mut View) -> Result<(), Error> {
         Ok(data) => data,
         Err(error) => {
             view.models.clear();
-            view.selected_provider.clear();
-            view.selected_model.clear();
+            if view.local_provider_catalog || view.cloud_chat {
+                if let Ok(current) = request(client, RequestPayload::ModelCurrent {}) {
+                    view.selected_provider =
+                        current["provider_id"].as_str().unwrap_or_default().into();
+                    view.selected_model = current["model_id"].as_str().unwrap_or_default().into();
+                    view.ollama_helper_capable =
+                        view.ollama_helper_advertised && view.selected_provider == "ollama";
+                }
+            } else {
+                view.selected_provider.clear();
+                view.selected_model.clear();
+            }
+            let _ = refresh_provider_endpoint(client, view);
             view.model_status = format!("Models unavailable: {error}");
             return Err(error);
         }
@@ -1278,6 +1445,11 @@ fn refresh_models(client: &mut Client, view: &mut View) -> Result<(), Error> {
         .unwrap_or_default()
         .to_owned();
     view.selected_model = current["model_id"].as_str().unwrap_or_default().to_owned();
+    if view.local_provider_catalog {
+        view.ollama_helper_capable =
+            view.ollama_helper_advertised && view.selected_provider == "ollama";
+    }
+    let _ = refresh_provider_endpoint(client, view);
     let selected_available = models.iter().any(|(provider, model, _)| {
         provider == &view.selected_provider && model == &view.selected_model
     });
@@ -2160,6 +2332,34 @@ fn memory_status_message(status: &str) -> String {
     }
 }
 
+fn set_session_flag(
+    client: &mut Client,
+    session: &Session,
+    view: &mut View,
+    id: &str,
+    action: &str,
+) -> Result<(), Error> {
+    if view.running || !view.session_flags_capable || id.is_empty() || session.id != id {
+        return Err(Error::Usage(
+            "The selected conversation is no longer available for this action.".into(),
+        ));
+    }
+    let state = request(
+        client,
+        RequestPayload::DesktopAction {
+            action: action.into(),
+            arguments: vec![Value::String(id.into())],
+            session_id: id.into(),
+        },
+    )?;
+    if state["accepted"] != true || state["result"]["value"] != true {
+        return Err(Error::Failed(
+            "The daemon did not confirm the conversation update.".into(),
+        ));
+    }
+    refresh(client, view)
+}
+
 fn rename_session(
     client: &mut Client,
     session: &Session,
@@ -2324,6 +2524,30 @@ fn memory_delete(client: &mut Client, session: &Session, view: &mut View) -> Res
     };
     memory_list(client, session, view, false)?;
     view.memory_status = final_status;
+    Ok(())
+}
+
+fn select_local_provider(client: &mut Client, index: usize, view: &mut View) -> Result<(), Error> {
+    let provider_id = view
+        .local_providers
+        .get(index)
+        .cloned()
+        .ok_or_else(|| Error::Usage("The selected provider is no longer configured.".into()))?;
+    let selection = request(
+        client,
+        RequestPayload::ProviderSelect {
+            provider_id: provider_id.clone(),
+        },
+    )?;
+    if selection["provider_id"].as_str() != Some(provider_id.as_str()) {
+        return Err(Error::Protocol(
+            "daemon selected a different provider".into(),
+        ));
+    }
+    refresh_models(client, view)?;
+    if view.ollama_helper_capable {
+        refresh_ollama_helper(client, view)?;
+    }
     Ok(())
 }
 
@@ -2517,8 +2741,25 @@ fn load_history(client: &mut Client, session: &Session, view: &mut View) -> Resu
         }
         let role = row["role"].as_str().unwrap_or("message");
         let content = row["content"].as_str().unwrap_or_default();
-        let entry = format!("{role}: {content}\n\n");
-        history.push_str(&entry);
+        history.push_str(&format!("{role}: {content}\n"));
+        if let Some(category) = row["error_category"]
+            .as_str()
+            .filter(|category| !category.is_empty() && *category != "None")
+        {
+            let label: String = category.chars().take(80).collect();
+            history.push_str(&format!("  Failure category: {}\n", quoted_path(&label)));
+        }
+        if let Some(attachments) = row["attachments"].as_array() {
+            for name in attachments
+                .iter()
+                .take(4)
+                .filter_map(|item| item["name"].as_str())
+            {
+                let label = name.chars().take(180).collect::<String>();
+                history.push_str(&format!("  Attachment: {}\n", quoted_path(&label)));
+            }
+        }
+        history.push('\n');
         if history.len() > RESPONSE_LIMIT {
             let mut start = history.len() - RESPONSE_LIMIT;
             while !history.is_char_boundary(start) {
@@ -2588,8 +2829,14 @@ fn attach(client: &mut Client, session: &mut Session, view: &mut View) -> Result
         view.approval_id.clear();
         String::new()
     };
+    view.agent_progress.clear();
     if view.running && view.agent_mode {
         view.agent_status = "Attached to an active Agent run.".into();
+        view.agent_progress = if view.approval_pending {
+            "Waiting for your one-time approval".into()
+        } else {
+            agent_snapshot_activity(&snapshot).unwrap_or_default()
+        };
     }
     if let Err(error) = load_history(client, session, view) {
         if error.requires_reconnect() {
@@ -2675,6 +2922,55 @@ fn clear_agent_history(view: &mut View, message: &str) {
     view.agent_history_status = message.into();
 }
 fn apply_capabilities(capabilities: &[String], view: &mut View) {
+    view.cloud_documents = capabilities
+        .iter()
+        .any(|capability| capability == "dev-cloud-document-attachments");
+    view.cloud_history = capabilities
+        .iter()
+        .any(|capability| capability == "dev-cloud-history");
+    view.cloud_chat = capabilities
+        .iter()
+        .any(|value| matches!(value.as_str(), "dev-openai-chat" | "dev-cloud-chat"));
+    view.provider_endpoints_capable = capabilities
+        .iter()
+        .any(|value| value == "dev-local-provider-endpoints");
+    view.local_provider_catalog = capabilities
+        .iter()
+        .any(|value| value == "dev-local-provider-catalog");
+    if !view.local_provider_catalog {
+        view.local_providers.clear();
+    }
+    view.ollama_helper_advertised = capabilities
+        .iter()
+        .any(|value| value == "ollama-model-operations");
+    let mut formats = vec!["UTF-8 text"];
+    if capabilities
+        .iter()
+        .any(|value| value == "chat-image-jpeg-webp")
+    {
+        formats.push("PNG, JPEG and static WebP with an image-enabled model");
+    } else if capabilities.iter().any(|value| value == "chat-image-png") {
+        formats.push("PNG with an image-enabled model");
+    }
+    if capabilities
+        .iter()
+        .any(|value| value == "chat-attachments-fodt")
+    {
+        formats.push("Flat OpenDocument Text (.fodt)");
+    }
+    if capabilities
+        .iter()
+        .any(|value| value == "chat-attachments-docx")
+    {
+        formats.push("Word document (.docx)");
+    }
+    if capabilities
+        .iter()
+        .any(|value| value == "chat-attachments-pdf-text")
+    {
+        formats.push("Text PDF (.pdf)");
+    }
+    view.attachment_formats = formats.join(", ");
     view.desktop_settings_capable = capabilities.iter().any(|value| value == "desktop-settings");
     view.dev_backup_capable = capabilities
         .iter()
@@ -2775,6 +3071,7 @@ fn apply_capabilities(capabilities: &[String], view: &mut View) {
         view.active_page = "chat".into();
     }
     view.chat_revisions_capable = capabilities.iter().any(|value| value == "chat-revisions");
+    view.session_flags_capable = capabilities.iter().any(|value| value == "session-flags");
     view.session_management_capable = capabilities
         .iter()
         .any(|value| value == "session-management");
@@ -4618,6 +4915,11 @@ fn reconcile_approval(
             _ => "No Agent run is active.",
         }
         .into();
+        if state == "running" {
+            if let Some(activity) = agent_snapshot_activity(&snapshot) {
+                view.agent_progress = activity;
+            }
+        }
         view.status = match state {
             "running" => "Run is active; no approval is pending.",
             "cancelled" => "Run cancelled.",
@@ -4631,6 +4933,26 @@ fn reconcile_approval(
         view.status.push_str(" Response preview truncated.");
     }
     Ok(())
+}
+
+fn agent_snapshot_activity(snapshot: &Value) -> Option<String> {
+    let progress = &snapshot["properties"]["agent_activity"];
+    let activity = catalog_text(progress["activity"].as_str(), 120);
+    if activity.is_empty() {
+        return None;
+    }
+    let tool = catalog_text(progress["tool"].as_str(), 60);
+    let detail = if tool.is_empty() {
+        activity
+    } else {
+        format!("{activity} · {tool}")
+    };
+    let step = progress["step"].as_u64().unwrap_or_default();
+    Some(if step == 0 {
+        detail
+    } else {
+        format!("Step {step} · {detail}")
+    })
 }
 
 fn receive_event(session: &mut Session, view: &mut View, event: Envelope) -> bool {
@@ -4702,10 +5024,14 @@ fn receive_event(session: &mut Session, view: &mut View, event: Envelope) -> boo
             let step = event.payload["step"].as_u64().unwrap_or_default();
             let activity = event.payload["activity"].as_str().unwrap_or("activity");
             let decision = event.payload["decision"].as_str().unwrap_or_default();
-            append_agent_activity(view, &format!("Step {step}: {activity} {decision}"));
-            view.agent_progress = format!("Step {step} · {activity} {decision}")
-                .trim()
-                .to_owned();
+            let detail = format!("{activity} {decision}").trim().to_owned();
+            let progress = if step == 0 {
+                detail
+            } else {
+                format!("Step {step} · {detail}")
+            };
+            append_agent_activity(view, &progress);
+            view.agent_progress = progress;
             view.status = format!("Agent activity: {activity}");
         }
         "tool.requested" | "tool.running" | "tool.result" => {
@@ -4822,8 +5148,14 @@ fn receive_event(session: &mut Session, view: &mut View, event: Envelope) -> boo
                         "provider-failed" => {
                             "The provider failed during a plan step. Review activity and retry explicitly."
                         }
+                        "plan-preflight-failed" => {
+                            "An initial step request could not be prepared within the model limits. No plan steps ran."
+                        }
                         "plan-timeout" => {
                             "The bounded plan deadline expired. Review completed steps before retrying."
+                        }
+                        "decision-limit" => {
+                            "The model-decision limit was reached. Review completed steps before retrying."
                         }
                         "write-outcome-unknown" => {
                             "A write outcome is uncertain. The plan stopped; inspect the workspace before any retry."
@@ -4866,6 +5198,12 @@ fn receive_event(session: &mut Session, view: &mut View, event: Envelope) -> boo
             let terminal_progress = match terminal {
                 "run.completed" => "Agent run completed.",
                 "run.cancelled" => "Agent run cancelled.",
+                _ if event.payload["terminal_reason"] == "agent-timeout" => {
+                    "Agent run deadline expired."
+                }
+                _ if event.payload["terminal_reason"] == "decision-limit" => {
+                    "Agent model-decision limit reached."
+                }
                 _ => "Agent run failed.",
             };
             append_agent_activity(view, terminal_progress);
@@ -4957,8 +5295,10 @@ fn worker(path: PathBuf, commands: Receiver<Command>, updates: PanelUpdates) {
         };
         let helper_poll_tick = command.is_none() && view.ollama_pulling && !view.running;
         if let Some(command) = command {
-            let model_command =
-                matches!(&command, Command::RefreshModels | Command::SelectModel(_));
+            let model_command = matches!(
+                &command,
+                Command::RefreshModels | Command::SelectModel(_) | Command::SelectProvider(_)
+            );
             let settings_command = matches!(
                 &command,
                 Command::SetTheme(_)
@@ -4989,7 +5329,9 @@ fn worker(path: PathBuf, commands: Receiver<Command>, updates: PanelUpdates) {
             );
             let session_lifecycle_command = matches!(
                 &command,
-                Command::RenameSession(_) | Command::DeleteSession(_)
+                Command::RenameSession(_)
+                    | Command::DeleteSession(_)
+                    | Command::SetSessionFlag { .. }
             );
             let ollama_command = matches!(
                 &command,
@@ -5037,10 +5379,18 @@ fn worker(path: PathBuf, commands: Receiver<Command>, updates: PanelUpdates) {
                     | Command::RefreshAgentHistory
                     | Command::LoadAgentRun(_)
                     | Command::LoadOlderAgentRuns
-            ) || (view.agent_mode && matches!(&command, Command::Send(_)));
+            ) || (view.agent_mode && matches!(&command, Command::Send { .. }));
             let mut clear_draft = false;
             let result = match command {
+                Command::Navigate(ref page)
+                    if page == "chat" && view.agent_mode && view.running =>
+                {
+                    Err(Error::Remote("runtime-busy".into()))
+                }
                 Command::Navigate(page) => {
+                    if page == "chat" && view.agent_mode {
+                        let _ = set_agent_mode(&mut view, false);
+                    }
                     if matches!(
                         page.as_str(),
                         "chat"
@@ -5242,6 +5592,10 @@ fn worker(path: PathBuf, commands: Receiver<Command>, updates: PanelUpdates) {
                     .as_mut()
                     .ok_or(Error::Disconnected)
                     .and_then(|client| rename_session(client, &session, &mut view, &title)),
+                Command::SetSessionFlag { id, action } => client
+                    .as_mut()
+                    .ok_or(Error::Disconnected)
+                    .and_then(|client| set_session_flag(client, &session, &mut view, &id, &action)),
                 Command::DeleteSession(confirmation) => {
                     view.session_delete_confirmation = confirmation.clone();
                     client
@@ -5298,6 +5652,27 @@ fn worker(path: PathBuf, commands: Receiver<Command>, updates: PanelUpdates) {
                         }
                         Ok(())
                     }),
+                Command::SaveProviderEndpoint { provider, endpoint } => {
+                    let result = if view.running {
+                        Err(Error::Remote("runtime-busy".into()))
+                    } else {
+                        client
+                            .as_mut()
+                            .ok_or(Error::Disconnected)
+                            .and_then(|client| {
+                                save_provider_endpoint(client, &mut view, &provider, &endpoint)
+                            })
+                    };
+                    if let Err(error) = &result {
+                        view.provider_endpoint_status = format!("Endpoint update failed: {error}");
+                    }
+                    result
+                }
+                Command::SelectProvider(index) if !view.running => client
+                    .as_mut()
+                    .ok_or(Error::Disconnected)
+                    .and_then(|client| select_local_provider(client, index, &mut view)),
+                Command::SelectProvider(_) => Err(Error::Remote("runtime-busy".into())),
                 Command::SelectModel(index) if !view.running => client
                     .as_mut()
                     .ok_or(Error::Disconnected)
@@ -5401,7 +5776,10 @@ fn worker(path: PathBuf, commands: Receiver<Command>, updates: PanelUpdates) {
                     view.status = "New session.".into();
                     Ok(())
                 }
-                Command::Send(text) if !view.running => {
+                Command::Send { agent, .. } if agent != view.agent_mode => Err(Error::Usage(
+                    "The conversation mode changed. Review the draft and send again.".into(),
+                )),
+                Command::Send { text, .. } if !view.running => {
                     let result = client
                         .as_mut()
                         .ok_or(Error::Disconnected)
@@ -5632,6 +6010,7 @@ fn submit(panel: &slint::Weak<Panel>, sender: &SyncSender<Command>, command: Com
             Command::RenameSession(_) => {
                 panel.set_history_status("Renaming current Chat session…".into())
             }
+            Command::SetSessionFlag { .. } => panel.set_status("Updating current session…".into()),
             Command::DeleteSession(_) => {
                 panel.set_history_status("Deleting current session and its private records…".into())
             }
@@ -5647,6 +6026,10 @@ fn submit(panel: &slint::Weak<Panel>, sender: &SyncSender<Command>, command: Com
             Command::Select(_) => panel.set_history_status("Loading session history…".into()),
             Command::RefreshModels => panel.set_model_status("Loading models…".into()),
             Command::SelectModel(_) => panel.set_model_status("Selecting model…".into()),
+            Command::SelectProvider(_) => panel.set_model_status("Selecting provider…".into()),
+            Command::SaveProviderEndpoint { .. } => {
+                panel.set_provider_endpoint_status("Saving endpoint…".into())
+            }
             Command::RefreshWorkspaceFiles => {
                 panel.set_workspace_files_status("Loading authorized workspace snapshot…".into())
             }
@@ -5721,7 +6104,7 @@ fn submit(panel: &slint::Weak<Panel>, sender: &SyncSender<Command>, command: Com
             }
             Command::RespondApproval(_) => panel.set_status("Sending approval response…".into()),
             Command::New => {}
-            Command::Send(_) => panel.set_status("Sending…".into()),
+            Command::Send { .. } => panel.set_status("Sending…".into()),
             Command::Stop => panel.set_status("Stopping…".into()),
         }
         if sender.try_send(command).is_err() {
@@ -5732,20 +6115,25 @@ fn submit(panel: &slint::Weak<Panel>, sender: &SyncSender<Command>, command: Com
 }
 
 #[cfg(target_os = "macos")]
-fn queue_quick_panel_toggle(weak: slint::Weak<Panel>) {
+fn queue_window_toggle(weak: slint::Weak<Panel>, quick_panel: bool) {
     if let Err(error) = slint::invoke_from_event_loop(move || {
         if let Some(panel) = weak.upgrade() {
-            if panel.window().is_visible() {
+            if panel.window().is_visible() && (!quick_panel || panel.get_compact()) {
                 if let Err(error) = panel.hide() {
                     eprintln!("Could not hide Quick Panel: {error}");
                 }
             } else {
+                if quick_panel && !panel.get_compact() {
+                    panel.invoke_toggle_shell_mode();
+                }
                 if let Err(error) = macos_shortcut::activate_application() {
                     eprintln!("Could not activate Quick Panel: {error}");
                 }
                 if let Err(error) = panel.show() {
                     eprintln!("Could not show Quick Panel: {error}");
-                } else {
+                } else if panel.get_compact()
+                    || matches!(panel.get_active_page().as_str(), "chat" | "agent")
+                {
                     panel.invoke_focus_composer();
                 }
             }
@@ -5758,25 +6146,39 @@ fn queue_quick_panel_toggle(weak: slint::Weak<Panel>) {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);
     let mut endpoint = None;
+    let mut persistent_profile = false;
     let mut compact = false;
     let mut global_shortcut = false;
+    let mut start_hidden = false;
     while let Some(argument) = args.next() {
-        if argument == "--socket" {
-            endpoint = Some(args.next().ok_or("--socket requires a path")?);
+        if argument == "--socket" && endpoint.is_none() && !persistent_profile {
+            endpoint = Some(PathBuf::from(
+                args.next().ok_or("--socket requires a path")?,
+            ));
+        } else if argument == "--persistent-profile" && endpoint.is_none() && !persistent_profile {
+            persistent_profile = true;
         } else if argument == "--panel" {
             compact = true;
         } else if argument == "--global-shortcut" && !global_shortcut {
             global_shortcut = true;
+        } else if argument == "--start-hidden" && !start_hidden {
+            start_hidden = true;
         } else {
             return Err(
-                "usage: sentinel-slint-prototype --socket <isolated daemon socket> [--panel [--global-shortcut]]"
+                "usage: sentinel-slint-prototype (--socket PATH | --persistent-profile) [--panel [--global-shortcut [--start-hidden]]]"
                     .into(),
             );
         }
     }
-    let endpoint = endpoint
-        .ok_or("usage: sentinel-slint-prototype --socket <isolated daemon socket> [--panel [--global-shortcut]]")?;
+    let endpoint = if persistent_profile {
+        sentinel_ipc::persistent_rust_profile_path()?.join("daemon-dev.sock")
+    } else {
+        endpoint.ok_or("select --socket PATH or --persistent-profile")?
+    };
 
+    if start_hidden && !global_shortcut {
+        return Err("--start-hidden requires --global-shortcut".into());
+    }
     if global_shortcut && !compact {
         return Err("--global-shortcut requires --panel".into());
     }
@@ -5787,6 +6189,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let panel = Panel::new()?;
     panel.set_compact(compact);
     let (sender, commands) = sync_channel(4);
+    let weak = panel.as_weak();
+    let queue = sender.clone();
+    let sizes = std::cell::Cell::new([
+        slint::LogicalSize::new(1160.0, 780.0),
+        slint::LogicalSize::new(580.0, 500.0),
+    ]);
+    panel.on_toggle_shell_mode(move || {
+        if let Some(panel) = weak.upgrade() {
+            let window = panel.window();
+            let was_compact = panel.get_compact();
+            let mut previous = sizes.get();
+            let current = window.size().to_logical(window.scale_factor());
+            if current.width > 0.0 && current.height > 0.0 {
+                previous[usize::from(was_compact)] = current;
+                sizes.set(previous);
+            }
+            panel.set_compact(!was_compact);
+            window.set_size(previous[usize::from(!was_compact)]);
+            if was_compact && panel.get_agent_mode() {
+                submit(&weak, &queue, Command::Navigate("agent".into()));
+            }
+            if !was_compact || matches!(panel.get_active_page().as_str(), "chat" | "agent") {
+                panel.invoke_focus_composer();
+            }
+        }
+    });
     let weak = panel.as_weak();
     let queue = sender.clone();
     panel.on_navigate(move |page| submit(&weak, &queue, Command::Navigate(page.to_string())));
@@ -5850,8 +6278,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let weak = panel.as_weak();
     let queue = sender.clone();
     panel.on_reconnect(move || submit(&weak, &queue, Command::Reconnect));
-    panel.on_quit_app(|| {
-        let _ = slint::quit_event_loop();
+    let weak = panel.as_weak();
+    panel.on_quit_app(move || {
+        if global_shortcut {
+            if let Some(panel) = weak.upgrade() {
+                let _ = panel.hide();
+            }
+        } else {
+            let _ = slint::quit_event_loop();
+        }
     });
     let weak = panel.as_weak();
     let queue = sender.clone();
@@ -5873,12 +6308,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let weak = panel.as_weak();
     let queue = sender.clone();
+    panel.on_set_session_flag(move |id, action| {
+        submit(
+            &weak,
+            &queue,
+            Command::SetSessionFlag {
+                id: id.into(),
+                action: action.into(),
+            },
+        );
+    });
+    let weak = panel.as_weak();
+    let queue = sender.clone();
     panel.on_delete_session(move |confirmation| {
         submit(&weak, &queue, Command::DeleteSession(confirmation.into()))
     });
     let weak = panel.as_weak();
     let queue = sender.clone();
     panel.on_refresh_models(move || submit(&weak, &queue, Command::RefreshModels));
+    let weak = panel.as_weak();
+    let queue = sender.clone();
+    panel.on_save_provider_endpoint(move |provider, endpoint| {
+        submit(
+            &weak,
+            &queue,
+            Command::SaveProviderEndpoint {
+                provider: provider.into(),
+                endpoint: endpoint.into(),
+            },
+        );
+    });
+    let weak = panel.as_weak();
+    let queue = sender.clone();
+    panel.on_select_local_provider(move |index| {
+        if let Ok(index) = usize::try_from(index) {
+            submit(&weak, &queue, Command::SelectProvider(index));
+        }
+    });
     let weak = panel.as_weak();
     let queue = sender.clone();
     panel.on_select_model(move |index| {
@@ -6043,10 +6509,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let weak = panel.as_weak();
     let queue = sender.clone();
-    panel.on_send(move |text| submit(&weak, &queue, Command::Send(text.into())));
+    panel.on_send(move |text| {
+        if let Some(panel) = weak.upgrade() {
+            submit(
+                &weak,
+                &queue,
+                Command::Send {
+                    text: text.into(),
+                    agent: panel.get_agent_mode(),
+                },
+            );
+        }
+    });
     let weak = panel.as_weak();
     panel.on_stop(move || submit(&weak, &sender, Command::Stop));
-    let endpoint = PathBuf::from(endpoint);
     let updates = PanelUpdates {
         panel: panel.as_weak(),
         pending: Arc::default(),
@@ -6062,11 +6538,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         panel.invoke_focus_composer();
         let weak = panel.as_weak();
         let _shortcut = macos_shortcut::Shortcut::register(move || {
-            queue_quick_panel_toggle(weak.clone());
+            queue_window_toggle(weak.clone(), true);
         })?;
         let weak = panel.as_weak();
         let _tray = macos_tray::Tray::register(move |action| match action {
-            macos_tray::Action::Toggle => queue_quick_panel_toggle(weak.clone()),
+            macos_tray::Action::Toggle => queue_window_toggle(weak.clone(), false),
             macos_tray::Action::Quit => {
                 if let Err(error) = slint::invoke_from_event_loop(|| {
                     let _ = slint::quit_event_loop();
@@ -6075,10 +6551,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         })?;
-        panel.window().on_close_requested(|| {
-            let _ = slint::quit_event_loop();
-            slint::CloseRequestResponse::HideWindow
-        });
+        panel
+            .window()
+            .on_close_requested(|| slint::CloseRequestResponse::HideWindow);
+        if start_hidden {
+            panel.hide()?;
+        }
         slint::run_event_loop_until_quit()?;
         return Ok(());
     }
