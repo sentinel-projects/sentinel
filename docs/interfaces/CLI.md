@@ -13,13 +13,48 @@ sentinel tui
 
 CLI and TUI retain daemon-owned conversations, immutable model bindings, permissions and AgentRuntime execution. Chat and Agent are explicit modes. Enter sends; Ctrl+O inserts a composer newline. Ctrl+C requests cancellation during active work and preserves an idle draft, exiting only when empty. Esc preserves a pending approval. Unsupported compaction/revert operations are not simulated.
 
+Build the normal Rust CLI without building C++/Qt:
+
+```sh
+cargo build --manifest-path cli/Cargo.toml --locked --release -p sentinel-cli
+./cli/target/release/sentinel --help
+```
+
+The CLI remains a client of an external daemon. The production daemon is still
+the C++/Qt `sentinel-daemon`; the Rust `sentinel-daemon-dev` is an isolated
+development runtime with distinct profile ownership and SQLite schemas. Do not
+point it at a Qt profile. Standalone Slint and local Rust development commands
+are in the [build guide](../development/BUILDING.md).
+
+On Linux and macOS, `sentinel --persistent-profile status` selects the
+standalone Rust daemon's socket under `$HOME/.sentinel-rust`. Start the daemon
+or the staged launcher with `--persistent-profile` first. The client accepts
+either that option or an explicit `--socket PATH`.
+
+
+`sentinel chat --attach PATH 'prompt'` attaches a file from the authorized
+workspace. Repeat `--attach` for multiple paths. Paths are relative to the
+daemon-selected workspace. The CLI sends the path strings, and the daemon
+validates and reads the files before handing their content to the selected
+provider. This option requires the `chat-workspace-attachments` capability.
+
 `sentinel voice state` queries daemon speech readiness. `sentinel voice transcribe
-/path/to/audio.pcm` sends an explicitly supplied, nonempty, at most 60-second
-16 kHz mono signed 16-bit little-endian PCM file through the daemon's existing
-voice IPC and prints the resulting transcript. It assumes the supplied audio
-contains speech; it does not capture a microphone or run VAD. The daemon must
-have an actual configured speech runtime. The Rust development daemon does not
-yet provide transcription; this command does not install or launch one.
+FILE [--format auto|wav|pcm]` reads only the explicitly named local file and
+sends bounded audio through the daemon's existing voice IPC. Auto is the
+default: a RIFF prefix or case-insensitive `.wav` extension selects strict
+RIFF/WAVE parsing; otherwise legacy raw PCM behavior is preserved. WAV accepts
+only integer PCM, 16 kHz mono, 16-bit little-endian, no more than 60 seconds of
+samples and 64 KiB of framing/metadata. Malformed/truncated RIFF, duplicate
+format/data chunks, and unsupported formats fail before daemon connection.
+`--format pcm` explicitly selects nonempty, even-length raw PCM up to 60 seconds.
+No conversion, resampling, microphone capture or VAD is performed. The daemon
+must support `voice.action` and `voice.audio` and report
+`voice.state.available: true`. The Rust development daemon reports voice
+unavailable by default. Its opt-in macOS `--speech-execution` path accepts
+bounded supplied PCM only with explicitly inspected Whisper binary/model
+artifacts; inspection by itself is not runtime readiness. This development
+path has not received native model-compatibility acceptance. The command does
+not install or launch a speech runtime.
 
 The terminal uses additive IPC 1.1 operations. `terminal.attach` returns the bounded safe session snapshot, avoiding Desktop's full presentation projection; `session.attach` retains its existing Desktop behavior. `terminal.state` uses cached ModelService readiness without inspecting unobserved cloud credentials. Discovery and runtime preflight remain explicit existing authoritative operations.
 
@@ -64,3 +99,9 @@ installation root (see the CLI user guide). Use an explicit asset root or the st
 layout for an independent graphical installation. No shell configuration
 is changed automatically. Use the absolute executable path and `--version` when
 checking for older PATH-shadowing copies.
+
+
+`sentinel agent-history SESSION_ID` reads durable Agent history after attaching
+to the specified session. Pass `--run RUN_ID` for one run's step and decision
+receipts. To retrieve older runs, pass the prior page's final `cursorTime`
+and `runId` as `--before-time` and `--before-id`.

@@ -44,23 +44,30 @@ All major commands have offline `--help`. Omitting a command retains the histori
 | `provider refresh` | Refresh discovery for the selected provider; discovery is asynchronous |
 | `provider endpoint ollama\|lm-studio\|llama-cpp-server URL` | Configure a local provider endpoint through daemon settings |
 | `workspace list` | Workspace catalog and current selection |
+| `workspace files SESSION_ID` | Bounded read-only regular-file inventory for the session's currently authorized workspace; hidden files and symlinks are excluded, and incomplete listings say when they were truncated |
 | `workspace create NAME --template Coding` | Create a custom workspace through WorkspaceService |
 | `workspace root ID PATH` | Attach an existing readable directory to a custom workspace; built-in roots are immutable |
 | `workspace select ID` | Select a known non-archived workspace; rejected during active work |
 | `sessions` | Daemon-owned session titles, identifiers, mode, state and binding metadata |
-| `chat [TEXT…]` | Chat Mode only |
+| `chat [TEXT…]` | Chat Mode, with repeatable `--attach PATH` on the Rust development daemon |
 | `agent [TEXT…]`, `run [TEXT…]` | AgentRuntime execution only |
 | `chat\|agent\|run --session ID [TEXT…]` | Continue an existing conversation |
 | `attach ID`, `tui --session ID`, `tui` | Interactive terminal interface |
 | `changes ID` | Bounded, read-only change review for a session's most recent in-memory Agent baseline |
 | `doctor` | Connection/protocol, installation PATH, model/provider, workspace, registry, MCP, permissions and network diagnostics |
 | `voice state` | Daemon speech readiness; does not capture a microphone or run VAD |
-| `voice transcribe PCM` | Send an explicit nonempty ≤60 s 16 kHz mono signed 16-bit little-endian PCM file through the daemon voice IPC |
+| `voice transcribe FILE [--format auto\|wav\|pcm]` | Send an explicitly selected WAV or raw PCM file through the daemon voice IPC; no microphone capture |
 | `update verify-stage DIR [--lockfile PATH]` | Offline SHA-256 integrity check of a development-evaluation stage; never installs, executes or authenticates staged files |
 | `completions zsh\|bash\|fish` | Write shell completion source to stdout |
 | `shutdown` | Request daemon shutdown explicitly |
 
-For a new local provider, configure its endpoint, explicitly select the provider, refresh discovery, inspect `models`, then explicitly select the model. Cloud credential configuration remains in the existing Sentinel settings surface. Secrets are not accepted or printed by terminal diagnostics.
+For a new local provider, configure its endpoint, explicitly select the provider, refresh discovery, inspect `models`, then explicitly select the model. On the Rust development daemon, configure the provider kind at daemon startup before editing its endpoint. Endpoint changes only accept numeric loopback HTTP origins, restore only for the original configured origin, and clear the active catalog. Cloud credential configuration remains in the existing Sentinel settings surface. Secrets are not accepted or printed by terminal diagnostics.
+
+`workspace files` requires an existing session and a daemon that advertises workspace inventory for its current explicit workspace authorization. It does not choose a workspace or grant filesystem access. The inventory is bounded and omits hidden entries and symbolic links; use the daemon's result and `truncated` indicator as authoritative.
+
+`voice transcribe FILE` reads only the named local file. `--format auto` is the default: a RIFF signature or case-insensitive `.wav` extension selects WAV parsing; other files retain raw PCM behavior. Use `--format wav` to require WAV parsing or `--format pcm` to explicitly treat the file as raw PCM. Accepted WAV input is RIFF/WAVE integer PCM, 16 kHz, mono, 16-bit little-endian, with at most 60 seconds of samples and 64 KiB of framing/metadata overhead. Malformed, incomplete, duplicate format/data chunks, and unsupported WAV formats fail before connecting to the daemon. Raw PCM must be nonempty, even-length, and at most 60 seconds at the same sample format. Neither mode resamples or converts audio; the command does not capture audio or run VAD.
+
+Transcription requires a daemon that supports both `voice.action` and `voice.audio` and reports `voice.state.available: true`. By default, `sentinel-daemon-dev` reports voice unavailable. On macOS, its separate opt-in `--speech-execution` mode requires inspected Whisper binary/model paths and caller-supplied SHA-256 values; artifact inspection alone does not enable execution. That development runner is sandboxed and has not received native model-compatibility acceptance. The Slint development prototype does not expose microphone capture or WAV-file upload.
 
 ## Output and pipelines
 

@@ -392,8 +392,22 @@ impl App {
         self.last_sequence = value["event_sequence"].as_u64().unwrap_or(0);
         self.generation = value["server_generation"].as_str().unwrap_or("").into();
         self.busy = false;
+        if self.agent
+            && self.active()
+            && let Some(activity) = activity_line(&value["properties"]["agent_activity"])
+        {
+            self.record_activity(activity);
+        }
         if value["output_truncated"] == true {
             self.notice = "Snapshot output is truncated by the daemon.".into();
+        }
+    }
+    fn record_activity(&mut self, activity: String) {
+        if self.activity.last() != Some(&activity) {
+            self.activity.push(activity);
+            if self.activity.len() > 200 {
+                self.activity.remove(0);
+            }
         }
     }
     fn update(&mut self, update: Update, worker: &Worker) {
@@ -731,9 +745,6 @@ impl App {
                 {
                     return;
                 }
-                if event.name == "output.delta" && !self.active() {
-                    return;
-                }
                 if !generation.is_empty()
                     && generation == self.generation
                     && sequence > 0
@@ -741,31 +752,39 @@ impl App {
                 {
                     return;
                 }
-                if sequence > 0 {
-                    self.last_sequence = sequence;
-                    self.generation = generation.into();
-                }
+                let event_run = event.payload["run_id"].as_str().filter(|id| !id.is_empty());
                 if event.name == "run.started" {
-                    self.snapshot(event.payload);
-                    if !self.turn_visible {
+                    let Some(run_id) = event_run else { return };
+                    if run_id == self.run_id && self.active() {
+                        if sequence > 0 {
+                            self.last_sequence = sequence;
+                            self.generation = generation.into();
+                        }
+                    } else {
+                        // The minimal start event carries identity only. Attach for
+                        // authoritative run type, state, and any pending approval.
+                        let mut start = event.payload;
+                        if !start["state"].is_string() {
+                            start["state"] = json!("running");
+                        }
+                        self.snapshot(start);
                         self.request(
                             worker,
-                            "session.messages",
+                            "terminal.attach",
                             json!({"session_id":self.sid}),
-                            "messages",
+                            "attach",
                         );
                     }
                     return;
                 }
-                if event.payload["run_id"].as_str() != Some(self.run_id.as_str())
-                    && !self.run_id.is_empty()
-                {
+                // Reject events for a different run before adopting their sequence.
+                // A terminal snapshot/event also fences late events for its run.
+                if event_run != Some(self.run_id.as_str()) || !self.active() {
                     return;
                 }
-                // A terminal snapshot/event closes this run. Only a new run.started
-                // snapshot may reopen it; late approvals/results cannot revive it.
-                if !self.active() {
-                    return;
+                if sequence > 0 {
+                    self.last_sequence = sequence;
+                    self.generation = generation.into();
                 }
                 self.mascot.event(&event.name);
                 match event.name.as_str() {
@@ -794,7 +813,10 @@ impl App {
                         };
                         if event.name == "run.failed" {
                             self.notice = run_failure_notice(
-                                event.payload["detail"].as_str().unwrap_or("task-failed"),
+                                event.payload["terminal_reason"]
+                                    .as_str()
+                                    .or_else(|| event.payload["detail"].as_str())
+                                    .unwrap_or("task-failed"),
                             );
                         }
                         self.request(
@@ -806,12 +828,9 @@ impl App {
                         self.refresh(worker);
                     }
                     "agent.activity" => {
-                        self.activity.push(format!(
-                            "step {} · {} {}",
-                            event.payload["step"],
-                            event.payload["activity"].as_str().unwrap_or("activity"),
-                            event.payload["decision"].as_str().unwrap_or("")
-                        ));
+                        if let Some(activity) = activity_line(&event.payload) {
+                            self.record_activity(activity);
+                        }
                     }
                     "subagent.activity" => {
                         self.activity.push(format!(
@@ -1942,6 +1961,36 @@ fn modal(area: Rect) -> Rect {
     )
 }
 // Presentation only: canonical roles and content remain owned by the daemon.
+fn activity_line(value: &Value) -> Option<String> {
+    let display_text = |field: &str, limit| {
+        value[field]
+            .as_str()
+            .unwrap_or_default()
+            .chars()
+            .filter(|character| !character.is_control())
+            .take(limit)
+            .collect::<String>()
+    };
+    let activity = display_text("activity", 120);
+    if activity.is_empty() {
+        return None;
+    }
+    let mut description = activity;
+    for (field, limit) in [("decision", 120), ("tool", 60)] {
+        let text = display_text(field, limit);
+        if !text.is_empty() {
+            description.push_str(" · ");
+            description.push_str(&text);
+        }
+    }
+    let step = value["step"].as_u64().unwrap_or_default();
+    Some(if step == 0 {
+        description
+    } else {
+        format!("step {step} · {description}")
+    })
+}
+
 fn message_block(role: &str, content: &str) -> String {
     let (label, indent) = match role {
         "user" => ("> You", "    "),
@@ -2215,6 +2264,9 @@ fn fit_label(text: &str, width: u16) -> String {
 fn run_failure_notice(detail: &str) -> String {
     match detail {
         "ConnectionFailed" => "Provider connection failed. /doctor checks its endpoint; the daemon is still connected.".into(),
+        "agent-timeout" | "plan-timeout" => "The Agent deadline expired. Review recorded activity before retrying.".into(),
+        "plan-preflight-failed" => "An initial step request exceeded its preparation limits. No plan steps ran.".into(),
+        "decision-limit" => "The Agent model-decision limit was reached. Review recorded activity before retrying.".into(),
         "Timeout" => "Inference timed out. /doctor checks provider readiness; retry explicitly from prompt history.".into(),
         "RateLimited" => "Provider rate limit reached. Retry later explicitly from prompt history.".into(),
         "CapabilityUnsupported" => "Selected model does not support this operation. /model inspects available capabilities.".into(),
@@ -2989,6 +3041,34 @@ mod tests {
             server.join().unwrap();
             std::fs::remove_dir_all(root).unwrap();
         }
+    }
+
+    #[test]
+    fn minimal_run_start_keeps_agent_approval_live() {
+        let worker = test_worker();
+        let mut app = ready_app();
+        app.state = "running".into();
+        app.agent = true;
+        app.run_id = "current".into();
+        app.generation = "server".into();
+        let session = app.sid.clone();
+        let event = |name: &str, run: &str, sequence: u64| {
+            Update::Event(mascot_event(
+                name,
+                json!({
+                    "session_id":session, "run_id":run, "server_generation":"server",
+                    "event_sequence":sequence, "approval_id":"once", "tool":"read-file"
+                }),
+            ))
+        };
+        app.update(event("run.started", "current", 1), &worker);
+        app.update(event("approval.requested", "previous", 99), &worker);
+        assert!(app.agent && app.active());
+        assert_eq!(app.last_sequence, 1);
+        assert!(app.approval.is_none());
+        app.update(event("approval.requested", "current", 2), &worker);
+        assert_eq!(app.state, "approval");
+        assert_eq!(app.approval.unwrap()["approval_id"], "once");
     }
 
     #[test]

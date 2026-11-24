@@ -23,8 +23,11 @@ struct Cli {
     #[arg(long, global = true, value_enum, default_value = "text")]
     output: Output,
     /// Local daemon socket endpoint
-    #[arg(long, global=true, default_value_os_t=default_socket_path())]
-    socket: PathBuf,
+    #[arg(long, global = true)]
+    socket: Option<PathBuf>,
+    /// Connect to the persistent Rust profile on Linux or macOS
+    #[arg(long, global = true, conflicts_with = "socket")]
+    persistent_profile: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -69,9 +72,22 @@ enum Commands {
         command: VoiceCommand,
     },
     /// Send a Chat message (no Agent execution)
-    Chat(Task),
+    Chat(ChatTask),
     /// Execute a task through AgentRuntime
     Agent(Task),
+    /// Read the durable Agent run history for a specific session
+    AgentHistory {
+        session_id: String,
+        /// Read the steps and decision receipts for a single run
+        #[arg(long)]
+        run: Option<String>,
+        /// Page cursor timestamp from the last run in the previous page
+        #[arg(long, requires = "before_id", conflicts_with = "run")]
+        before_time: Option<String>,
+        /// Page cursor run ID from the last run in the previous page
+        #[arg(long, requires = "before_time")]
+        before_id: Option<String>,
+    },
     /// Execute an Agent task; alias for agent
     Run(Task),
     /// Attach the TUI to an existing session
@@ -95,8 +111,19 @@ enum Commands {
 enum VoiceCommand {
     /// Inspect daemon voice readiness
     State,
-    /// Transcribe an existing 16 kHz mono signed 16-bit little-endian PCM file
-    Transcribe { pcm: PathBuf },
+    /// Transcribe a WAV or raw 16 kHz mono signed 16-bit little-endian PCM file
+    Transcribe {
+        input: PathBuf,
+        /// Auto-detect RIFF/WAVE or a .wav filename; otherwise preserve raw PCM behavior.
+        #[arg(long, value_enum, default_value = "auto")]
+        format: VoiceFormat,
+    },
+}
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum VoiceFormat {
+    Auto,
+    Wav,
+    Pcm,
 }
 #[derive(Subcommand)]
 enum UpdateCommand {
@@ -138,6 +165,14 @@ impl BackupDomain {
     }
 }
 #[derive(clap::Args)]
+struct ChatTask {
+    #[command(flatten)]
+    task: Task,
+    /// Attach a workspace-relative file. Repeat to attach multiple files
+    #[arg(long, value_name = "PATH")]
+    attach: Vec<String>,
+}
+#[derive(clap::Args)]
 struct Task {
     /// Task text. Explicit arguments take precedence over piped stdin
     #[arg(num_args = 0..)]
@@ -156,6 +191,10 @@ enum ModelCommand {
 #[derive(Subcommand)]
 enum WorkspaceCommand {
     List,
+    /// List bounded regular-file inventory under the authorized workspace for a session
+    Files {
+        session_id: String,
+    },
     Create {
         name: String,
         #[arg(long, default_value = "Coding")]
@@ -281,6 +320,20 @@ fn emit(value: Value, output: Output, name: &str) {
                     );
                 }
             }
+            "workspace.files" => {
+                println!(
+                    "Workspace root: {}",
+                    value["root"].as_str().unwrap_or("unknown")
+                );
+                for file in value["files"].as_array().into_iter().flatten() {
+                    if let Some(path) = file.as_str() {
+                        println!("{path}");
+                    }
+                }
+                if value["truncated"] == true {
+                    println!("Inventory truncated by daemon safety limits.");
+                }
+            }
             "voice.state" => {
                 let transcript = value["transcript"]
                     .as_str()
@@ -344,7 +397,13 @@ fn validate_new_destination(destination: &Path) -> Result<PathBuf, Error> {
 }
 fn run(cli: Cli) -> Result<(), Error> {
     let output = cli.output;
-    let socket = cli.socket;
+    let socket = if cli.persistent_profile {
+        sentinel_ipc::persistent_rust_profile_path()
+            .map_err(|error| Error::Usage(error.to_string()))?
+            .join("daemon-dev.sock")
+    } else {
+        cli.socket.unwrap_or_else(default_socket_path)
+    };
     let command = cli.command.unwrap_or(Commands::Status);
     let backup_destination = if let Commands::Backup {
         command: BackupCommand::Export { destination, .. },
@@ -402,7 +461,8 @@ fn run(cli: Cli) -> Result<(), Error> {
     }
     // Validate task input before connecting or creating a session.
     let task = match &command {
-        Commands::Chat(task) | Commands::Agent(task) | Commands::Run(task) => Some(task),
+        Commands::Chat(chat) => Some(&chat.task),
+        Commands::Agent(task) | Commands::Run(task) => Some(task),
         _ => None,
     };
     let mut text = task.map(|t| t.text.join(" ")).unwrap_or_default();
@@ -418,28 +478,54 @@ fn run(cli: Cli) -> Result<(), Error> {
         }
     }
     let voice_pcm = if let Commands::Voice {
-        command: VoiceCommand::Transcribe { pcm },
+        command: VoiceCommand::Transcribe { input, format },
     } = &command
     {
         let mut bytes = Vec::new();
-        std::fs::File::open(pcm)
-            .map_err(|e| Error::Usage(format!("Cannot open PCM file: {e}")))?
-            .take((sentinel_ipc::voice::MAX_PCM_CAPTURE + 1) as u64)
+        std::fs::File::open(input)
+            .map_err(|e| Error::Usage(format!("Cannot open audio file: {e}")))?
+            .take((sentinel_ipc::voice::MAX_WAV_FILE + 1) as u64)
             .read_to_end(&mut bytes)
-            .map_err(|e| Error::Usage(format!("Cannot read PCM file: {e}")))?;
-        if bytes.is_empty()
-            || bytes.len() > sentinel_ipc::voice::MAX_PCM_CAPTURE
-            || !bytes.len().is_multiple_of(2)
-        {
-            return Err(Error::Usage(
-                "PCM must be nonempty, even-length, and no longer than 60 seconds".into(),
-            ));
+            .map_err(|e| Error::Usage(format!("Cannot read audio file: {e}")))?;
+        let wav = match format {
+            VoiceFormat::Wav => true,
+            VoiceFormat::Pcm => false,
+            VoiceFormat::Auto => {
+                bytes.starts_with(b"RIFF")
+                    || input
+                        .extension()
+                        .and_then(|v| v.to_str())
+                        .is_some_and(|v| v.eq_ignore_ascii_case("wav"))
+            }
+        };
+        if wav {
+            Some(sentinel_ipc::voice::wav_pcm(&bytes)?.to_vec())
+        } else {
+            if bytes.is_empty()
+                || bytes.len() > sentinel_ipc::voice::MAX_PCM_CAPTURE
+                || !bytes.len().is_multiple_of(2)
+            {
+                return Err(Error::Usage(
+                    "PCM must be nonempty, even-length, and no longer than 60 seconds".into(),
+                ));
+            }
+            Some(bytes)
         }
-        Some(bytes)
     } else {
         None
     };
     let mut client = Client::connect(&socket, "sentinel-cli")?;
+    if let Commands::Chat(chat) = &command
+        && !chat.attach.is_empty()
+        && !client
+            .capabilities()
+            .iter()
+            .any(|capability| capability == "chat-workspace-attachments")
+    {
+        return Err(Error::Usage(
+            "The connected daemon does not support workspace-relative Chat attachments.".into(),
+        ));
+    }
     client.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
     if let Commands::Backup {
         command: BackupCommand::Export { domain, .. },
@@ -535,6 +621,28 @@ fn run(cli: Cli) -> Result<(), Error> {
         }
         return Ok(());
     }
+    if let Commands::AgentHistory {
+        session_id,
+        run,
+        before_time,
+        before_id,
+    } = &command
+    {
+        let attached = client.request("terminal.attach", json!({"session_id":session_id}))?;
+        if attached["session_id"].as_str() != Some(session_id.as_str()) {
+            return Err(Error::Protocol("attached session identity mismatch".into()));
+        }
+        let history = client.request(
+            "agent.history",
+            json!({
+                "run_id": run.as_deref().unwrap_or_default(),
+                "before_time": before_time.as_deref().unwrap_or_default(),
+                "before_id": before_id.as_deref().unwrap_or_default()
+            }),
+        )?;
+        emit(history, output, "agent.history");
+        return Ok(());
+    }
     let request = match &command {
         Commands::Status => Some(("daemon.status", json!({}))),
         Commands::Voice {
@@ -552,11 +660,25 @@ fn run(cli: Cli) -> Result<(), Error> {
             command: WorkspaceCommand::Select { workspace_id },
         } => Some(("workspace.select", json!({"workspace_id":workspace_id}))),
         Commands::Workspace {
+            command: WorkspaceCommand::Files { session_id },
+        } => Some(("workspace.files", json!({"session_id":session_id}))),
+        Commands::Workspace {
             command: WorkspaceCommand::Root { workspace_id, path },
         } => Some((
             "workspace.root",
             json!({"workspace_id":workspace_id,"path":path}),
         )),
+        Commands::Provider {
+            command: ProviderCommand::Refresh,
+        } if client.capabilities().iter().any(|capability| {
+            matches!(
+                capability.as_str(),
+                "dev-local-provider-catalog" | "dev-openai-chat" | "dev-cloud-chat"
+            )
+        }) =>
+        {
+            Some(("model.list", json!({})))
+        }
         Commands::Provider {
             command: ProviderCommand::Refresh,
         } => Some((
@@ -652,14 +774,16 @@ fn run(cli: Cli) -> Result<(), Error> {
     })
     .map_err(|e| Error::Protocol(e.to_string()))?;
     client.set_read_timeout(None)?;
-    let start = client.request(
-        if matches!(command, Commands::Chat(_)) {
-            "chat.send"
-        } else {
-            "agent.start"
-        },
-        json!({"session_id":sid,"text":text}),
-    )?;
+    let mut payload = json!({"session_id":sid,"text":text});
+    let method = if let Commands::Chat(chat) = &command {
+        if !chat.attach.is_empty() {
+            payload["attachments"] = json!(chat.attach);
+        }
+        "chat.send"
+    } else {
+        "agent.start"
+    };
+    let start = client.request(method, payload)?;
     let run_id = start["run_id"]
         .as_str()
         .filter(|id| !id.is_empty())
