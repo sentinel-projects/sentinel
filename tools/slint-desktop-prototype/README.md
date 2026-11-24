@@ -14,8 +14,10 @@ For an opt-in macOS Quick Panel, run the built prototype with `--panel
 --global-shortcut`. It registers Ctrl+Option+Space exclusively and creates a
 status-menu item with Show / Hide and Quit. A shortcut conflict fails startup;
 the prototype does not replace another application's binding. Closing the
-window or selecting Quit ends the prototype. When hidden, the shortcut or the
-status menu can reopen it. Linux and Windows do not provide this shortcut mode.
+window hides it while the shortcut and status menu remain active. Select
+Quit in the status menu to exit. Add `--start-hidden` to start in the background.
+The shortcut opens Quick Panel even when the full desktop was previously active.
+Linux and Windows do not provide this shortcut mode.
 
 For disposable LaunchServices testing, build the desired profile first and wrap
 it in a new local unsigned bundle:
@@ -29,11 +31,11 @@ The bundle helper does not install, sign or publish the application; the socket
 must still be supplied explicitly. Native shortcut dispatch, menu interaction,
 focus and accessibility require separate GUI validation.
 
-The default window is the full desktop shell with Chat, Models, Agent, Memory, Settings, and, when advertised, Extensions pages. `--panel` preserves the compact Quick Panel layout. Enter sends a Chat message; the first send creates a session before requesting a reply. The Chat page can rename a session, permanently delete it after typing `DELETE`, edit or regenerate the latest user turn, and retry a failed latest answer when the daemon advertises those operations. Stop requests cancellation, and the daemon's terminal event determines when the run has stopped. Saved sessions can be selected and resumed; Refresh reloads the list and New starts a fresh session. The panel displays the first 128 sessions and a transcript capped at 64 KiB of UTF-8; the daemon owns persisted history. Live text remains visible until the terminal snapshot and saved message are confirmed; if confirmation fails, the panel reports it. Switching sessions is disabled while a run is active.
+The default window is the full desktop shell with Chat, Models, Agent, Memory, Settings, and, when advertised, Extensions pages. `--panel` starts with the compact Quick Panel layout. The Quick Panel and Desktop buttons switch within one window, retaining the same session, draft, daemon connection and in-flight run. Each layout remembers its window size for that process. Enter sends a Chat message; the first send creates a session before requesting a reply. The Chat page can rename a session, permanently delete it after typing `DELETE`, edit or regenerate the latest user turn, and retry a failed latest answer when the daemon advertises those operations. Stop requests cancellation, and the daemon's terminal event determines when the run has stopped. Saved sessions can be selected and resumed; Refresh reloads the list and New starts a fresh session. The panel displays the first 128 sessions and a transcript capped at 64 KiB of UTF-8; the daemon owns persisted history. Live text remains visible until the terminal snapshot and saved message are confirmed; if confirmation fails, the panel reports it. Switching sessions is disabled while a run is active.
 
 Models shows the daemon's current binding and available catalog. For a configured Ollama provider, it also exposes pull, status, cancel-local-wait, and model removal; removal requires typing the exact model ID. Cancelling only stops Sentinel's wait and may not stop Ollama, so refresh the state and catalog before retrying. Settings loads and saves the profile theme. Memory exposes manual session-scoped list/read/create/correct/delete with revision checks; notes are never inserted into model context automatically. The Extensions page appears only when `plugin-catalog` is advertised and shows bounded metadata from an explicitly configured plugin root. It is read-only: the page cannot load, enable, or start extensions or tools. Agent controls appear only for advertised capabilities. The process task selector is limited to the daemon's `wc`, `head`, `tail`, and `grep` allowlist, passes explicit argv without a shell, and always requires per-invocation approval. Agent history shows bounded persisted run, tool, authorization, and evidence details only for sessions attached by this client.
 
-No production automation or routine configuration API is currently available, so the prototype does not expose routine controls. Voice capture is also not included in this Slint slice; the production daemon's voice IPC expects GUI-owned microphone capture and bounded PCM transfer.
+No production automation or routine configuration API is currently available, so the prototype does not expose routine controls. This Slint slice exposes neither microphone capture nor WAV-file transcription controls. The CLI can send an explicitly named audio file through the daemon's bounded PCM IPC when a speech runtime is actually available.
 
 The prototype uses the existing Unix IPC client. Windows named-pipe transport, global shortcut and tray integration, and native visual/accessibility verification remain open acceptance work. Audit and session lists are bounded and paginated where the daemon supports cursors. Idle transport errors are surfaced at the next operation or explicit reconnect. This lets the worker wait without polling between its own runs.
 
@@ -80,3 +82,33 @@ Add `--panel` to the command above to run an opt-in Release `settings_ui_certifi
 The Qt fixture includes a hidden Main and an in-process test controller and services; it does not measure the production Qt desktop executable. It also requests a full desktop runtime projection, while Slint connects without creating a session. Features, work performed, window layers, and rendering composition differ. These observations cannot attribute the difference to the UI toolkit or satisfy ADR-0005's matched-workload acceptance.
 
 On the same macOS arm64 machine, three alternating connected-idle trials on 2026-11-16 recorded median-of-trial-median physical footprints of 147.80 MiB for the Qt fixture, 55.06 MiB for Slint femtovg and 34.63 MiB for Slint software. Whole-interval CPU ranged from 11.36–12.62%, 0.69–0.91% and 2.37–2.83% of one core, respectively. The original samples, windows and binary hashes are in ignored `build/slint-phase1/macos-panel-bfm9pzzc.json` on the measurement machine. Each trial waited for its connected marker, then warmed up for five seconds and sampled over five seconds. Linux Wayland/X11 and Windows runs are not available on this host; the current harness and sampler support macOS only. The prototype lacks Windows named-pipe transport.
+
+### Isolated desktop evaluation stage
+
+The manually dispatched [Qt-free Rust desktop release candidate](../../.github/workflows/rust-release-candidate.yml) workflow creates Linux x86_64 and macOS arm64 stages as unsigned CI artifacts. The production release workflow remains separate.
+
+`tools/slint-desktop-prototype/stage-desktop.sh NATIVE_TARGET_TRIPLE /absolute/new/stage` builds a private local desktop evaluation stage for a supported native macOS or Linux host. It places the launcher and Slint binary under `bin/` with their own `desktop-manifest.json`, and keeps the existing CLI/daemon stage and its unchanged verifier contract under `terminal/`. Run `python3 tools/slint-desktop-prototype/verify-desktop-stage.py /absolute/new/stage` to check the four executable hashes, expected application version, required files, bounded link-free asset tree, and consistent manifest identities without running an artifact. Pass `--cli-lockfile cli/Cargo.lock --desktop-lockfile tools/slint-desktop-prototype/Cargo.lock` to also compare lockfile hashes; `--expected-version` overrides this checkout’s canonical version. The terminal CLI can separately verify `terminal/` with `sentinel update verify-stage` on a matching target.
+
+Staging inspects all four executables with `readelf` on Linux and `otool` on macOS. It fails before writing the desktop manifest if native inspection fails or an executable declares a direct Qt library or framework dependency. This is a static check of declared native imports. Native operation, dynamically loaded libraries, and transitive dependencies require platform acceptance.
+
+These are local unsigned development artifacts. Hashes do not establish source provenance or publisher authenticity; copied assets are not verified, no model is bundled, and no installer, production service, profile migration, or platform acceptance is implied. The launcher requires explicit local configuration; by default it creates and retains a private temporary profile, or it can use an explicitly supplied isolated profile. Pass `--persistent-profile` to retain data under `$HOME/.sentinel-rust` on Linux/macOS. Consult its `--help` before use. The staging helper refuses existing output and non-native target triples; a failed build or copy can leave an incomplete private output that must be discarded.
+
+Invoke the staged launcher with an existing local loopback provider and model. It locates both executable siblings relative to the stage, regardless of the working directory. To override those locations, provide both absolute `--daemon` and `--desktop` paths:
+
+```sh
+STAGE=/absolute/path/to/stage
+"$STAGE/bin/sentinel-dev-launch" --persistent-profile --provider http://127.0.0.1:PORT --model MODEL_ID
+```
+
+Replace the placeholders with your explicitly configured local service and installed model. The launcher reports the retained profile path; it does not download or start a model. For an already-running persistent Rust daemon, connect directly with `sentinel-slint-prototype --persistent-profile`.
+
+For a stage with a separately supplied detached Ed25519 signature, verify the v2 desktop manifest and all four executable hashes with:
+
+```sh
+python3 tools/slint-desktop-prototype/verify-desktop-stage.py /absolute/path/to/stage \
+  --trusted-key /absolute/path/to/pinned-public-key.der \
+  --signature /absolute/path/to/desktop-manifest.sig \
+  --openssl /absolute/path/to/trusted/openssl
+```
+
+The pinned key must be an Ed25519 DER SubjectPublicKeyInfo (44 bytes), and the signature must be the 64-byte detached signature over the exact `desktop-manifest.json` bytes. The v2 manifest binds the nested terminal manifest, which in turn binds its two executables; the signed desktop manifest also binds the launcher and Slint executable. OpenSSL 3.x or later is required. Supply the public key and OpenSSL executable through a trusted channel: this command does not establish their trust or generate keys, sign, download, install, or publish anything. Unsigned verification remains available and explicitly reports integrity only. Asset contents, provenance beyond the supplied key, dependency licensing, and native platform acceptance remain outside this signature's coverage.

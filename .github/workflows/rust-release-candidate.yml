@@ -1,0 +1,59 @@
+name: Qt-free Rust desktop release candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stage:
+    name: Stage ${{ matrix.target }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      RUSTUP_TOOLCHAIN: 1.100.0
+      SENTINEL_NATIVE_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+      - name: Install Linux native build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends binutils build-essential libfontconfig1-dev libssl-dev pkg-config
+
+      - name: Build and verify native desktop stage
+        run: |
+          stage_name="sentinel-rust-candidate-$SENTINEL_NATIVE_TARGET"
+          tools/slint-desktop-prototype/stage-desktop.sh "$SENTINEL_NATIVE_TARGET" "$RUNNER_TEMP/$stage_name"
+          tar -czf "$RUNNER_TEMP/$stage_name.tar.gz" -C "$RUNNER_TEMP" "$stage_name"
+
+      - name: Upload unsigned candidate archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sentinel-rust-candidate-${{ matrix.target }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sentinel-rust-candidate-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

@@ -1,6 +1,6 @@
 # ADR-0005 · Rust desktop and runtime migration
 
-Status: Proposed architecture with an authorized, isolated desktop experiment.
+Status: Proposed architecture with an isolated Rust development runtime and desktop experiment; no production replacement is accepted.
 
 ## Context
 
@@ -28,7 +28,7 @@ Verify disconnected, empty, loading, error and compact states, keyboard navigati
 
 The experimental `sentinel-ipc::server` layer reads bounded LF-delimited frames on Unix with an absolute per-frame deadline and dispatches generated typed `hello` and `daemon.status` requests. Its integration test owns a newly created private temporary directory and listener; it has no profile access, runtime authority, or production endpoint. Other commands fail explicitly. The portable dispatcher is shared code, while the socket reader is Unix-specific. The C++ daemon remains the production owner.
 
-A production Rust daemon still requires compatible exclusive endpoint and profile ownership, same-user peer checks, safe stale-endpoint handling, bounded client/output queues, runtime and storage ports, and cross-platform upgrade/rollback and native security acceptance. A Windows named-pipe client implementation now cross-compiles, but native interoperability/security acceptance remains unverified; a separate isolated Windows development listener also cross-compiles with hello, status and shutdown only. Its profile and named pipe are independent of Qt; Chat and storage are unavailable. Native Windows pipe, security, cancellation and interoperability testing remains outstanding. This layer does not change the provisional Slint experiment or establish toolkit, runtime, performance, or platform acceptance.
+A production Rust daemon still requires compatible exclusive endpoint and profile ownership, same-user peer checks, safe stale-endpoint handling, bounded client/output queues, runtime and storage ports, and cross-platform upgrade/rollback and native security acceptance. A Windows named-pipe client implementation now cross-compiles, but native interoperability/security acceptance remains unverified; the separate isolated Windows development listener now includes a bounded local Chat worker and private profile snapshots in source. Its profile and named pipe are independent of Qt. Interrupted Windows runs are recovered without replay. Native Windows pipe, security, cancellation and interoperability testing remains outstanding. This layer does not change the provisional Slint experiment or establish toolkit, runtime, performance, or platform acceptance.
 
 The development-only `sentinel-daemon-dev --profile /tmp/PRIVATE_DIRECTORY` binary now exercises the same Rust dispatcher through a real Unix listener on Linux and macOS. It requires an existing owner-only direct child of `/tmp` containing only its own lock, socket and development SQLite artifacts, holds its own profile lock for its lifetime, checks peer UID, limits concurrent same-user clients with per-frame and per-client deadlines, and refuses all pre-existing endpoints rather than deleting stale artifacts. A successful `daemon.shutdown` removes the socket it created; an interrupted process may require manual inspection and removal of its stale socket. It also supports development-only durable sessions and one streaming Chat with an explicitly configured literal-loopback provider, cancellation and reattachment. Agent, tools, production profiles and runtime stores remain unavailable. Its lock is deliberately not a Qt `QLockFile` interoperability or production single-writer solution. Production endpoints, full runtime and store ownership, Windows, crash recovery and cross-version upgrades remain gated.
 
@@ -75,6 +75,13 @@ The development-only v1-to-v2 database migration adds per-session logical messag
 
 On macOS, a disposable fixture produced by the actual Qt/C++ daemon contained two conversations and four messages, including system messages. After import and Rust daemon restart, Rust IPC returned the fixture's IDs, timestamps, roles, content, statuses, provider/model values and reply references unchanged; the source database SHA-256 remained unchanged. The Rust CLI then completed a new local Chat in the imported conversation, emitting message IDs 4 and 5 after imported IDs 1, 2 and 3. The same scoped verification rejected an unknown schema, a nonempty destination and a missing destination. A later oversized conversation was rejected with zero target rows and both source and destination file hashes unchanged. This is evidence for the tested transcript subset only; it does not establish preservation of Qt's runtime projection or multi-store profile compatibility.
 
+
+Chat store v6 retains supported Qt provider failure categories on historical
+assistant messages and exposes them through `session.messages`. The category
+is retained when a conversation branches and is deleted with its message.
+The v6 upgrade keeps existing history and session flags. Coordinated restores
+continue accepting exact v4 and v5 Chat schemas and upgrade them before
+publication. The new metadata is descriptive and grants no runtime authority.
 
 ### Development Chat context admission
 
@@ -192,13 +199,29 @@ does not make the missing live activity streams available.
 
 | Surface | Present in the development Rust/Slint experiment | Primary parity blockers |
 | --- | --- | --- |
-| Chat | Plain-text streaming, cancellation/reattach, session list/create/attach, bounded transcript, branching edits and historical retry/regeneration, rename/delete, durable history, and bounded workspace text attachments with a Slint picker | Production runtime ownership, image and document attachments, voice, citations and full message presentation |
-| Models/providers | Configured catalog/current/select, OpenAI-compatible SSE and Ollama Chat adapters, optional Ollama pull/status/cancel-local-wait/remove helper | Provider/model discovery and lifecycle parity, remaining provider dialects and continuation behavior, native live-provider parity, and explicit outcome reconciliation after a cancelled Ollama wait |
+| Chat | Plain-text streaming, cancellation/reattach, session list/create/attach, bounded transcript, branching edits and historical retry/regeneration, rename/delete, durable history, and bounded workspace UTF-8, FODT, DOCX, text PDF and opt-in PNG/JPEG/static WebP attachments via Slint and CLI | Production runtime ownership, scanned PDF/OCR, broader media and document support, voice, citations and full message presentation |
+| Models/providers | Persisted selection and loopback endpoint editing for supported configured local providers, selected-endpoint discovery, opt-in OpenAI, Groq, Mistral, Claude and Gemini HTTPS for current-prompt text Chat, OpenAI-compatible SSE and Ollama Chat adapters, optional Ollama pull/status/cancel-local-wait/remove helper | Provider/model discovery and lifecycle parity, remaining provider dialects and continuation behavior, native live-provider parity, and explicit outcome reconciliation after a cancelled Ollama wait |
 | Settings | Persisted theme, Chat response instructions, model selection and configured workspace selection; read-only runtime and provider diagnostics | Remaining Qt settings, credentials and helper workflows |
 | Memory | Explicit session-only create/read/correct/delete, revision checks and bounded paging; never injected automatically | Production memory domains, search/indexing/retrieval, retention and migration are separate and absent |
-| Agent | Typed inspect-file(s), directory, create-file and macOS allowlisted process tasks; per-call approval where required; verified evidence-derived terminal answer; separate audit store and inspector | No generic production AgentRuntime, full ToolExecutionGateway/permission policy, subagent execution or live tool-progress events; narrow development workspace and provider prerequisites |
+| Agent | Typed inspect-file(s), directory, create-file and macOS allowlisted process tasks; per-call approval where required; verified evidence-derived terminal answer; separate audit store and inspector | No generic production AgentRuntime, full ToolExecutionGateway/permission policy, subagent execution; narrow development workspace and provider prerequisites |
 | Desktop shell | Chat, Models, Agent, Memory, Workspace, Settings and read-only Extensions; compact Quick Panel; opt-in macOS shortcut and menu-bar actions | Native macOS shortcut/focus/menu verification, Linux and Windows activation and tray, accessibility, and remaining Qt surfaces |
-| Platform/runtime | Unix development daemon on macOS/Linux; Windows IPC client and hello/status/shutdown listener source cross-compile | No Windows Chat or storage runtime; no native Windows pipe interoperability/security run; Linux Wayland/X11 and cross-runtime profile-lock/upgrade acceptance remain open |
+| Platform/runtime | Unix development daemon on macOS/Linux; Windows IPC client and listener source with bounded durable Chat and loopback discovery | No native Windows pipe interoperability/security result; Linux Wayland/X11 and cross-runtime profile-lock/upgrade acceptance remain open |
+
+The development daemon commits Agent admission, initial plan rows and the
+user transcript together before it enqueues work. A rejected admission
+creates neither a Chat turn nor an Agent run. The development daemon commits
+the terminal Agent audit, plan closure,
+session state and transcript in one SQLite rollback-mode transaction before
+publishing the terminal event. If a commit cannot be confirmed, the daemon
+freezes writes and leaves reconciliation to startup. Startup reconciles the
+Agent audit, pending approvals, plan steps and Chat projection in a single
+rollback-mode transaction before recovering ordinary Chat. Cross-store owner
+or confirmed-state mismatches block startup. Agent runs interrupted before
+admission retain an audit receipt without a fabricated Chat message. A run
+with an authorized write retains an explicit unknown-outcome receipt. The regression fixture
+forces the session update to fail after the audit update and expects both
+stores to retain their running state until a successful terminal commit.
+This code change leaves native crash and power-loss acceptance open.
 
 The Agent source's current completion gate accepts only a bounded, typed task.
 Every completed observation must have exactly one affirming claim with the
@@ -231,6 +254,48 @@ binary checksums; it is unsigned and does not cover staged assets. The helpers
 do not install or replace production components. Target names are build inputs,
 not native-platform certification; the existing AC-P5, AC-P6 and AC-P8 gates
 remain open.
+
+### Standalone Rust build and production cutover boundary
+
+The standalone Rust binaries build independently of CMake and Qt:
+
+```sh
+RUSTUP_TOOLCHAIN=1.94.0 cargo build --manifest-path cli/Cargo.toml --locked --release -p sentinel-cli -p sentinel-daemon-dev
+RUSTUP_TOOLCHAIN=1.100.0 cargo build --manifest-path tools/slint-desktop-prototype/Cargo.toml --locked --release
+```
+
+The first command builds the daemon-connected `sentinel` client and the isolated
+`sentinel-daemon-dev`; the second builds the Slint evaluation shell. This proves
+that these Rust artifacts can be built without the C++/Qt product toolchain. It
+does not provide a standalone production runtime: the development daemon uses its own private profile and schema. Unix development-daemon builds require a C compiler for bundled SQLite. The staged launcher starts the Rust daemon and Slint client together with an explicit local provider and the selected isolated Rust profile.
+
+The remaining C++/Qt dependencies for a production cutover are concrete:
+
+| Product surface | Current authority and dependencies | Cutover work still required |
+| --- | --- | --- |
+| Production daemon/runtime | `apps/sentinel-daemon` composes `sentinel_core`, Qt services and Qt SQL owners; it owns model routing, production provider adapters, AgentRuntime/AgentLoop, ToolExecutionGateway, permissions, filesystem/process services, plugin/MCP paths and production IPC | Port or replace every required runtime owner with equivalent contracts, limits, authority checks, cancellation, audit-before-dispatch and failure semantics; validate the production IPC contract and native process/peer security |
+| Production desktop | `apps/sentinel-desktop` is the shipped Qt/QML application with C++ view models, bootstrap, platform integration, Qt file/media flows and existing daemon lifecycle | Complete and accept the replacement UI and platform adapters, then package it with truthful capability gating, accessibility, activation, tray/shortcut, file picker, voice and upgrade behavior |
+| Production data | Separate Qt SQL stores own settings, conversations/history, memory, Agent runs and permission grants; Qt migration and platform profile paths remain in the C++ application | Establish one cross-runtime writer/lock, schema and identity compatibility, coordinated snapshot/restore, crash-safe upgrade/downgrade and rollback. The Rust development transcript importer covers only a narrow conversation subset; the dev profile set archive/restore is not a Qt-profile migration |
+| Legacy CLI and release | The C++ `sentinel-cli` retains a separate in-process composition path, and CMake/CPack still builds and packages the Qt product | Decide and verify the supported executable set, replace or retire the legacy path, then prove native installers, upgrade/uninstall and rollback without competing daemon/profile ownership |
+
+The portable Rust IPC dispatcher and dev daemon do not close these dependencies.
+The dev daemon's durable Chat, typed Agent tasks, memory, workspace and
+development-only backup/archive operations address a separate profile; Windows
+still lacks production profile compatibility, and cross-runtime Qt/Rust locking is
+not established. Profile archive export plus restore has only compile evidence
+in this slice, not a runtime restore receipt. These boundaries keep the
+standalone build useful for evaluation while AC-P5-01–05, AC-P6-06/07 and
+AC-P8-02/03 remain production cutover gates.
+
+The standalone launcher and Unix daemon also support an opt-in persistent
+`$HOME/.sentinel-rust` profile. The same namespace accepts a verified
+development archive or the acknowledged Qt preview subset into a new
+directory, using staged publication without replacement. Eligible inline
+conversation attachments and explicitly bound local model selection are
+included in that subset. The Qt profile
+remains independently owned. A manual Rust candidate workflow builds and
+verifies native Linux x86_64 and macOS arm64 packages without publishing them
+as production releases.
 
 ### Next implementation sequence
 

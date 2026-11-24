@@ -2,6 +2,13 @@
 
 Sentinel requires CMake 3.27+ (presets), Ninja, a C++20 compiler, and Qt 6.5+ with Core, Gui, Quick, Qml, Sql, Test, Network, Widgets, LinguistTools, Multimedia, and Concurrent. CI currently installs Qt 6.11 on Linux, macOS, and Windows.
 
+These prerequisites apply to the C++/Qt product build below. The Rust CLI and
+development daemon can be built separately without CMake or Qt; the Slint desktop
+prototype is another standalone Cargo workspace. Linux daemon builds with
+native TLS require the OpenSSL development files and pkg-config. These Rust commands build local
+evaluation software only and do not replace the production Qt daemon or migrate a
+Qt profile.
+
 Linux Desktop also requires Qt DBus. Global Quick Panel shortcuts require an available
 `org.freedesktop.portal.GlobalShortcuts` session-bus backend (version 1 or newer) and a
 portal-confirmed binding. The portal owns consent and shortcut assignment. Missing runtime
@@ -62,6 +69,54 @@ clang-tidy -p /tmp/sentinel-cleanup-analysis apps/sentinel-desktop/src/DesktopRu
 The helper strips only CMake PCH flags, preserves other compile arguments and resolves macOS SDK/libc++ paths through xcrun. See the deferred cleanup report for the actually completed five-source scope and narrow QObject ownership analyzer exception. This supersedes the previous PCH blocker for that scope, not whole-repository analysis certification.
 
 ## Rust development artifact staging
+
+### Build the standalone Rust clients
+
+Build the daemon-connected CLI and isolated development daemon from the repository
+root with Rust 1.94:
+
+```sh
+RUSTUP_TOOLCHAIN=1.94.0 cargo build --manifest-path cli/Cargo.toml --locked --release -p sentinel-cli -p sentinel-daemon-dev
+```
+
+The executables are `cli/target/release/sentinel` and
+`cli/target/release/sentinel-daemon-dev`. `sentinel` is an IPC client; it requires
+an externally running daemon. The Rust daemon target is `sentinel-daemon-dev`,
+not the production `sentinel-daemon`: on Unix it accepts only a fresh private
+development profile and its own isolated SQLite stores. See the
+[development-daemon guide](../../cli/crates/sentinel-daemon-dev/README.md) for
+its explicit provider/workspace flags and profile restrictions. The Unix daemon
+build needs a C compiler for bundled SQLite; the CLI-only build does not require
+the CMake/Qt toolchain.
+
+Build the Slint desktop prototype independently with Rust 1.100 and its own lock
+file:
+
+```sh
+RUSTUP_TOOLCHAIN=1.100.0 cargo build --manifest-path tools/slint-desktop-prototype/Cargo.toml --locked --release
+```
+
+The binary is `tools/slint-desktop-prototype/target/release/sentinel-slint-prototype`.
+It connects to the supplied daemon socket and currently supports the Unix IPC
+client path; its advertised capabilities are those of the connected daemon. The
+prototype and development daemon are not a production desktop/runtime pair.
+
+On Windows PowerShell, select the toolchain for each independent workspace:
+
+```powershell
+$env:RUSTUP_TOOLCHAIN = '1.94.0'
+cargo build --manifest-path cli/Cargo.toml --locked --release -p sentinel-cli -p sentinel-daemon-dev
+$env:RUSTUP_TOOLCHAIN = '1.100.0'
+cargo build --manifest-path tools/slint-desktop-prototype/Cargo.toml --locked --release
+```
+
+For native development, run a private `sentinel-daemon-dev` instance using the
+guide above, then pass its socket to `sentinel`, `sentinel tui`, or the Slint
+prototype. Keep every profile and provider fixture disposable and separate from
+the normal Qt profile. No production Qt service or store is started by these Rust
+build commands.
+
+### Package a local evaluation stage
 
 The following helpers build the locked Rust CLI and the isolated development
 daemon for an explicitly selected target, then create a new local evaluation
