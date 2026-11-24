@@ -42,7 +42,7 @@ mod unix {
         #[arg(long = "cloud-keychain", visible_alias = "openai-keychain", conflicts_with_all = ["provider", "openai_key_file"])]
         openai_keychain: Option<String>,
         /// Select the provider for an explicit cloud credential.
-        #[arg(long, value_parser = ["openai", "groq", "mistral", "claude", "gemini"], conflicts_with = "provider")]
+        #[arg(long, value_parser = ["openai", "groq", "mistral", "claude", "gemini", "deepseek"], conflicts_with = "provider")]
         cloud_provider: Option<String>,
         /// Include earlier completed text turns for the same cloud provider and model.
         #[arg(long, conflicts_with = "provider")]
@@ -50,6 +50,9 @@ mod unix {
         /// Explicit workspace root for text and document attachments in cloud Chat.
         #[arg(long, conflicts_with = "provider")]
         cloud_attachment_root: Option<PathBuf>,
+        /// Opt into OpenAI image input with explicit context and image token limits.
+        #[arg(long, num_args = 2, value_names = ["CONTEXT_TOKENS", "IMAGE_TOKENS"], requires = "cloud_attachment_root")]
+        cloud_vision: Vec<usize>,
         /// Existing private isolated development profile directly under /tmp.
         #[arg(long, conflicts_with = "persistent_profile")]
         profile: Option<PathBuf>,
@@ -357,6 +360,15 @@ mod unix {
         }
         if let Some(root) = &args.cloud_attachment_root {
             command.arg("--cloud-attachment-root").arg(root);
+        }
+        if let [context, image] = args.cloud_vision.as_slice() {
+            if cloud_kind != "openai" || *image == 0 || image >= context {
+                return Err("cloud vision requires OpenAI and a positive image budget below the context limit".into());
+            }
+            command
+                .arg("--cloud-vision")
+                .arg(context.to_string())
+                .arg(image.to_string());
         }
         command.stdin(Stdio::null()).process_group(0);
         if let Some(tokens) = args.context_window_tokens {

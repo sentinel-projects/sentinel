@@ -75,6 +75,12 @@ enum Commands {
     Chat(ChatTask),
     /// Execute a task through AgentRuntime
     Agent(Task),
+    /// Propose a bounded file inspection and ask for approval before each read
+    AgentInspect(Task),
+    /// Analyze supplied text without granting tool access
+    AgentAnalyze(Task),
+    /// Run a bounded delegate-read JSON plan with explicit per-child approvals
+    AgentDelegate(Task),
     /// Read the durable Agent run history for a specific session
     AgentHistory {
         session_id: String,
@@ -462,7 +468,11 @@ fn run(cli: Cli) -> Result<(), Error> {
     // Validate task input before connecting or creating a session.
     let task = match &command {
         Commands::Chat(chat) => Some(&chat.task),
-        Commands::Agent(task) | Commands::Run(task) => Some(task),
+        Commands::Agent(task)
+        | Commands::AgentInspect(task)
+        | Commands::AgentAnalyze(task)
+        | Commands::AgentDelegate(task)
+        | Commands::Run(task) => Some(task),
         _ => None,
     };
     let mut text = task.map(|t| t.text.join(" ")).unwrap_or_default();
@@ -476,6 +486,27 @@ fn run(cli: Cli) -> Result<(), Error> {
         if text.trim().is_empty() || text.len() > 65536 {
             return Err(Error::Usage("Task must contain 1..65536 UTF-8 bytes. Supply text or pipe stdin; positional text takes precedence.".into()));
         }
+    }
+    let session_title: String = if matches!(command, Commands::AgentDelegate(_)) {
+        "Delegated file inspection".into()
+    } else {
+        text.chars().take(80).collect()
+    };
+    if matches!(command, Commands::AgentInspect(_)) {
+        if text.len() > 2048 || text.contains('\0') {
+            return Err(Error::Usage(
+                "Inspection goals must be at most 2048 UTF-8 bytes and contain no NUL.".into(),
+            ));
+        }
+        text = json!({"operation":"classify-inspect","goal":text}).to_string();
+    }
+    if matches!(command, Commands::AgentDelegate(_))
+        && !serde_json::from_str::<Value>(&text)
+            .is_ok_and(|plan| plan["operation"] == "delegate-read")
+    {
+        return Err(Error::Usage(
+            "Supply a delegate-read JSON plan as text or stdin.".into(),
+        ));
     }
     let voice_pcm = if let Commands::Voice {
         command: VoiceCommand::Transcribe { input, format },
@@ -525,6 +556,20 @@ fn run(cli: Cli) -> Result<(), Error> {
         return Err(Error::Usage(
             "The connected daemon does not support workspace-relative Chat attachments.".into(),
         ));
+    }
+    let required_agent_capability = match &command {
+        Commands::AgentInspect(_) => Some("agent-classify-inspect"),
+        Commands::AgentAnalyze(_) => Some("agent-text-analysis"),
+        Commands::AgentDelegate(_) => Some("agent-delegate-read"),
+        _ => None,
+    };
+    if let Some(required) = required_agent_capability
+        && !client
+            .capabilities()
+            .iter()
+            .any(|capability| capability == required)
+    {
+        return Err(Error::Remote("unsupported-capability".into()));
     }
     client.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
     if let Commands::Backup {
@@ -751,10 +796,7 @@ fn run(cli: Cli) -> Result<(), Error> {
     let session = if let Some(id) = task.and_then(|task| task.session.as_ref()) {
         client.request("session.attach", json!({"session_id":id}))?
     } else {
-        client.request(
-            "session.create",
-            json!({"title":text.chars().take(80).collect::<String>()}),
-        )?
+        client.request("session.create", json!({"title":session_title}))?
     };
     let sid = session["session_id"]
         .as_str()

@@ -16,6 +16,7 @@ export component Panel inherits Window {
     in property <bool> cloud-chat;
     in property <bool> cloud-history;
     in property <bool> cloud-documents;
+    in property <bool> cloud-images;
     in property <string> cloud-provider-name;
     in property <string> active-page: "chat";
     in-out property <string> settings-category: "general";
@@ -376,7 +377,7 @@ export component Panel inherits Window {
             wrap: word-wrap;
         }
         if root.cloud-chat && root.cloud-documents && (root.compact || root.active-page == "chat") : Text {
-            text: "Text from selected documents is sent with this message.";
+            text: root.cloud-images ? "Selected images and document text are sent with this message." : "Text from selected documents is sent with this message.";
             wrap: word-wrap;
         }
         if root.compact || root.active-page == "chat" : HorizontalLayout {

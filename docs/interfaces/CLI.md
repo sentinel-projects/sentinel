@@ -105,3 +105,8 @@ checking for older PATH-shadowing copies.
 to the specified session. Pass `--run RUN_ID` for one run's step and decision
 receipts. To retrieve older runs, pass the prior page's final `cursorTime`
 and `runId` as `--before-time` and `--before-id`.
+
+
+- `sentinel agent-inspect 'inspect notes.txt'` asks the local Agent to propose bounded file reads and request approval for each.
+- `sentinel agent-delegate < plan.json` runs an explicit `delegate-read` plan through the same permission gateway and shared run budget.
+- `sentinel agent-analyze < notes.txt` submits the supplied text to the Windows text-analysis Agent. The daemon does not receive the file path and cannot read additional files.

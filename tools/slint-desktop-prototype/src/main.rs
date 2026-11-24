@@ -190,6 +190,7 @@ struct View {
     model_status: String,
     agent_capable: bool,
     agent_restricted: bool,
+    agent_text_analysis: bool,
     agent_multi_file: bool,
     agent_directory_capable: bool,
     agent_create_capable: bool,
@@ -566,6 +567,7 @@ impl PanelUpdates {
                         "openai" => "OpenAI",
                         "groq" => "Groq",
                         "mistral" => "Mistral",
+                        "deepseek" => "DeepSeek",
                         "claude" => "Claude",
                         "gemini" => "Gemini",
                         _ => "Cloud provider",
@@ -1515,6 +1517,15 @@ fn refresh_ollama_helper(client: &mut Client, view: &mut View) -> Result<(), Err
         .or_else(|| properties["statusText"].as_str())
         .unwrap_or("Ollama model helper is ready.");
     view.ollama_helper_status = status.chars().take(1024).collect();
+    if let Some(present) = properties["catalogPresence"].as_bool()
+        && properties["outcomeUnknown"] == true
+    {
+        view.ollama_helper_status.push_str(if present {
+            " The latest catalog lists the exact model ID. The operation outcome remains unknown."
+        } else {
+            " The latest catalog omits the exact model ID. The operation outcome remains unknown."
+        });
+    }
     Ok(())
 }
 
@@ -1550,6 +1561,7 @@ fn ollama_model_action(
         RequestPayload::ModelHelperAction {
             component: "ollamaPuller".into(),
             action: action.into(),
+            confirmation: (action == "removeModel").then(|| confirmation.to_owned()),
             value: if action == "cancel" {
                 String::new()
             } else {
@@ -2922,6 +2934,9 @@ fn clear_agent_history(view: &mut View, message: &str) {
     view.agent_history_status = message.into();
 }
 fn apply_capabilities(capabilities: &[String], view: &mut View) {
+    view.agent_text_analysis = capabilities
+        .iter()
+        .any(|capability| capability == "agent-text-analysis");
     view.cloud_documents = capabilities
         .iter()
         .any(|capability| capability == "dev-cloud-document-attachments");
@@ -3180,6 +3195,10 @@ fn apply_capabilities(capabilities: &[String], view: &mut View) {
         view.composer_placeholder = "Message".into();
         view.agent_status =
             "Agent mode unavailable: daemon did not advertise agent capability.".into();
+    } else if view.agent_text_analysis {
+        view.agent_label = "Agent mode · text analysis".into();
+        view.composer_placeholder = "Text to analyze".into();
+        view.agent_status = "Analyze supplied text with the local model.".into();
     } else if view.agent_restricted {
         view.agent_label = if view.agent_edit_capable {
             "Agent mode · approved exact file edit".into()
@@ -3295,7 +3314,9 @@ fn set_agent_mode(view: &mut View, enabled: bool) -> Result<(), Error> {
         );
     }
     view.agent_mode = enabled;
-    view.agent_status = if enabled && view.agent_restricted {
+    view.agent_status = if enabled && view.agent_text_analysis {
+        "Analyze supplied text with the local model.".into()
+    } else if enabled && view.agent_restricted {
         if view.agent_classify_mode {
             "Classify a goal into up to four read-only file inspections. You approve each file; original goal coverage is unknown.".into()
         } else if view.agent_search_mode {
@@ -4287,6 +4308,20 @@ fn load_agent_run_history(client: &mut Client, view: &mut View, index: usize) ->
     }
     view.agent_selected_run = run_id;
     view.agent_plan_lifecycle = render_agent_plan_lifecycle(history);
+    if let Some(children) = history["children"]
+        .as_array()
+        .filter(|rows| !rows.is_empty())
+    {
+        view.agent_plan_lifecycle
+            .push_str("\nDelegated read tasks\n");
+        for child in children.iter().take(4) {
+            let id = catalog_text(child["runId"].as_str(), 128);
+            let state = catalog_text(child["state"].as_str(), 64);
+            view.agent_plan_lifecycle
+                .push_str(&format!("• {id} · {state}\n"));
+        }
+    }
+
     view.agent_history_view = rendered;
     view.agent_history_status = if history["truncated"] == true {
         "Audit records are bounded; the daemon marked this view truncated.".into()
@@ -7552,6 +7587,7 @@ mod tests {
                     assert_eq!(request.payload["component"], "ollamaPuller");
                     assert_eq!(request.payload["action"], "removeModel");
                     assert_eq!(request.payload["value"], "small-model:latest");
+                    assert_eq!(request.payload["confirmation"], "small-model:latest");
                     action_count_server.fetch_add(1, Ordering::Relaxed);
                     json!({"accepted":true})
                 }
