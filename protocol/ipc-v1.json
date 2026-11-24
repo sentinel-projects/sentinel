@@ -5659,6 +5659,9 @@
     "model.helper_state": {
       "offset": "integer",
       "retain_models": "boolean"
+    },
+    "model.helper_action": {
+      "confirmation": "string"
     }
   }
 }

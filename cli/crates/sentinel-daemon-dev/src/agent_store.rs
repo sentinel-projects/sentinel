@@ -474,6 +474,28 @@ impl AgentStore {
         if plan_rows.len() > 4 {
             return Err(rusqlite::Error::InvalidQuery);
         }
+        let delegated = crate::agent::is_delegated_read(&goal);
+        if delegated {
+            result["children"] = Value::Array(
+                plan_rows
+                    .iter()
+                    .map(|(step, status, reason, operation, dependencies)| {
+                        let deps = dependencies
+                            .as_deref()
+                            .and_then(|value| serde_json::from_str::<Value>(value).ok());
+                        json!({
+                            "runId": format!("{run_id}-child-{step}"),
+                            "parentRunId": run_id,
+                            "sessionId": session,
+                            "state": status,
+                            "operation": operation,
+                            "terminalReason": reason,
+                            "dependsOn": deps,
+                        })
+                    })
+                    .collect(),
+            );
+        }
         result["steps"] = Value::Array(plan_rows.into_iter().map(|(step,status,reason,operation,dependencies)| { let deps = dependencies.and_then(|d| serde_json::from_str::<Value>(&d).ok()); json!({"stepId":format!("{run_id}-plan-{step}"),"runId":run_id,"sequence":step,"status":status,"stepType":"plan","reason":reason,"operation":operation,"dependsOn":deps}) }).collect());
         if goal.len() > 4096 || output.len() > 4096 {
             result["truncated"] = json!(true);
@@ -511,7 +533,12 @@ impl AgentStore {
             if complete {
                 evidence.push(json!({"toolCallId":call_id,"domain":if tool=="process-exec" {"process"} else {"filesystem"},"resourceSummary":preview(&path,512),"outcome":0}));
             }
-            tools.push(json!({"toolCallId":call_id,"sequence":step,"toolId":tool,"descriptorVersion":version,"failureCategory":failure_category,"arguments":arguments.as_deref().map(|v|preview(v,1024)),"resourceSummary":preview(&path,512),"observationSummary":preview(&content,1024),"complete":complete,"previewTruncated":path.len()>512 || content.len()>1024 || arguments.as_ref().is_some_and(|v|v.len()>1024)}));
+            let mut tool_receipt = json!({"toolCallId":call_id,"sequence":step,"toolId":tool,"descriptorVersion":version,"failureCategory":failure_category,"arguments":arguments.as_deref().map(|v|preview(v,1024)),"resourceSummary":preview(&path,512),"observationSummary":preview(&content,1024),"complete":complete,"previewTruncated":path.len()>512 || content.len()>1024 || arguments.as_ref().is_some_and(|v|v.len()>1024)});
+            if delegated && step > 0 {
+                let child = (step - 1) / crate::agent::PLAN_TOOL_STEP_STRIDE as i64 + 1;
+                tool_receipt["childRunId"] = json!(format!("{run_id}-child-{child}"));
+            }
+            tools.push(tool_receipt);
         }
         result["tools"] = Value::Array(tools);
         result["evidence"] = Value::Array(evidence);

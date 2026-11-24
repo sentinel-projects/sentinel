@@ -354,6 +354,13 @@ impl State {
             && self.workspace.is_some()
     }
     pub fn has_image_attachments(&self) -> bool {
+        if let Some(provider) = self
+            .provider
+            .as_ref()
+            .filter(|provider| provider.is_cloud())
+        {
+            return self.has_workspace_files() && provider.vision_tokens().is_some();
+        }
         self.has_workspace_files()
             && self
                 .configured_providers
@@ -610,6 +617,9 @@ impl State {
             return Err("message-too-large");
         }
         let reply = typed("model.list", payload)?;
+        self.model_ops
+            .observe_catalog(config, &models)
+            .map_err(|_| "runtime-unavailable")?;
         self.catalog = models;
         self.catalog_known = true;
         Ok(reply)
@@ -1341,6 +1351,7 @@ impl State {
                 component,
                 action,
                 value,
+                confirmation,
             } => {
                 if component != "ollamaPuller" {
                     return Err("unknown-model-component");
@@ -1360,6 +1371,9 @@ impl State {
                 }
                 if !matches!(action.as_str(), "pull" | "removeModel") {
                     return Err("invalid-payload");
+                }
+                if action == "removeModel" && confirmation.as_deref() != Some(value.as_str()) {
+                    return Err("confirmation-required");
                 }
                 let config = self.provider.clone().ok_or("provider-unavailable")?;
                 let generation = self
@@ -1569,7 +1583,10 @@ impl State {
                 let encoded = serde_json::to_string(&loaded).map_err(|_| "invalid-attachments")?;
                 let (provider_text, images) =
                     crate::attachment::parts(&text, &encoded).map_err(|_| "invalid-attachments")?;
-                if config.is_cloud() && !images.is_empty() {
+                if config.is_cloud()
+                    && !images.is_empty()
+                    && (config.provider_id != "openai" || config.vision_tokens().is_none())
+                {
                     return Err("cloud-image-attachments-unavailable");
                 }
                 let profile = if config.is_cloud() {
@@ -2683,7 +2700,8 @@ fn agent_worker(state: Arc<Mutex<State>>, job: Job) {
                         step,
                         (tool, args),
                         &job.cancel,
-                        crate::agent::classified_inspect_goal(&goal).is_some(),
+                        crate::agent::classified_inspect_goal(&goal).is_some()
+                            || crate::agent::is_delegated_read(&goal),
                     );
                     if result.is_err()
                         && let Ok(mut locked) = state.lock()

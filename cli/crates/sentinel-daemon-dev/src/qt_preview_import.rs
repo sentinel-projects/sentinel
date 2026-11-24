@@ -1,8 +1,9 @@
 //! Staged, deliberately incomplete Qt-copy preview. No Qt profile is accessed.
+use sha2::{Digest, Sha256};
 use std::{
-    fs::{self, File},
-    io,
-    os::unix::fs::{DirBuilderExt, MetadataExt},
+    fs::{self, File, OpenOptions},
+    io::{self, Read},
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
 };
 
@@ -26,10 +27,37 @@ fn same(a: &fs::Metadata, b: &fs::Metadata) -> bool {
         && a.len() == b.len()
         && a.mtime() == b.mtime()
         && a.mtime_nsec() == b.mtime_nsec()
+        && a.ctime() == b.ctime()
+        && a.ctime_nsec() == b.ctime_nsec()
         && a.uid() == b.uid()
         && a.mode() == b.mode()
         && a.nlink() == b.nlink()
 }
+const MAX_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
+
+fn fingerprint(path: &Path, identity: &fs::Metadata) -> io::Result<[u8; 32]> {
+    if identity.len() > MAX_SOURCE_BYTES {
+        return Err(invalid());
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(path)?;
+    if !same(identity, &file.metadata()?) {
+        return Err(invalid());
+    }
+    let mut reader = (&file).take(identity.len() + 1);
+    let mut hasher = Sha256::new();
+    let bytes_read = io::copy(&mut reader, &mut hasher)?;
+    if bytes_read != identity.len()
+        || !same(identity, &file.metadata()?)
+        || !same(identity, &fs::symlink_metadata(path)?)
+    {
+        return Err(invalid());
+    }
+    Ok(hasher.finalize().into())
+}
+
 pub struct PreviewImport {
     pub conversations: usize,
     pub archived: usize,
@@ -64,6 +92,7 @@ pub fn import(
     }
     let paths = [conversations, settings, memory];
     let mut identities = Vec::new();
+    let mut source_directory = None;
     for path in paths {
         let parent = path.parent().ok_or_else(invalid)?;
         let directory = fs::symlink_metadata(parent)?;
@@ -75,6 +104,11 @@ pub fn import(
         {
             return Err(invalid().into());
         }
+        let directory_id = (directory.dev(), directory.ino());
+        if source_directory.is_some_and(|prior| prior != directory_id) {
+            return Err(invalid().into());
+        }
+        source_directory = Some(directory_id);
         let file = fs::symlink_metadata(path)?;
         if !file.file_type().is_file()
             || file.uid() != unsafe { libc::geteuid() }
@@ -82,13 +116,14 @@ pub fn import(
             || !matches!(file.mode() & 0o7777, 0o400 | 0o600)
             || identities
                 .iter()
-                .any(|(prior, _): &(fs::Metadata, fs::Metadata)| {
+                .any(|(prior, _, _): &(fs::Metadata, fs::Metadata, [u8; 32])| {
                     prior.dev() == file.dev() && prior.ino() == file.ino()
                 })
         {
             return Err(invalid().into());
         }
-        identities.push((file, directory));
+        let digest = fingerprint(path, &file)?;
+        identities.push((file, directory, digest));
     }
     let mut stage = None;
     for n in 0..128 {
@@ -122,7 +157,7 @@ pub fn import(
     let settings_report = crate::qt_settings_import::import_preview(root, settings)?;
     transcript.validate_unchanged()?;
     memory_snapshot.validate_unchanged()?;
-    for (path, (file, directory)) in paths.into_iter().zip(&identities) {
+    for (path, (file, directory, digest)) in paths.into_iter().zip(&identities) {
         let current = fs::symlink_metadata(path)?;
         let current_directory = fs::symlink_metadata(path.parent().ok_or_else(invalid)?)?;
         if !same(file, &current)
@@ -130,6 +165,7 @@ pub fn import(
             || directory.ino() != current_directory.ino()
             || directory.uid() != current_directory.uid()
             || directory.mode() != current_directory.mode()
+            || &fingerprint(path, file)? != digest
         {
             return Err(invalid().into());
         }

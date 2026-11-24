@@ -29,6 +29,36 @@ daemon restores a saved model selection for the same startup provider and
 exact loopback address. The discovery catalog remains process-local. Native
 Windows pipe, storage recovery and cancellation acceptance remain open.
 
+Before replacing a stopped Windows development profile, run
+`sentinel-daemon-dev --profile PRIVATE_TEMP_DIRECTORY --check-windows-profile`.
+The command requires the existing private lock and the same profile identity,
+file permissions, and snapshot limits enforced at startup. It acquires the
+lock exclusively and reports the snapshot version, session and run counts,
+any interrupted or pending runs, and whether a saved model binding exists.
+It does not start the named pipe, contact a provider, repair files or print
+conversation contents. A pending staging file blocks the check until normal
+daemon startup handles recovery.
+
+To copy those validated snapshots, use
+`sentinel-daemon-dev --profile PRIVATE_TEMP_DIRECTORY --export-windows-profile PRIVATE_EXPORT_DIRECTORY`.
+The export directory must already exist, be a separate direct child of the
+Windows temporary directory, and have a protected owner-only DACL. A successful
+export publishes one owner-only `sentinel-windows-dev-profile.json` using a
+same-directory rename without replacement. It contains conversation text and
+the saved local model binding, when present. Keep the export private. A crashed
+export may leave a private pending file in the destination. No contents are sent
+to a provider or written back to the source profile. This archive uses the
+Windows development format.
+
+Use `sentinel-daemon-dev --profile NEW_PRIVATE_TEMP_DIRECTORY --restore-windows-profile ABSOLUTE_ARCHIVE_PATH`
+to restore a Windows development archive into a new profile. The target must
+be a direct child of the Windows temporary directory, must not exist, and its
+name may contain only ASCII letters, digits, underscores and hyphens.
+Both records are validated before publication. The daemon writes to a
+separate owner-only staging directory, closes the files and lock, and promotes
+the complete directory without replacing an existing target. A later
+ordinary startup applies the existing interrupted-run handling.
+
 From the `cli` directory, create an empty private directory directly under `/tmp`.
 Start the daemon with a local provider and model, then use another terminal:
 
@@ -459,9 +489,10 @@ SQLite copies in rollback/DELETE journal mode, close all SQLite handles, and
 confirm no `-wal`, `-shm`, or `-journal` sidecars remain. Put all copies in one
 owner-only directory directly under `/tmp` (mode `0700`); each input must be a
 regular owner-only file (mode `0400` or `0600`) with one hard link. The three
-input paths must be distinct. The importer rechecks source identity and
-metadata during import, but it cannot establish a cross-database point-in-time
-snapshot. Keep the Qt writer stopped until the disposable copies are complete.
+input paths must be distinct and share the same private directory. The importer
+checks each copy’s SHA-256, file identity and metadata before and after the staged
+import. These checks detect changes during import. The copies must still be made at
+a consistent point in time before import. Keep the Qt writer stopped until the disposable copies are complete.
 
 Choose a destination path that does not exist and is a direct child of `/tmp`,
 separate from the source directory. The importer builds all stores in a locked
@@ -648,8 +679,9 @@ this implementation.
 
 ### Explicit cloud Chat
 
-Linux and macOS support text Chat with fixed OpenAI, Groq, Mistral, Claude and
-Gemini HTTPS endpoints.
+Linux and macOS support text Chat with fixed OpenAI, Groq, Mistral, Claude,
+Gemini and DeepSeek HTTPS endpoints. DeepSeek uses its non-thinking
+Chat Completions mode.
 Choose an explicit model and credential source:
 
 ```sh
@@ -660,7 +692,7 @@ sentinel-daemon-dev --persistent-profile --cloud-keychain mistral MODEL ACCOUNT
 The key file must be a regular, single-link, owner-only file in an owner-only
 directory. The Keychain option is macOS-only and reads an existing generic
 password for service `com.sentinel.rust.PROVIDER` and the given account.
-Provider IDs are `openai`, `groq`, `mistral`, `claude` and `gemini`.
+Provider IDs are `openai`, `groq`, `mistral`, `claude`, `gemini` and `deepseek`.
 For Gemini, enter the short model ID, without the `models/` prefix. The staged launcher accepts
 `--cloud-provider PROVIDER --model MODEL --cloud-key-file PATH` or the same
 provider and model options with `--cloud-keychain ACCOUNT`. Credentials are read at startup.
@@ -673,9 +705,13 @@ are excluded. This option can include earlier turns sent with another account
 at that provider. Use `--cloud-attachment-root /absolute/path` on the daemon
 or launcher to allow explicit UTF-8, FODT, DOCX and text PDF attachments from
 one workspace. The provider receives extracted text for the current request.
-The root cannot contain the active profile or credential file. Image files,
-response-profile instructions, retry/edit replay and Agent tooling remain
-unavailable in cloud mode. HTTPS uses native
+The root cannot contain the active profile or credential file. For an
+explicitly selected OpenAI vision model, add `--cloud-vision CONTEXT_TOKENS
+IMAGE_TOKENS` to enable one bounded current-turn image from that root. The
+configured upper bound must cover the selected model's image cost. The
+vision budget is tied to the exact startup model. Cloud history continues
+to exclude prior attachments. Response-profile instructions, retry/edit
+replay and Agent tooling remain unavailable in cloud mode. HTTPS uses native
 certificate validation, a fixed host, bounded responses, and direct connections.
 Model discovery and selection use the existing model IPC. Persisted selections
 can identify the provider and model, while credentials stay out of IPC,
@@ -720,3 +756,20 @@ Linux and macOS reuse one Chat/Agent worker behind a bounded queue. An explicit
 Agent plan prepares every phase's initial provider request before dispatching
 its first phase. An invalid later phase therefore fails before an earlier
 phase can make workspace changes.
+
+
+### Delegated reads and Windows text analysis
+
+On Linux and macOS, `agent-delegate` accepts a user-defined JSON graph with up
+to four child tasks. Each task is read-only and requires its own approval.
+Dependencies refer to zero-based indexes of earlier children. The tasks
+share the parent binding, deadline, decision budget and cancellation.
+Child IDs and outcomes are recorded in the parent audit.
+
+```json
+{"operation":"delegate-read","steps":[{"task":{"operation":"inspect-file","path":"notes.txt"},"dependsOn":[]}]}
+```
+
+On Windows, `agent-analyze` submits supplied text to the local provider. The
+daemon checks quoted evidence against the input before accepting the analysis.
+This mode does not grant filesystem or process access.

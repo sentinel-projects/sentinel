@@ -342,6 +342,9 @@ fn serve(
                     capabilities.push("dev-cloud-chat".into());
                     if state.has_workspace_files() {
                         capabilities.push("dev-cloud-document-attachments".into());
+                        if state.has_image_attachments() {
+                            capabilities.push("dev-cloud-image-attachments".into());
+                        }
                     }
                     if state.has_cloud_history() {
                         capabilities.push("dev-cloud-history".into());
@@ -406,6 +409,7 @@ fn serve(
             capabilities.push("agent-inspect-file".into());
             capabilities.push("agent-inspect-files".into());
             capabilities.push("agent-classify-inspect".into());
+            capabilities.push("agent-delegate-read".into());
             capabilities.push("agent-inspect-directory".into());
             capabilities.push("agent-search-literal".into());
             capabilities.push("agent-glob".into());
@@ -625,7 +629,7 @@ pub fn run() -> io::Result<()> {
         profile_option.as_deref() == Some(std::ffi::OsStr::new("--persistent-profile"));
     if !persistent && profile_option.as_deref() != Some(std::ffi::OsStr::new("--profile")) {
         return Err(invalid(
-            "usage: sentinel-daemon-dev (--profile /tmp/PRIVATE_DIRECTORY | --persistent-profile) [--provider ORIGIN --model ID [--context-window-tokens N [--image-token-upper-bound N]] [--provider-kind ID] [--provider-config KIND ORIGIN MODEL]... [--agent-workspace PATH [--workspace ID PATH]... [--agent-approval required|workspace] [--agent-process]] [--speech-binary PATH --speech-binary-sha256 HEX --speech-model PATH --speech-model-sha256 HEX [--speech-execution]] | --cloud-provider KIND MODEL PRIVATE_KEY_FILE [--cloud-history] [--cloud-attachment-root PATH] | --cloud-keychain KIND MODEL ACCOUNT [--cloud-history] [--cloud-attachment-root PATH] | --import-qt-preview-subset CONVERSATIONS SETTINGS MEMORY --acknowledge-preview-subset | --check-qt-preview-subset CONVERSATIONS SETTINGS MEMORY | --import-qt-settings-copy /tmp/SOURCE/settings.json | --restore-dev-set /tmp/SOURCE/SET | --restore-dev-settings-copy /tmp/SOURCE/COPY.sqlite3 | --import-qt-copy /tmp/SOURCE/COPY.sqlite3 | --import-qt-memory-copy /tmp/SOURCE/COPY.sqlite3]",
+            "usage: sentinel-daemon-dev (--profile /tmp/PRIVATE_DIRECTORY | --persistent-profile) [--provider ORIGIN --model ID [--context-window-tokens N [--image-token-upper-bound N]] [--provider-kind ID] [--provider-config KIND ORIGIN MODEL]... [--agent-workspace PATH [--workspace ID PATH]... [--agent-approval required|workspace] [--agent-process]] [--speech-binary PATH --speech-binary-sha256 HEX --speech-model PATH --speech-model-sha256 HEX [--speech-execution]] | --cloud-provider KIND MODEL PRIVATE_KEY_FILE [--cloud-history] [--cloud-attachment-root PATH [--cloud-vision CONTEXT_TOKENS IMAGE_TOKENS]] | --cloud-keychain KIND MODEL ACCOUNT [--cloud-history] [--cloud-attachment-root PATH [--cloud-vision CONTEXT_TOKENS IMAGE_TOKENS]] | --import-qt-preview-subset CONVERSATIONS SETTINGS MEMORY --acknowledge-preview-subset | --check-qt-preview-subset CONVERSATIONS SETTINGS MEMORY | --import-qt-settings-copy /tmp/SOURCE/settings.json | --restore-dev-set /tmp/SOURCE/SET | --restore-dev-settings-copy /tmp/SOURCE/COPY.sqlite3 | --import-qt-copy /tmp/SOURCE/COPY.sqlite3 | --import-qt-memory-copy /tmp/SOURCE/COPY.sqlite3]",
         ));
     }
     let profile = if persistent {
@@ -1076,6 +1080,7 @@ pub fn run() -> io::Result<()> {
     } else {
         None
     };
+    let mut cloud_vision = false;
     while let Some(flag) = args.next() {
         let config = provider
             .as_mut()
@@ -1092,9 +1097,28 @@ pub fn run() -> io::Result<()> {
                 return Err(invalid("cloud attachment root must be absolute"));
             }
             agent_workspace = Some(root);
+        } else if flag == "--cloud-vision" && !cloud_vision && config.provider_id == "openai" {
+            let mut tokens = || {
+                args.next()
+                    .and_then(|value| value.to_str()?.parse::<usize>().ok())
+                    .ok_or_else(|| invalid("cloud vision requires context and image token limits"))
+            };
+            let context = tokens()?;
+            let image = tokens()?;
+            *config = config
+                .clone()
+                .with_context_window(context)
+                .and_then(|config| config.with_vision_budget(image))
+                .map_err(|_| invalid("invalid cloud vision token limits"))?;
+            cloud_vision = true;
         } else {
-            return Err(invalid("unknown or duplicate cloud option"));
+            return Err(invalid("unknown, unsupported or duplicate cloud option"));
         }
+    }
+    if cloud_vision && agent_workspace.is_none() {
+        return Err(invalid(
+            "cloud vision requires an explicit cloud attachment root",
+        ));
     }
     if (seen_approval || process_enabled || !extra_workspaces.is_empty())
         && agent_workspace.is_none()

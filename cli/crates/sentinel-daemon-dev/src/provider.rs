@@ -358,7 +358,7 @@ pub fn prepare_with_images(
     profile: &str,
 ) -> Result<PreparedRequest, ProviderError> {
     if config.is_cloud()
-        && (!images.is_empty()
+        && ((!images.is_empty() && config.provider_id != "openai")
             || !profile.is_empty()
             || (!config.cloud_history && !turns.is_empty())
             || turns.iter().any(|turn| !turn.images.is_empty()))
@@ -418,6 +418,15 @@ pub fn prepare_with_images(
                     return crate::claude::prepare(&config.model, messages, OUTPUT_RESERVE_TOKENS);
                 }
                 "gemini" => return crate::gemini::body(messages, OUTPUT_RESERVE_TOKENS),
+                "deepseek" => {
+                    return json!({
+                        "model": config.model,
+                        "messages": messages,
+                        "max_tokens": OUTPUT_RESERVE_TOKENS,
+                        "thinking": {"type": "disabled"},
+                        "stream": true,
+                    });
+                }
                 _ => {}
             }
         }
@@ -1367,6 +1376,31 @@ mod tests {
             json!([{"role":"user","content":"current prompt"}])
         );
         assert_eq!(json["store"], false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn openai_image_admission_follows_the_configured_model() {
+        let config = Config::cloud_authorized(
+            crate::cloud::CloudProvider::OpenAi,
+            "fixture-vision",
+            reqwest::header::HeaderValue::from_static("Bearer fixture"),
+        )
+        .unwrap();
+        let images = [ChatImage {
+            mime: ImageMime::Png,
+            base64: "AQID".into(),
+        }];
+        assert!(prepare_with_images(&config, "describe", &images, &[], "").is_err());
+        let mut config = config.with_vision_budget(100).unwrap();
+        let prepared = prepare_with_images(&config, "describe", &images, &[], "").unwrap();
+        let body: Value = serde_json::from_slice(&prepared.body).unwrap();
+        assert_eq!(
+            body["messages"][0]["content"][1]["image_url"]["url"],
+            "data:image/png;base64,AQID"
+        );
+        config.model = "different-model".into();
+        assert!(prepare_with_images(&config, "describe", &images, &[], "").is_err());
     }
 
     #[test]

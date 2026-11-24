@@ -14,6 +14,9 @@ use std::{
 struct State {
     active: bool,
     model: String,
+    endpoint: String,
+    outcome_unknown: bool,
+    catalog_presence: Option<bool>,
     progress: f64,
     status: String,
     error: String,
@@ -37,9 +40,24 @@ impl Operations {
             .lock()
             .map_err(|_| io::Error::other("model operation state unavailable"))?;
         Ok(
-            json!({"pulling":s.active,"activeModel":s.model,"progress":s.progress,"statusText":s.status,"errorText":s.error}),
+            json!({"pulling":s.active,"activeModel":s.model,"progress":s.progress,"statusText":s.status,"errorText":s.error,"outcomeUnknown":s.outcome_unknown,"catalogPresence":s.catalog_presence}),
         )
     }
+    pub fn observe_catalog(&self, config: &Config, models: &[String]) -> io::Result<()> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| io::Error::other("model operation state unavailable"))?;
+        if !state.active
+            && state.outcome_unknown
+            && config.provider_id == "ollama"
+            && state.endpoint == config.endpoint
+        {
+            state.catalog_presence = Some(models.iter().any(|model| model == &state.model));
+        }
+        Ok(())
+    }
+
     pub fn start(&self, config: Config, model: &str, remove: bool) -> io::Result<()> {
         if config.provider_id != "ollama"
             || !config.address.ip().is_loopback()
@@ -67,6 +85,9 @@ impl Operations {
         let token = Arc::new(AtomicBool::new(false));
         state.active = true;
         state.model = model.into();
+        state.endpoint.clone_from(&config.endpoint);
+        state.outcome_unknown = false;
+        state.catalog_presence = None;
         state.progress = 0.0;
         state.status = if remove {
             "Removing model…"
@@ -90,8 +111,8 @@ impl Operations {
                 state.active=false; state.cancel=None;
                 match result {
                     Ok(Ok(())) => { state.progress=1.0; state.status=if remove {"Model removed."} else {"Model pull complete."}.into(); }
-                    Ok(Err(provider::ProviderError::Cancelled)) => { state.status="Stopped waiting; provider may continue. Refresh model list to check.".into(); state.error="Outcome may have changed on the provider.".into(); }
-                    _ => { state.status="Model operation failed or its outcome is unknown.".into(); state.error="Refresh model list before retrying.".into(); }
+                    Ok(Err(provider::ProviderError::Cancelled)) => { state.outcome_unknown=true; state.status="Stopped waiting; provider may continue. Refresh model list to check.".into(); state.error="Outcome may have changed on the provider.".into(); }
+                    _ => { state.outcome_unknown=true; state.status="Model operation failed or its outcome is unknown.".into(); state.error="Refresh model list before retrying.".into(); }
                 }
             }
         });

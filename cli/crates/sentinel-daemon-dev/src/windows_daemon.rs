@@ -1,4 +1,4 @@
-//! Isolated Windows development pipe with opt-in local model discovery and Chat.
+//! Isolated Windows development pipe with opt-in local Chat and text analysis.
 #[path = "windows_chat.rs"]
 mod windows_chat;
 use crate::windows_profile;
@@ -421,6 +421,8 @@ fn serve(
             json!("model-discovery"),
             json!("model-selection"),
             json!("chat"),
+            json!("agent"),
+            json!("agent-text-analysis"),
             json!("events"),
         ]);
     }
@@ -521,11 +523,73 @@ pub fn run() -> io::Result<()> {
     let _ = args.next();
     if args.next().as_deref() != Some(OsStr::new("--profile")) {
         return Err(invalid(
-            "usage: sentinel-daemon-dev --profile PRIVATE_TEMP_DIRECTORY [--provider ORIGIN --model ID [--provider-kind ID]]",
+            "usage: sentinel-daemon-dev --profile PRIVATE_TEMP_DIRECTORY [--provider ORIGIN --model ID [--provider-kind ID] | --check-windows-profile | --export-windows-profile PRIVATE_TEMP_DIRECTORY | --restore-windows-profile ARCHIVE]",
         ));
     }
     let profile = PathBuf::from(args.next().ok_or_else(|| invalid("missing profile"))?);
-    let mut config = if let Some(flag) = args.next() {
+    let first = args.next();
+    if first.as_deref() == Some(OsStr::new("--check-windows-profile")) {
+        if args.next().is_some() {
+            return Err(invalid(
+                "profile inspection does not accept runtime options",
+            ));
+        }
+        let guard = windows_profile::acquire_for_inspection(&profile)?;
+        let model_present = guard.load_model()?.is_some();
+        let chat = windows_chat::inspect_snapshot(&guard)?;
+        println!(
+            "{}",
+            json!({
+                "schema_version":1,
+                "format":"sentinel-windows-dev-profile-inspection",
+                "model_binding_present":model_present,
+                "chat":chat
+            })
+        );
+        return Ok(());
+    }
+    if first.as_deref() == Some(OsStr::new("--export-windows-profile")) {
+        let destination = PathBuf::from(
+            args.next()
+                .ok_or_else(|| invalid("missing private export directory"))?,
+        );
+        if args.next().is_some() {
+            return Err(invalid("profile export does not accept runtime options"));
+        }
+        let guard = windows_profile::acquire_for_inspection(&profile)?;
+        let bytes = windows_chat::export_profile(&guard)?;
+        let output = guard.export_to(&destination, &bytes)?;
+        println!(
+            "{}",
+            json!({
+                "schema_version":1,
+                "format":"sentinel-windows-dev-profile-v1",
+                "bytes":bytes.len(),
+                "path":output.to_string_lossy()
+            })
+        );
+        return Ok(());
+    }
+    if first.as_deref() == Some(OsStr::new("--restore-windows-profile")) {
+        let source = PathBuf::from(
+            args.next()
+                .ok_or_else(|| invalid("missing Windows profile archive"))?,
+        );
+        if args.next().is_some() {
+            return Err(invalid("profile restore does not accept runtime options"));
+        }
+        let output = windows_chat::restore_profile(&profile, &source)?;
+        println!(
+            "{}",
+            json!({
+                "schema_version":1,
+                "format":"sentinel-windows-dev-profile-v1",
+                "restored_profile":output.to_string_lossy()
+            })
+        );
+        return Ok(());
+    }
+    let mut config = if let Some(flag) = first {
         if flag != "--provider" {
             return Err(invalid("expected --provider"));
         }

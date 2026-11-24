@@ -16,6 +16,7 @@ pub(crate) enum CloudProvider {
     OpenAi,
     Groq,
     Mistral,
+    DeepSeek,
     Claude,
     Gemini,
 }
@@ -25,6 +26,7 @@ impl CloudProvider {
             "openai" => Some(Self::OpenAi),
             "groq" => Some(Self::Groq),
             "mistral" => Some(Self::Mistral),
+            "deepseek" => Some(Self::DeepSeek),
             "claude" => Some(Self::Claude),
             "gemini" => Some(Self::Gemini),
             _ => None,
@@ -36,6 +38,7 @@ impl CloudProvider {
             Self::OpenAi => "openai",
             Self::Groq => "groq",
             Self::Mistral => "mistral",
+            Self::DeepSeek => "deepseek",
             Self::Claude => "claude",
             Self::Gemini => "gemini",
         }
@@ -46,6 +49,7 @@ impl CloudProvider {
             Self::OpenAi => "https://api.openai.com",
             Self::Groq => "https://api.groq.com",
             Self::Mistral => "https://api.mistral.ai",
+            Self::DeepSeek => "https://api.deepseek.com",
             Self::Claude => "https://api.anthropic.com",
             Self::Gemini => "https://generativelanguage.googleapis.com",
         }
@@ -54,6 +58,7 @@ impl CloudProvider {
     pub fn api_prefix(self) -> &'static str {
         match self {
             Self::Groq => "/openai/v1",
+            Self::DeepSeek => "",
             Self::OpenAi | Self::Mistral | Self::Claude => "/v1",
             Self::Gemini => "/v1beta",
         }

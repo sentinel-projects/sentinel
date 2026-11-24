@@ -90,7 +90,7 @@ DesktopSetting {key: String, value: String},
 #[serde(rename = "model.helper_state")]
 ModelHelperState {component: String, #[serde(default)] offset: Option<u64>, #[serde(default)] retain_models: Option<bool>},
 #[serde(rename = "model.helper_action")]
-ModelHelperAction {component: String, action: String, value: String},
+ModelHelperAction {component: String, action: String, value: String, #[serde(default)] confirmation: Option<String>},
 #[serde(rename = "desktop.settings_service")]
 DesktopSettingsService {action: String, arguments: Vec<serde_json::Value>},
 #[serde(rename = "terminal.state")]

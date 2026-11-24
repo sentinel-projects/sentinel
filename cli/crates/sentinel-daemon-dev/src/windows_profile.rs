@@ -25,7 +25,7 @@ use windows_sys::Win32::{
         SetSecurityDescriptorDacl, SetSecurityDescriptorOwner, TOKEN_QUERY, TOKEN_USER, TokenUser,
     },
     Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateFileW, FILE_ALL_ACCESS,
+        BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ALL_ACCESS,
         FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
         FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
         FILE_TYPE_DISK, GetFileInformationByHandle, GetFileType, MOVEFILE_REPLACE_EXISTING,
@@ -212,6 +212,9 @@ const MAX_MODEL_FILE_BYTES: u64 = 4096;
 const CHAT_FILE: &str = "daemon-dev-chat.json";
 const CHAT_PENDING: &str = "daemon-dev-chat.pending";
 pub(crate) const MAX_CHAT_FILE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_EXPORT_FILE_BYTES: u64 = MAX_CHAT_FILE_BYTES + MAX_MODEL_FILE_BYTES + 1024;
+const EXPORT_FILE: &str = "sentinel-windows-dev-profile.json";
+const EXPORT_PENDING: &str = ".sentinel-windows-dev-profile.pending";
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -295,14 +298,17 @@ impl ProfileGuard {
 
     /// Update only the profile-owned selection file, under the daemon's profile lock.
     pub fn save_model(&self, config: &Config, model: &str) -> io::Result<()> {
-        let record = SavedModel {
+        self.save_model_record(&SavedModel {
             version: 1,
             endpoint: config.endpoint.clone(),
             provider_id: config.provider_id.clone(),
             model: model.to_owned(),
-        };
-        let bytes = serde_json::to_vec(&record)?;
-        if bytes.len() as u64 > MAX_MODEL_FILE_BYTES || !valid_model(&record) {
+        })
+    }
+
+    fn save_model_record(&self, record: &SavedModel) -> io::Result<()> {
+        let bytes = serde_json::to_vec(record)?;
+        if bytes.len() as u64 > MAX_MODEL_FILE_BYTES || !valid_model(record) {
             return Err(invalid("invalid Windows model selection binding"));
         }
         self.save_private(MODEL_FILE, MODEL_PENDING, &bytes, MAX_MODEL_FILE_BYTES)
@@ -317,73 +323,255 @@ impl ProfileGuard {
     }
 
     fn load_private(&self, name: &str, limit: u64) -> io::Result<Option<Vec<u8>>> {
-        let Some(handle) = open_private_file(&self.canonical.join(name), &self.user)? else {
-            return Ok(None);
-        };
-        let mut bytes = Vec::new();
-        fs::File::from(handle)
-            .take(limit + 1)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > limit {
-            return Err(invalid("Windows profile file exceeds byte limit"));
-        }
-        Ok(Some(bytes))
+        read_private_file(&self.canonical.join(name), &self.user, limit)
     }
 
     fn save_private(&self, name: &str, staged: &str, bytes: &[u8], limit: u64) -> io::Result<()> {
-        if bytes.len() as u64 > limit {
-            return Err(invalid("Windows profile file exceeds byte limit"));
-        }
         let destination = self.canonical.join(name);
-        let pending = self.canonical.join(staged);
-        let pending_name = wide(&pending)?;
-        let destination_name = wide(&destination)?;
-
-        // Refuse links, foreign ACLs and other untrusted path entries before replacing anything.
         drop(open_private_file(&destination, &self.user)?);
-        let handle = with_owner_only_security(&self.user, |attributes| {
-            owned(unsafe {
-                CreateFileW(
-                    pending_name.as_ptr(),
-                    GENERIC_WRITE | READ_CONTROL,
-                    0,
-                    attributes,
-                    CREATE_NEW,
-                    FILE_FLAG_OPEN_REPARSE_POINT,
-                    null_mut(),
-                )
-            })
-        })?;
-        let result = (|| {
-            validate_private_file(&handle, &self.user)?;
-            let mut file = fs::File::from(handle);
-            file.write_all(bytes)?;
-            file.sync_all()?;
-            drop(file);
-            if unsafe {
-                MoveFileExW(
-                    pending_name.as_ptr(),
-                    destination_name.as_ptr(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-                )
-            } == 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&pending);
+        publish_private(
+            &destination,
+            &self.canonical.join(staged),
+            &self.user,
+            bytes,
+            limit,
+            true,
+        )
+    }
+
+    pub fn export_to(&self, destination: &Path, bytes: &[u8]) -> io::Result<PathBuf> {
+        let (directory, canonical) = open_private_temp_directory(destination, &self.user)?;
+        if identity_equal(&info(&self._directory)?, &info(&directory)?) {
+            return Err(invalid(
+                "export directory must be separate from the profile",
+            ));
         }
-        result
+        let output = canonical.join(EXPORT_FILE);
+        publish_private(
+            &output,
+            &canonical.join(EXPORT_PENDING),
+            &self.user,
+            bytes,
+            MAX_EXPORT_FILE_BYTES,
+            false,
+        )?;
+        Ok(output)
     }
 }
 
+fn read_private_file(path: &Path, user: &[usize], limit: u64) -> io::Result<Option<Vec<u8>>> {
+    let Some(handle) = open_private_file(path, user)? else {
+        return Ok(None);
+    };
+    let mut bytes = Vec::new();
+    fs::File::from(handle)
+        .take(limit + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(invalid("Windows profile file exceeds byte limit"));
+    }
+    Ok(Some(bytes))
+}
+
+pub fn load_export(source: &Path) -> io::Result<Vec<u8>> {
+    let user = current_user_sid()?;
+    let filename = source
+        .file_name()
+        .ok_or_else(|| invalid("missing profile archive filename"))?;
+    if !source.is_absolute() || filename != OsStr::new(EXPORT_FILE) {
+        return Err(invalid(
+            "expected an absolute Windows development archive path",
+        ));
+    }
+    let parent = source
+        .parent()
+        .ok_or_else(|| invalid("missing profile archive directory"))?;
+    let (_directory, canonical) = open_private_temp_directory(parent, &user)?;
+    read_private_file(&canonical.join(filename), &user, MAX_EXPORT_FILE_BYTES)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "Windows development archive missing",
+        )
+    })
+}
+
+pub fn restore_export(
+    target: &Path,
+    model: Option<&SavedModel>,
+    chat: Option<&[u8]>,
+) -> io::Result<PathBuf> {
+    if !target.is_absolute() {
+        return Err(invalid("restore profile must be absolute"));
+    }
+    let name = target
+        .file_name()
+        .and_then(OsStr::to_str)
+        .filter(|name| {
+            !name.is_empty()
+                && name.len() <= 64
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
+        .ok_or_else(|| {
+            invalid("restore profile name must use ASCII letters, digits, hyphens or underscores")
+        })?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| invalid("missing restore profile parent"))?;
+    let temp = fs::canonicalize(std::env::temp_dir())?;
+    if fs::canonicalize(parent)? != temp {
+        return Err(invalid(
+            "restore profile must be a direct temporary-directory child",
+        ));
+    }
+    let destination = temp.join(name);
+    match fs::symlink_metadata(&destination) {
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "restore profile already exists",
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    if model.is_some_and(|record| !valid_model(record))
+        || chat.is_some_and(|bytes| bytes.len() as u64 > MAX_CHAT_FILE_BYTES)
+    {
+        return Err(invalid("invalid Windows development archive"));
+    }
+    let user = current_user_sid()?;
+    let mut stage = None;
+    for index in 0..64 {
+        let candidate = temp.join(format!(
+            ".sentinel-windows-restore-{}-{index}",
+            std::process::id()
+        ));
+        let name = wide(&candidate)?;
+        match with_owner_only_security(&user, |attributes| {
+            // The security descriptor and path remain live for the synchronous call.
+            if unsafe { CreateDirectoryW(name.as_ptr(), attributes) } == 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        }) {
+            Ok(()) => {
+                stage = Some(candidate);
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    let stage = stage.ok_or_else(|| invalid("cannot reserve private restore staging directory"))?;
+    let mut stage_identity = None;
+    let result = (|| {
+        let staged = acquire(&stage)?;
+        stage_identity = Some(info(&staged._directory)?);
+        if let Some(model) = model {
+            staged.save_model_record(model)?;
+        }
+        if let Some(chat) = chat {
+            staged.save_chat(chat)?;
+        }
+        // Release directory and lock handles before the same-volume rename.
+        drop(staged);
+        let stage_name = wide(&stage)?;
+        let destination_name = wide(&destination)?;
+        if unsafe {
+            MoveFileExW(
+                stage_name.as_ptr(),
+                destination_name.as_ptr(),
+                MOVEFILE_WRITE_THROUGH,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(destination)
+    })();
+    if result.is_err()
+        && let Some(identity) = stage_identity
+        && let Ok((directory, canonical)) = open_private_temp_directory(&stage, &user)
+        && info(&directory).is_ok_and(|current| identity_equal(&identity, &current))
+    {
+        for name in [
+            "daemon-dev.lock",
+            MODEL_FILE,
+            MODEL_PENDING,
+            CHAT_FILE,
+            CHAT_PENDING,
+        ] {
+            let _ = fs::remove_file(canonical.join(name));
+        }
+        drop(directory);
+        let _ = fs::remove_dir(&canonical);
+    }
+    result
+}
+
+fn publish_private(
+    destination: &Path,
+    pending: &Path,
+    user: &[usize],
+    bytes: &[u8],
+    limit: u64,
+    replace: bool,
+) -> io::Result<()> {
+    if bytes.len() as u64 > limit {
+        return Err(invalid("Windows profile file exceeds byte limit"));
+    }
+    let pending_name = wide(pending)?;
+    let destination_name = wide(destination)?;
+    let handle = with_owner_only_security(user, |attributes| {
+        owned(unsafe {
+            CreateFileW(
+                pending_name.as_ptr(),
+                GENERIC_WRITE | READ_CONTROL,
+                0,
+                attributes,
+                CREATE_NEW,
+                FILE_FLAG_OPEN_REPARSE_POINT,
+                null_mut(),
+            )
+        })
+    })?;
+    let result = (|| {
+        validate_private_file(&handle, user)?;
+        let mut file = fs::File::from(handle);
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        let flags = if replace {
+            MOVEFILE_WRITE_THROUGH | MOVEFILE_REPLACE_EXISTING
+        } else {
+            MOVEFILE_WRITE_THROUGH
+        };
+        if unsafe { MoveFileExW(pending_name.as_ptr(), destination_name.as_ptr(), flags) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(pending);
+    }
+    result
+}
+
 pub fn acquire(path: &Path) -> io::Result<ProfileGuard> {
+    acquire_profile(path, true)
+}
+
+pub fn acquire_for_inspection(path: &Path) -> io::Result<ProfileGuard> {
+    acquire_profile(path, false)
+}
+
+fn open_private_temp_directory(path: &Path, user: &[usize]) -> io::Result<(OwnedHandle, PathBuf)> {
     if !path.is_absolute() {
         return Err(invalid("profile must be absolute"));
     }
-    let user = current_user_sid()?;
     let name = wide(path)?;
     let directory = owned(unsafe {
         CreateFileW(
@@ -402,7 +590,7 @@ pub fn acquire(path: &Path) -> io::Result<ProfileGuard> {
     {
         return Err(invalid("profile must be a real directory"));
     }
-    check_security(&directory, &user, true)?;
+    check_security(&directory, user, true)?;
     let canonical = fs::canonicalize(path)?;
     let temp = fs::canonicalize(std::env::temp_dir())?;
     if canonical.parent() != Some(temp.as_path()) {
@@ -425,6 +613,13 @@ pub fn acquire(path: &Path) -> io::Result<ProfileGuard> {
     if !identity_equal(&d, &info(&verify)?) {
         return Err(invalid("profile identity changed"));
     }
+    Ok((directory, canonical))
+}
+
+fn acquire_profile(path: &Path, recover: bool) -> io::Result<ProfileGuard> {
+    let user = current_user_sid()?;
+    let (directory, canonical) = open_private_temp_directory(path, &user)?;
+    let d = info(&directory)?;
     for entry in fs::read_dir(&canonical)? {
         let name = entry?.file_name();
         if name != OsStr::new("daemon-dev.lock")
@@ -438,17 +633,29 @@ pub fn acquire(path: &Path) -> io::Result<ProfileGuard> {
     }
     let lock_path = canonical.join("daemon-dev.lock");
     let lock_name = wide(&lock_path)?;
-    let lock = owned(unsafe {
-        CreateFileW(
-            lock_name.as_ptr(),
-            GENERIC_READ | GENERIC_WRITE | READ_CONTROL,
-            0,
-            null(),
-            OPEN_ALWAYS,
-            FILE_FLAG_OPEN_REPARSE_POINT,
-            null_mut(),
-        )
-    })?;
+    let (access, disposition) = if recover {
+        (GENERIC_READ | GENERIC_WRITE | READ_CONTROL, OPEN_ALWAYS)
+    } else {
+        (GENERIC_READ | READ_CONTROL, OPEN_EXISTING)
+    };
+    let open_lock = |attributes| {
+        owned(unsafe {
+            CreateFileW(
+                lock_name.as_ptr(),
+                access,
+                0,
+                attributes,
+                disposition,
+                FILE_FLAG_OPEN_REPARSE_POINT,
+                null_mut(),
+            )
+        })
+    };
+    let lock = if recover {
+        with_owner_only_security(&user, |attributes| open_lock(attributes))?
+    } else {
+        open_lock(null())?
+    };
     let l = info(&lock)?;
     if l.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) != 0
         || l.nNumberOfLinks != 1
@@ -459,6 +666,11 @@ pub fn acquire(path: &Path) -> io::Result<ProfileGuard> {
     for staged in [MODEL_PENDING, CHAT_PENDING] {
         let pending = canonical.join(staged);
         if let Some(handle) = open_private_file(&pending, &user)? {
+            if !recover {
+                return Err(invalid(
+                    "profile contains a pending snapshot; run normal startup to recover it",
+                ));
+            }
             drop(handle);
             fs::remove_file(&pending)?;
         }

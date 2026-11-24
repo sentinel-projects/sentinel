@@ -12,6 +12,7 @@ const MAX_FILES: usize = 4;
 const MAX_OBSERVATION: usize = 16 * 1024;
 const MAX_TOTAL_OBSERVATION: usize = 24 * 1024;
 const MAX_MODEL_DECISIONS: usize = 24;
+pub(crate) const PLAN_TOOL_STEP_STRIDE: usize = 8;
 const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 struct RunControl<'a> {
@@ -363,7 +364,7 @@ fn read_plan(goal: &str) -> Option<Vec<(String, Vec<usize>)>> {
     let value: Value = serde_json::from_str(goal).ok()?;
     let object = value.as_object()?;
     let operation = object.get("operation")?.as_str()?;
-    if object.len() != 2 || !matches!(operation, "read-plan" | "work-plan") {
+    if object.len() != 2 || !matches!(operation, "read-plan" | "work-plan" | "delegate-read") {
         return None;
     }
     let allow_writes = operation == "work-plan";
@@ -412,6 +413,10 @@ fn read_plan(goal: &str) -> Option<Vec<(String, Vec<usize>)>> {
         result.push((encoded, dependencies));
     }
     Some(result)
+}
+
+pub fn is_delegated_read(goal: &str) -> bool {
+    serde_json::from_str::<Value>(goal).is_ok_and(|value| value["operation"] == "delegate-read")
 }
 
 /// Bounded plan metadata for durable admission; task contents remain in the run goal.
@@ -534,12 +539,18 @@ fn run_read_plan_inner(
             return Err("storage-failure");
         }
         let mut save_step = |step, tool: &str, version: &str, value: &Value, complete| {
-            save(index * 8 + step, tool, version, value, complete)
+            save(
+                index * PLAN_TOOL_STEP_STRIDE + step,
+                tool,
+                version,
+                value,
+                complete,
+            )
         };
         let mut write_authorized = false;
         let outcome = {
             let mut authorize_step = |step, tool: &str, value: &Value| {
-                let result = authorize(index * 8 + step, tool, value);
+                let result = authorize(index * PLAN_TOOL_STEP_STRIDE + step, tool, value);
                 if matches!(tool, "write-file" | "edit-file") && result.is_ok() {
                     write_authorized = true;
                 }
@@ -570,7 +581,7 @@ fn run_read_plan_inner(
                     return Err("storage-failure");
                 }
                 success.push(true);
-                results.push(format!("Step {}:\n{}", index + 1, output));
+                results.push(format!("Step {}:\n{output}", index + 1));
             }
             Err(
                 error @ ("cancelled"
@@ -1544,6 +1555,31 @@ mod tests {
             Some(false)
         );
     }
+    #[test]
+    fn delegated_children_accept_only_explicit_read_scopes() {
+        let goal = json!({"operation":"delegate-read","steps":[
+            {"task":{"operation":"inspect-file","path":"first.txt"},"dependsOn":[]},
+            {"task":{"operation":"inspect-file","path":"second.txt"},"dependsOn":[0]}
+        ]});
+        assert!(is_delegated_read(&goal.to_string()));
+        assert_eq!(
+            plan_metadata(&goal.to_string()).unwrap(),
+            vec![
+                ("inspect-file".to_owned(), vec![]),
+                ("inspect-file".to_owned(), vec![0]),
+            ]
+        );
+
+        let mut invalid = goal.clone();
+        invalid["steps"][1]["task"]["operation"] = json!("create-file");
+        invalid["steps"][1]["task"]["content"] = json!("replacement");
+        assert!(read_plan(&invalid.to_string()).is_none());
+
+        invalid = goal;
+        invalid["steps"][0]["dependsOn"] = json!([1]);
+        assert!(read_plan(&invalid.to_string()).is_none());
+    }
+
     #[test]
     fn classifier_accepts_only_explicit_bounded_read_plans() {
         let valid = json!({"requirements":[{"domain":"filesystem","resource":"notes.txt","purpose":"inspect","operation":"none","query":"","recursive":false,"tool":"read-file"}]}).to_string();
