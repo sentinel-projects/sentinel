@@ -8,8 +8,9 @@ use std::{error::Error, io, path::Path, time::Duration};
 
 pub const DATABASE: &str = "daemon-dev-settings.sqlite3";
 pub const JOURNAL: &str = "daemon-dev-settings.sqlite3-journal";
-const APP_ID: u32 = 0x53445354;
-const VERSION: u32 = 4;
+pub(crate) const APP_ID: u32 = 0x53445354;
+pub(crate) const VERSION: u32 = 4;
+pub(crate) const MAX_PREFERENCES: usize = 2 + crate::provider_catalog::ENDPOINT_KEYS.len();
 
 pub struct Settings {
     db: Connection,
@@ -130,11 +131,15 @@ impl Settings {
             return Err(rusqlite::Error::InvalidQuery.into());
         }
         drop(revocation_query);
-        let mut stmt = src.prepare("SELECT key,value FROM preferences")?;
+        let mut stmt = src.prepare("SELECT key,value FROM preferences LIMIT ?1")?;
         let preferences = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .query_map([(MAX_PREFERENCES + 1) as i64], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        if preferences.len() > 2 || preferences.iter().any(|(k, v)| !valid_preference(k, v)) {
+        if preferences.len() > MAX_PREFERENCES
+            || preferences.iter().any(|(k, v)| !valid_preference(k, v))
+        {
             return Err(rusqlite::Error::InvalidQuery.into());
         }
         for table in ["selection", "workspace_selection"] {
@@ -357,6 +362,39 @@ impl Settings {
         tx.commit().map_err(store::mutation_failure)
     }
 
+    pub fn set_provider_endpoint(
+        &mut self,
+        key: &str,
+        startup: &Config,
+        binding: &Config,
+        active: bool,
+    ) -> Result<(), WriteFailure> {
+        let value = serde_json::json!([startup.endpoint, binding.endpoint]).to_string();
+        if crate::provider_catalog::provider_for_key(key) != Some(binding.provider_id.as_str())
+            || startup.provider_id != binding.provider_id
+            || !valid_preference(key, &value)
+        {
+            return Err(WriteFailure {
+                safe_conflict: true,
+            });
+        }
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(store::acquisition_failure)?;
+        tx.execute(
+            "INSERT INTO preferences(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![key,value],
+        ).map_err(store::mutation_failure)?;
+        if active {
+            tx.execute(
+                "INSERT INTO selection(id,endpoint,provider_id,model) VALUES(1,?1,?2,?3) ON CONFLICT(id) DO UPDATE SET endpoint=excluded.endpoint,provider_id=excluded.provider_id,model=excluded.model",
+                params![binding.endpoint,binding.provider_id,binding.model],
+            ).map_err(store::mutation_failure)?;
+        }
+        tx.commit().map_err(store::mutation_failure)
+    }
+
     pub fn restore(&self, config: &Config) -> Result<Option<String>, Box<dyn Error>> {
         let selection: Option<(String, String, String)> = self
             .db
@@ -369,8 +407,7 @@ impl Settings {
         let Some((endpoint, provider_id, model)) = selection else {
             return Ok(None);
         };
-        let validated = Config::parse(&endpoint, &model)?.with_provider_kind(&provider_id)?;
-        if validated.endpoint != endpoint {
+        if !Config::valid_persisted_selection(&endpoint, &provider_id, &model) {
             return Err(
                 io::Error::new(io::ErrorKind::InvalidData, "invalid settings endpoint").into(),
             );
@@ -379,9 +416,7 @@ impl Settings {
     }
 
     pub fn select(&mut self, config: &Config, model: &str) -> Result<(), WriteFailure> {
-        let valid = Config::parse(&config.endpoint, model)
-            .and_then(|c| c.with_provider_kind(&config.provider_id));
-        if valid.is_err() {
+        if !Config::valid_persisted_selection(&config.endpoint, &config.provider_id, model) {
             return Err(WriteFailure {
                 safe_conflict: false,
             });
@@ -411,6 +446,9 @@ pub fn valid_preference(key: &str, value: &str) -> bool {
         "themeName" => matches!(value, "system" | "light" | "dark"),
         "responseProfileInstructions" => {
             value.encode_utf16().count() <= 2000 && !value.contains('\0')
+        }
+        _ if crate::provider_catalog::provider_for_key(key).is_some() => {
+            crate::provider_catalog::endpoint_override(value).is_some()
         }
         _ => false,
     }

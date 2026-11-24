@@ -17,7 +17,19 @@ pub const MAX_OUTPUT: usize = 32768;
 pub(crate) const MAX_IMPORTED_MESSAGES_PER_SESSION: usize = 32;
 const MAX_CONTEXT_ROWS: usize = MAX_IMPORTED_MESSAGES_PER_SESSION + 2 * MAX_TURNS as usize;
 pub(crate) const APP_ID: u32 = 0x5344_4348; // SDCH
-pub(crate) const VERSION: u32 = 4;
+pub(crate) const VERSION: u32 = 6;
+const SESSION_FLAGS_SCHEMA: &str = "CREATE TABLE session_flags(
+    session_id TEXT PRIMARY KEY NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    archived INTEGER NOT NULL CHECK(archived IN (0,1)),
+    pinned INTEGER NOT NULL CHECK(pinned IN (0,1))
+);";
+const IMPORT_ERRORS_SCHEMA: &str = "CREATE TABLE imported_message_errors(
+    session_id TEXT NOT NULL,
+    logical_id INTEGER NOT NULL,
+    category TEXT NOT NULL CHECK(category != 'None'),
+    PRIMARY KEY(session_id,logical_id),
+    FOREIGN KEY(session_id,logical_id) REFERENCES messages(session_id,logical_id) ON DELETE CASCADE
+);";
 const HEADER: &[u8; 16] = b"SQLite format 3\0";
 
 pub struct LoadedSession {
@@ -31,6 +43,8 @@ pub struct LoadedSession {
     pub detail: String,
     pub created_at: String,
     pub updated_at: String,
+    pub archived: bool,
+    pub pinned: bool,
 }
 pub struct Store {
     db: Connection,
@@ -46,6 +60,12 @@ pub struct BranchRequest<'a> {
     pub model: &'a str,
     pub provider: &'a str,
 }
+pub struct AgentTerminal<'a> {
+    pub state: &'a str,
+    pub output: &'a str,
+    pub reason: &'a str,
+}
+
 /// Only a failed BEGIN IMMEDIATE with BUSY/LOCKED proves no write began.
 #[derive(Debug)]
 pub struct WriteFailure {
@@ -198,6 +218,8 @@ impl Store {
                 CREATE TABLE messages(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id), run_id TEXT NOT NULL REFERENCES runs(id), role TEXT NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL, partial INTEGER NOT NULL, provider_id TEXT NOT NULL, model_id TEXT NOT NULL, timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), logical_id INTEGER NOT NULL, reply_to INTEGER NOT NULL DEFAULT 0, replaces INTEGER NOT NULL DEFAULT 0, attachments TEXT NOT NULL DEFAULT '[]');
                 CREATE INDEX messages_session ON messages(session_id,id);
                 CREATE UNIQUE INDEX messages_logical ON messages(session_id,logical_id);"))?;
+            tx.execute_batch(SESSION_FLAGS_SCHEMA)?;
+            tx.execute_batch(IMPORT_ERRORS_SCHEMA)?;
             tx.commit()?;
         } else {
             let check: String = db.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
@@ -213,7 +235,16 @@ impl Store {
             if old_version < 3 {
                 tx.execute_batch("ALTER TABLE runs ADD COLUMN provider_id TEXT NOT NULL DEFAULT 'openai-compatible-local'; UPDATE runs SET provider_id='' WHERE state='imported';")?;
             }
-            tx.execute_batch("ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'; PRAGMA user_version=4;")?;
+            if old_version < 4 {
+                tx.execute_batch(
+                    "ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';",
+                )?;
+            }
+            if old_version < 5 {
+                tx.execute_batch(SESSION_FLAGS_SCHEMA)?;
+            }
+            tx.execute_batch(IMPORT_ERRORS_SCHEMA)?;
+            tx.pragma_update(None, "user_version", VERSION)?;
             tx.commit()?;
         }
         if importing {
@@ -237,7 +268,7 @@ impl Store {
     }
     pub fn load(&self) -> rusqlite::Result<Vec<LoadedSession>> {
         let mut stmt = self.db.prepare(
-            "SELECT s.id,s.title,s.run_id,s.state,s.output,s.model,s.detail,s.created_at,s.updated_at,COALESCE(r.provider_id, '') FROM sessions s LEFT JOIN runs r ON r.id=s.run_id AND r.session_id=s.id ORDER BY s.rowid",
+            "SELECT s.id,s.title,s.run_id,s.state,s.output,s.model,s.detail,s.created_at,s.updated_at,COALESCE(r.provider_id, ''),COALESCE(f.archived,0),COALESCE(f.pinned,0) FROM sessions s LEFT JOIN runs r ON r.id=s.run_id AND r.session_id=s.id LEFT JOIN session_flags f ON f.session_id=s.id ORDER BY s.rowid",
         )?;
         stmt.query_map([], |r| {
             Ok(LoadedSession {
@@ -251,6 +282,8 @@ impl Store {
                 created_at: r.get(7)?,
                 updated_at: r.get(8)?,
                 provider_id: r.get(9)?,
+                archived: r.get(10)?,
+                pinned: r.get(11)?,
             })
         })?
         .collect()
@@ -286,74 +319,98 @@ impl Store {
         }
         tx.commit().map_err(mutation_failure)
     }
-    /// Delete all session-owned data across the three isolated rollback-mode stores.
-    /// SQLite's super-journal makes the multi-database commit atomic on this private profile.
-    pub fn delete(&mut self, profile: &Path, sid: &str) -> Result<(), WriteFailure> {
+    pub fn set_session_flags(
+        &mut self,
+        id: &str,
+        archived: bool,
+        pinned: bool,
+    ) -> Result<(), WriteFailure> {
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(acquisition_failure)?;
+        tx.execute(
+            "INSERT INTO session_flags(session_id,archived,pinned) VALUES(?1,?2,?3)
+             ON CONFLICT(session_id) DO UPDATE SET archived=excluded.archived,pinned=excluded.pinned",
+            params![id, archived, pinned],
+        ).map_err(mutation_failure)?;
+        tx.commit().map_err(mutation_failure)
+    }
+    /// Open a short-lived connection to the existing rollback-mode stores.
+    /// SQLite's super-journal coordinates their commits on the private profile.
+    fn coordinated_connection(
+        profile: &Path,
+        include_memory: bool,
+    ) -> Result<Connection, WriteFailure> {
         let bad = || WriteFailure {
             safe_conflict: false,
         };
-        let (mut db, new, _) =
+        let (db, new, _) =
             open_database(profile, DATABASE, APP_ID, VERSION, true).map_err(|_| bad())?;
         if new {
             return Err(bad());
         }
-        let mut identities = Vec::new();
-        for (name, app, version) in [
+        db.busy_timeout(std::time::Duration::from_millis(250))
+            .map_err(mutation_failure)?;
+        let stores = [
             (
                 crate::agent_store::DATABASE,
                 crate::agent_store::APP_ID,
                 crate::agent_store::VERSION,
+                "ATTACH DATABASE ?1 AS agent",
+                "PRAGMA agent.application_id",
+                "PRAGMA agent.user_version",
+                "PRAGMA agent.journal_mode=DELETE; PRAGMA agent.synchronous=FULL;",
             ),
             (
                 crate::memory::DATABASE,
                 crate::memory::APP_ID,
                 crate::memory::VERSION,
+                "ATTACH DATABASE ?1 AS memory",
+                "PRAGMA memory.application_id",
+                "PRAGMA memory.user_version",
+                "PRAGMA memory.journal_mode=DELETE; PRAGMA memory.synchronous=FULL;",
             ),
-        ] {
+        ];
+        db.execute_batch("PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;")
+            .map_err(mutation_failure)?;
+        for (name, app, version, attach, app_query, version_query, setup) in
+            stores.into_iter().take(if include_memory { 2 } else { 1 })
+        {
+            let path = profile.join(name);
+            let identity = safe_file(&path).map_err(|_| bad())?;
             let (probe, new, _) =
                 open_database(profile, name, app, version, true).map_err(|_| bad())?;
             if new {
                 return Err(bad());
             }
             drop(probe);
-            identities.push(safe_file(&profile.join(name)).map_err(|_| bad())?);
-        }
-        let agent_path = profile.join(crate::agent_store::DATABASE);
-        let memory_path = profile.join(crate::memory::DATABASE);
-        db.execute(
-            "ATTACH DATABASE ?1 AS agent",
-            [agent_path.to_str().ok_or_else(bad)?],
-        )
-        .map_err(mutation_failure)?;
-        db.execute(
-            "ATTACH DATABASE ?1 AS memory",
-            [memory_path.to_str().ok_or_else(bad)?],
-        )
-        .map_err(mutation_failure)?;
-        for (index, path) in [agent_path, memory_path].iter().enumerate() {
-            let now = safe_file(path).map_err(|_| bad())?;
-            if now.dev() != identities[index].dev() || now.ino() != identities[index].ino() {
+            db.execute(attach, [path.to_str().ok_or_else(bad)?])
+                .map_err(mutation_failure)?;
+            let attached = safe_file(&path).map_err(|_| bad())?;
+            if identity.dev() != attached.dev() || identity.ino() != attached.ino() {
                 return Err(bad());
             }
+            let attached_app: u32 = db
+                .query_row(app_query, [], |r| r.get(0))
+                .map_err(mutation_failure)?;
+            let attached_version: u32 = db
+                .query_row(version_query, [], |r| r.get(0))
+                .map_err(mutation_failure)?;
+            if (attached_app, attached_version) != (app, version) {
+                return Err(bad());
+            }
+            db.execute_batch(setup).map_err(mutation_failure)?;
         }
-        let agent_app: u32 = db
-            .query_row("PRAGMA agent.application_id", [], |r| r.get(0))
-            .map_err(mutation_failure)?;
-        let agent_version: u32 = db
-            .query_row("PRAGMA agent.user_version", [], |r| r.get(0))
-            .map_err(mutation_failure)?;
-        let memory_app: u32 = db
-            .query_row("PRAGMA memory.application_id", [], |r| r.get(0))
-            .map_err(mutation_failure)?;
-        let memory_version: u32 = db
-            .query_row("PRAGMA memory.user_version", [], |r| r.get(0))
-            .map_err(mutation_failure)?;
-        if (agent_app, agent_version) != (crate::agent_store::APP_ID, crate::agent_store::VERSION)
-            || (memory_app, memory_version) != (crate::memory::APP_ID, crate::memory::VERSION)
-        {
-            return Err(bad());
-        }
-        db.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=DELETE; PRAGMA agent.journal_mode=DELETE; PRAGMA memory.journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA agent.synchronous=FULL; PRAGMA memory.synchronous=FULL;").map_err(mutation_failure)?;
+        Ok(db)
+    }
+
+    /// Delete all session-owned data across the three isolated rollback-mode stores.
+    pub fn delete(&mut self, profile: &Path, sid: &str) -> Result<(), WriteFailure> {
+        let bad = || WriteFailure {
+            safe_conflict: false,
+        };
+        let mut db = Self::coordinated_connection(profile, true)?;
         let tx = db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(acquisition_failure)?;
@@ -388,6 +445,7 @@ impl Store {
         self.begin_with_provider(sid, rid, text, model, "openai-compatible-local")
     }
 
+    #[cfg(test)]
     pub fn begin_with_provider(
         &mut self,
         sid: &str,
@@ -422,6 +480,49 @@ impl Store {
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(acquisition_failure)?;
+        if !Self::begin_rows(&tx, sid, rid, text, model, provider_id, attachments)? {
+            return Ok(false);
+        }
+        tx.commit().map_err(mutation_failure)?;
+        Ok(true)
+    }
+
+    /// Reserve one Agent run and transcript slot before any tool or provider work.
+    pub(crate) fn begin_agent(
+        &self,
+        profile: &Path,
+        admission: &crate::agent_store::AgentAdmission<'_>,
+    ) -> Result<bool, WriteFailure> {
+        let mut db = Self::coordinated_connection(profile, false)?;
+        let tx = db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(acquisition_failure)?;
+        if !Self::begin_rows(
+            &tx,
+            admission.session_id,
+            admission.run_id,
+            admission.goal,
+            admission.model,
+            admission.provider,
+            "[]",
+        )? {
+            return Ok(false);
+        }
+        crate::agent_store::AgentStore::record_admission(&tx, admission, true)
+            .map_err(mutation_failure)?;
+        tx.commit().map_err(mutation_failure)?;
+        Ok(true)
+    }
+
+    fn begin_rows(
+        tx: &rusqlite::Transaction<'_>,
+        sid: &str,
+        rid: &str,
+        text: &str,
+        model: &str,
+        provider_id: &str,
+        attachments: &str,
+    ) -> Result<bool, WriteFailure> {
         let count: i64 = tx
             .query_row(
                 "SELECT count(*) FROM runs WHERE session_id=?1 AND state!='imported' ",
@@ -438,12 +539,11 @@ impl Store {
         )
         .map_err(mutation_failure)?;
         tx.execute("INSERT INTO messages(session_id,run_id,role,content,status,partial,provider_id,model_id,logical_id,replaces,attachments) VALUES(?1,?2,'user',?3,'sent',0,'','',(SELECT COALESCE(MAX(logical_id),0)+1 FROM messages WHERE session_id=?1),0,?4)",params![sid,rid,text,attachments]).map_err(mutation_failure)?;
-        let messages = read_messages(&tx, sid).map_err(mutation_failure)?;
+        let messages = read_messages(tx, sid).map_err(mutation_failure)?;
         if !history_fits(sid, &messages) {
             return Ok(false);
         }
         if tx.execute("UPDATE sessions SET run_id=?1,state='running',output='',model=?2,detail='' WHERE id=?3",params![rid,model,sid]).map_err(mutation_failure)? != 1 { return Err(WriteFailure { safe_conflict: false }); }
-        tx.commit().map_err(mutation_failure)?;
         Ok(true)
     }
     pub fn finish(
@@ -455,6 +555,70 @@ impl Store {
         model: &str,
     ) -> rusqlite::Result<()> {
         let tx = self.db.transaction()?;
+        let detail = if terminal == "failed" {
+            "provider-failed"
+        } else {
+            ""
+        };
+        Self::finish_rows(&tx, sid, rid, terminal, output, model, detail)?;
+        tx.commit()
+    }
+
+    /// Commit the terminal audit and its Chat projection before publishing a receipt.
+    pub fn finish_agent(
+        &self,
+        profile: &Path,
+        sid: &str,
+        rid: &str,
+        model: &str,
+        receipt: AgentTerminal<'_>,
+    ) -> Result<(), WriteFailure> {
+        let AgentTerminal {
+            state: terminal,
+            output,
+            reason,
+        } = receipt;
+        if !matches!(terminal, "completed" | "failed" | "cancelled") {
+            return Err(mutation_failure(rusqlite::Error::InvalidQuery));
+        }
+        let mut db = Self::coordinated_connection(profile, false)?;
+        let tx = db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(acquisition_failure)?;
+        if tx
+            .execute(
+                "UPDATE agent.runs SET state=?3,output=?4,reason=?6,confirmed=1
+             WHERE id=?1 AND session_id=?2 AND state='running' AND confirmed=0 AND model=?5
+               AND provider_id=(SELECT provider_id FROM main.runs WHERE id=?1 AND session_id=?2)
+               AND NOT EXISTS (SELECT 1 FROM agent.approvals WHERE run_id=?1 AND decision='pending')
+               AND (?3!='completed' OR NOT EXISTS (
+                   SELECT 1 FROM agent.plan_steps WHERE run_id=?1 AND status!='succeeded'
+               ))",
+                params![rid, sid, terminal, output, model, reason],
+            )
+            .map_err(mutation_failure)?
+            != 1
+        {
+            return Err(mutation_failure(rusqlite::Error::QueryReturnedNoRows));
+        }
+        tx.execute(
+            "UPDATE agent.plan_steps SET status=CASE status WHEN 'pending' THEN 'skipped' ELSE 'interrupted' END,reason='run-ended' WHERE run_id=?1 AND status IN ('pending','started')",
+            [rid],
+        ).map_err(mutation_failure)?;
+        Self::finish_rows(&tx, sid, rid, terminal, output, model, reason)
+            .map_err(mutation_failure)?;
+        tx.commit().map_err(mutation_failure)
+    }
+
+    fn finish_rows(
+        tx: &rusqlite::Transaction<'_>,
+        sid: &str,
+        rid: &str,
+        terminal: &str,
+        output: &str,
+        model: &str,
+        detail: &str,
+    ) -> rusqlite::Result<()> {
         if tx.execute(
             "UPDATE runs SET state=?1 WHERE id=?2 AND session_id=?3 AND model=?4 AND state='running'",
             params![terminal, rid, sid, model],
@@ -467,68 +631,111 @@ impl Store {
         }
         if tx.execute(
             "UPDATE sessions SET state=?1,output=?2,detail=?3 WHERE id=?4 AND run_id=?5",
-            params![
-                terminal,
-                output,
-                if terminal == "failed" {
-                    "provider-failed"
-                } else {
-                    ""
-                },
-                sid,
-                rid
-            ],
+            params![terminal, output, detail, sid, rid],
         )? != 1
         {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
-        tx.commit()?;
         Ok(())
     }
-    /// Missing Chat run is valid if the process stopped before cross-store admission.
-    pub fn validate_agent_owner(&self, rid: &str, sid: &str) -> rusqlite::Result<()> {
-        let owner: Option<String> = self
-            .db
-            .query_row("SELECT session_id FROM runs WHERE id=?1", [rid], |r| {
-                r.get(0)
-            })
-            .optional()?;
-        let foreign_session: bool = self.db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sessions WHERE run_id=?1 AND id!=?2)",
-            params![rid, sid],
-            |r| r.get(0),
-        )?;
-        let foreign_message: bool = self.db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM messages WHERE run_id=?1 AND session_id!=?2)",
-            params![rid, sid],
-            |r| r.get(0),
-        )?;
-        if owner.as_deref().is_some_and(|value| value != sid) || foreign_session || foreign_message
-        {
-            return Err(rusqlite::Error::InvalidQuery);
-        }
-        Ok(())
-    }
-    pub fn invalidate_agent(&mut self, rid: &str, possible_write: bool) -> rusqlite::Result<()> {
-        let tx = self.db.transaction()?;
-        let (output, detail) = if possible_write {
-            (
-                "A file may have been created or modified. Inspect the workspace before retrying.",
-                "write-outcome-unknown",
+    /// Recover Agent runs and their Chat projections in one rollback-mode commit.
+    /// A missing Chat run is expected only if startup stopped before admission.
+    pub fn recover_agent_runs(profile: &Path) -> Result<(), WriteFailure> {
+        let mut db = Self::coordinated_connection(profile, false)?;
+        let tx = db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(acquisition_failure)?;
+        let invalid_owner: bool = tx
+            .query_row(
+                "SELECT EXISTS(
+                SELECT 1 FROM main.sessions s JOIN agent.runs a ON a.id=s.run_id
+                WHERE s.id!=a.session_id OR (a.confirmed=1 AND s.state!=a.state)
+                UNION ALL
+                SELECT 1 FROM main.runs r JOIN agent.runs a ON a.id=r.id
+                WHERE r.session_id!=a.session_id OR (a.confirmed=1 AND r.state!=a.state)
+                UNION ALL
+                SELECT 1 FROM main.messages m JOIN agent.runs a ON a.id=m.run_id
+                WHERE m.session_id!=a.session_id
+                UNION ALL
+                SELECT 1 FROM agent.runs a WHERE a.confirmed=0
+                  AND (NOT EXISTS(SELECT 1 FROM main.sessions s WHERE s.id=a.session_id)
+                       OR (NOT EXISTS(SELECT 1 FROM main.runs r WHERE r.id=a.id)
+                           AND EXISTS(SELECT 1 FROM agent.observations o WHERE o.run_id=a.id)))
+            )",
+                [],
+                |row| row.get(0),
             )
-        } else {
-            ("", "daemon-restarted")
+            .map_err(mutation_failure)?;
+        if invalid_owner {
+            return Err(mutation_failure(rusqlite::Error::InvalidQuery));
+        }
+        let runs: Vec<(String, String, bool)> = {
+            let mut stmt = tx.prepare(
+                "SELECT a.id,a.session_id,EXISTS(SELECT 1 FROM agent.approvals p
+                 WHERE p.run_id=a.id AND p.tool IN ('write-file','edit-file') AND p.decision='allow')
+                 FROM agent.runs a WHERE a.confirmed=0",
+            ).map_err(mutation_failure)?;
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .map_err(mutation_failure)?
+                .collect::<rusqlite::Result<_>>()
+                .map_err(mutation_failure)?
         };
-        tx.execute(
-            "UPDATE sessions SET state='failed',output=?2,detail=?3 WHERE run_id=?1",
-            params![rid, output, detail],
-        )?;
-        tx.execute("UPDATE messages SET status='interrupted',partial=1,content=?2 WHERE run_id=?1 AND role='assistant'", params![rid,output])?;
-        tx.execute(
-            "UPDATE runs SET state='failed',detail=?2 WHERE id=?1",
-            params![rid, detail],
-        )?;
-        tx.commit()
+        for (run, session, possible_write) in runs {
+            let (detail, output) = if possible_write {
+                (
+                    "write-outcome-unknown",
+                    "A file may have been created or modified. Inspect the workspace before retrying.",
+                )
+            } else {
+                ("daemon-restarted", "")
+            };
+            tx.execute(
+                "UPDATE agent.approvals SET decision='denied-restart' WHERE run_id=?1 AND decision='pending'",
+                [&run],
+            ).map_err(mutation_failure)?;
+            tx.execute(
+                "UPDATE agent.plan_steps SET status=CASE status WHEN 'pending' THEN 'skipped' ELSE 'interrupted' END,reason='daemon-restarted'
+                 WHERE run_id=?1 AND status IN ('pending','started')",
+                [&run],
+            ).map_err(mutation_failure)?;
+            tx.execute(
+                "INSERT INTO main.messages(session_id,run_id,role,content,status,partial,provider_id,model_id,logical_id,reply_to)
+                 SELECT ?2,?1,'assistant',?3,'interrupted',1,r.provider_id,r.model,
+                        (SELECT COALESCE(MAX(logical_id),0)+1 FROM main.messages WHERE session_id=?2),
+                        COALESCE((SELECT logical_id FROM main.messages
+                                  WHERE session_id=?2 AND run_id=?1 AND role='user' LIMIT 1),0)
+                 FROM main.runs r WHERE r.id=?1 AND r.session_id=?2
+                    AND NOT EXISTS(SELECT 1 FROM main.messages WHERE run_id=?1 AND role='assistant')",
+                params![run, session, output],
+            ).map_err(mutation_failure)?;
+            tx.execute(
+                "UPDATE main.messages SET status='interrupted',partial=1,content=?3
+                 WHERE run_id=?1 AND session_id=?2 AND role='assistant'",
+                params![run, session, output],
+            )
+            .map_err(mutation_failure)?;
+            tx.execute(
+                "UPDATE main.sessions SET state='failed',output=?3,detail=?4 WHERE run_id=?1 AND id=?2",
+                params![run, session, output, detail],
+            ).map_err(mutation_failure)?;
+            tx.execute(
+                "UPDATE main.runs SET state='failed',detail=?3 WHERE id=?1 AND session_id=?2",
+                params![run, session, detail],
+            )
+            .map_err(mutation_failure)?;
+            if tx
+                .execute(
+                    "UPDATE agent.runs SET state='failed',output=?3,reason=?4,confirmed=1
+                 WHERE id=?1 AND session_id=?2 AND confirmed=0",
+                    params![run, session, output, detail],
+                )
+                .map_err(mutation_failure)?
+                != 1
+            {
+                return Err(mutation_failure(rusqlite::Error::QueryReturnedNoRows));
+            }
+        }
+        tx.commit().map_err(mutation_failure)
     }
     /// Resolve the referenced turn and whether it precedes the latest user message.
     pub fn retry_target(
@@ -565,6 +772,16 @@ impl Store {
         };
         Ok(Some((user_id, text, replaced, user_id != latest)))
     }
+    pub fn user_parts(
+        &self,
+        sid: &str,
+        user_id: i64,
+        text: &str,
+    ) -> rusqlite::Result<(String, Vec<crate::provider::ChatImage>)> {
+        let attachments: String = self.db.query_row("SELECT attachments FROM messages WHERE session_id=?1 AND logical_id=?2 AND role='user'", params![sid,user_id], |r| r.get(0))?;
+        crate::attachment::parts(text, &attachments).map_err(|_| rusqlite::Error::InvalidQuery)
+    }
+    #[cfg(test)]
     pub fn user_context(&self, sid: &str, user_id: i64, text: &str) -> rusqlite::Result<String> {
         let attachments: String = self.db.query_row("SELECT attachments FROM messages WHERE session_id=?1 AND logical_id=?2 AND role='user'", params![sid,user_id], |r| r.get(0))?;
         crate::attachment::context(text, &attachments).map_err(|_| rusqlite::Error::InvalidQuery)
@@ -607,6 +824,11 @@ impl Store {
         .map_err(mutation_failure)?;
         tx.execute("INSERT INTO runs(id,session_id,state,model,provider_id) VALUES(?1,?2,'imported','','')",params![copied_run,branch]).map_err(mutation_failure)?;
         tx.execute("INSERT INTO messages(session_id,run_id,role,content,status,partial,provider_id,model_id,timestamp,logical_id,reply_to,replaces,attachments) SELECT ?1,?2,m.role,CASE WHEN m.logical_id=?4 THEN ?5 ELSE m.content END,CASE WHEN m.logical_id=?4 THEN 'completed' ELSE m.status END,m.partial,m.provider_id,m.model_id,m.timestamp,m.logical_id,CASE WHEN m.role='assistant' AND m.reply_to=0 THEN COALESCE((SELECT u.logical_id FROM messages u WHERE u.session_id=m.session_id AND u.run_id=m.run_id AND u.role='user' AND u.logical_id<m.logical_id LIMIT 1),0) ELSE m.reply_to END,m.replaces,m.attachments FROM messages m WHERE m.session_id=?3 AND m.logical_id<=?4 ORDER BY m.logical_id",params![branch,copied_run,source,user_id,text]).map_err(mutation_failure)?;
+        tx.execute(
+            "INSERT INTO imported_message_errors(session_id,logical_id,category)
+             SELECT ?1,logical_id,category FROM imported_message_errors WHERE session_id=?2 AND logical_id<?3",
+            params![branch, source, user_id],
+        ).map_err(mutation_failure)?;
         tx.execute(
             "INSERT INTO runs(id,session_id,state,model,provider_id) VALUES(?1,?2,'running',?3,?4)",
             params![run, branch, model, provider],
@@ -669,6 +891,24 @@ impl Store {
         sid: &str,
         before: Option<i64>,
     ) -> rusqlite::Result<Vec<crate::provider::Turn>> {
+        self.bound_context_turns(sid, before, None)
+    }
+
+    pub fn cloud_context_turns(
+        &self,
+        sid: &str,
+        provider: &str,
+        model: &str,
+    ) -> rusqlite::Result<Vec<crate::provider::Turn>> {
+        self.bound_context_turns(sid, None, Some((provider, model)))
+    }
+
+    fn bound_context_turns(
+        &self,
+        sid: &str,
+        before: Option<i64>,
+        binding: Option<(&str, &str)>,
+    ) -> rusqlite::Result<Vec<crate::provider::Turn>> {
         struct Row {
             id: i64,
             run: String,
@@ -680,8 +920,10 @@ impl Store {
             replaces: i64,
             run_state: String,
             attachments: String,
+            run_provider: String,
+            run_model: String,
         }
-        let mut stmt = self.db.prepare("SELECT m.logical_id,m.run_id,m.role,m.content,m.status,m.partial,m.reply_to,m.replaces,r.state,m.attachments FROM messages m JOIN runs r ON r.id=m.run_id AND r.session_id=m.session_id WHERE m.session_id=?1 ORDER BY m.logical_id LIMIT ?2")?;
+        let mut stmt = self.db.prepare("SELECT m.logical_id,m.run_id,m.role,m.content,m.status,m.partial,m.reply_to,m.replaces,r.state,m.attachments,r.provider_id,r.model FROM messages m JOIN runs r ON r.id=m.run_id AND r.session_id=m.session_id WHERE m.session_id=?1 ORDER BY m.logical_id LIMIT ?2")?;
         let rows: Vec<Row> = stmt
             .query_map(params![sid, (MAX_CONTEXT_ROWS + 1) as i64], |r| {
                 Ok(Row {
@@ -695,6 +937,8 @@ impl Store {
                     replaces: r.get(7)?,
                     run_state: r.get(8)?,
                     attachments: r.get(9)?,
+                    run_provider: r.get(10)?,
+                    run_model: r.get(11)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -743,6 +987,15 @@ impl Store {
             let Some(user) = user else {
                 continue;
             };
+            if let Some((provider, model)) = binding
+                && (answer.run_state != "completed"
+                    || answer.run_provider != provider
+                    || answer.run_model != model
+                    || user.run != answer.run
+                    || user.attachments != "[]")
+            {
+                continue;
+            }
             if answer.reply != 0 && answer.reply != user.id {
                 continue;
             }
@@ -786,10 +1039,12 @@ impl Store {
         chosen
             .into_values()
             .map(|(user, answer)| {
+                let (text, images) = crate::attachment::parts(&user.content, &user.attachments)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
                 Ok(crate::provider::Turn {
-                    user: crate::attachment::context(&user.content, &user.attachments)
-                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    user: text,
                     assistant: answer.content.clone(),
+                    images,
                 })
             })
             .collect()
@@ -812,6 +1067,12 @@ impl Store {
                     conversation.updated_at
                 ],
             )?;
+            if conversation.archived || conversation.pinned {
+                tx.execute(
+                    "INSERT INTO session_flags(session_id,archived,pinned) VALUES(?1,?2,?3)",
+                    params![conversation.id, conversation.archived, conversation.pinned],
+                )?;
+            }
             if conversation.messages.is_empty() {
                 continue;
             }
@@ -821,7 +1082,13 @@ impl Store {
                 params![run, conversation.id],
             )?;
             for message in &conversation.messages {
-                tx.execute("INSERT INTO messages(session_id,run_id,role,content,status,partial,provider_id,model_id,timestamp,logical_id,reply_to,replaces) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)", params![conversation.id,run,message.role,message.content,message.status,message.partial,message.provider,message.model,message.timestamp,message.id,message.reply_to,message.replaces])?;
+                tx.execute("INSERT INTO messages(session_id,run_id,role,content,status,partial,provider_id,model_id,timestamp,logical_id,reply_to,replaces,attachments) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)", params![conversation.id,run,message.role,message.content,message.status,message.partial,message.provider,message.model,message.timestamp,message.id,message.reply_to,message.replaces,message.attachments])?;
+                if message.error_category != "None" {
+                    tx.execute(
+                        "INSERT INTO imported_message_errors(session_id,logical_id,category) VALUES(?1,?2,?3)",
+                        params![conversation.id, message.id, message.error_category],
+                    )?;
+                }
             }
             let messages = read_messages(&tx, &conversation.id)?;
             if !history_fits(&conversation.id, &messages) {
@@ -843,8 +1110,34 @@ pub fn history_fits(sid: &str, messages: &[Value]) -> bool {
         .is_ok_and(|bytes| bytes.len() + 2048 <= sentinel_ipc::contract::MAX_FRAME_BYTES)
 }
 fn read_messages(db: &Connection, sid: &str) -> rusqlite::Result<Vec<Value>> {
-    let mut stmt = db.prepare("SELECT logical_id,role,content,status,timestamp,partial,provider_id,model_id,reply_to,replaces,attachments FROM messages WHERE session_id=?1 ORDER BY logical_id")?;
-    stmt.query_map([sid], |r| Ok(json!({"id":r.get::<_,i64>(0)?,"role":r.get::<_,String>(1)?,"content":r.get::<_,String>(2)?,"status":r.get::<_,String>(3)?,"timestamp":r.get::<_,String>(4)?,"partial":r.get::<_,bool>(5)?,"provider_id":r.get::<_,String>(6)?,"model_id":r.get::<_,String>(7)?,"reply_to":r.get::<_,i64>(8)?,"replaces":r.get::<_,i64>(9)?,"attachments":serde_json::from_str::<Value>(&r.get::<_,String>(10)?).map_err(|_| rusqlite::Error::InvalidQuery)?})))?.collect()
+    let mut stmt = db.prepare(
+        "SELECT m.logical_id,m.role,m.content,m.status,m.timestamp,m.partial,m.provider_id,m.model_id,
+                m.reply_to,m.replaces,m.attachments,e.category
+         FROM messages m LEFT JOIN imported_message_errors e
+              ON e.session_id=m.session_id AND e.logical_id=m.logical_id
+         WHERE m.session_id=?1 ORDER BY m.logical_id",
+    )?;
+    stmt.query_map([sid], |row| {
+        let role: String = row.get(1)?;
+        let status: String = row.get(3)?;
+        let category: Option<String> = row.get(11)?;
+        let mut message = json!({
+            "id":row.get::<_,i64>(0)?,"role":role,"content":row.get::<_,String>(2)?,
+            "status":status,"timestamp":row.get::<_,String>(4)?,"partial":row.get::<_,bool>(5)?,
+            "provider_id":row.get::<_,String>(6)?,"model_id":row.get::<_,String>(7)?,
+            "reply_to":row.get::<_,i64>(8)?,"replaces":row.get::<_,i64>(9)?,
+            "attachments":serde_json::from_str::<Value>(&row.get::<_,String>(10)?)
+                .map_err(|_| rusqlite::Error::InvalidQuery)?
+        });
+        if let Some(category) = category {
+            if !crate::import::valid_message_error(&role, &status, &category) {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            message["error_category"] = json!(category);
+        }
+        Ok(message)
+    })?
+    .collect()
 }
 
 #[cfg(test)]
@@ -871,6 +1164,145 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn v5_profile_upgrades_without_losing_flags_and_projects_imported_errors() {
+        let root = Temp::new();
+        let mut store = Store::open(&root.0).unwrap();
+        store.create("session", "Fixture").unwrap();
+        store
+            .db
+            .execute_batch(
+                "INSERT INTO session_flags(session_id,archived,pinned) VALUES('session',0,1);
+             DROP TABLE imported_message_errors;
+             PRAGMA user_version=5;",
+            )
+            .unwrap();
+        drop(store);
+
+        let store = Store::open(&root.0).unwrap();
+        assert!(store.load().unwrap()[0].pinned);
+        store.db.execute_batch(
+            "INSERT INTO runs(id,session_id,state,model,provider_id)
+             VALUES('qt-import:session','session','imported','','');
+             INSERT INTO messages(session_id,run_id,role,content,status,partial,provider_id,model_id,logical_id)
+             VALUES('session','qt-import:session','assistant','Timed out','failed',0,'ollama','model',1);
+             INSERT INTO imported_message_errors(session_id,logical_id,category)
+             VALUES('session',1,'Timeout');",
+        ).unwrap();
+        assert_eq!(
+            store.messages("session").unwrap()[0]["error_category"],
+            "Timeout"
+        );
+    }
+
+    #[test]
+    fn v4_profile_upgrades_and_session_flags_survive_reopen() {
+        let root = Temp::new();
+        let mut store = Store::open(&root.0).unwrap();
+        store.create("session", "Fixture").unwrap();
+        store
+            .db
+            .execute_batch("DROP TABLE imported_message_errors; DROP TABLE session_flags; PRAGMA user_version=4;")
+            .unwrap();
+        drop(store);
+        let mut store = Store::open(&root.0).unwrap();
+        let flags = store.load().unwrap().remove(0);
+        assert!(!flags.archived && !flags.pinned);
+        store.set_session_flags("session", true, true).unwrap();
+        drop(store);
+        let store = Store::open(&root.0).unwrap();
+        let flags = store.load().unwrap().remove(0);
+        assert!(flags.archived && flags.pinned);
+    }
+
+    #[test]
+    fn agent_admission_leaves_neither_record_when_audit_insert_fails() {
+        let temp = Temp::new();
+        let mut store = Store::open(&temp.0).unwrap();
+        let mut audit = crate::agent_store::AgentStore::open(&temp.0).unwrap();
+        store.create("session", "Fixture").unwrap();
+        audit
+            .start("duplicate", "session", "old goal", "ollama", "model")
+            .unwrap();
+        let admission = crate::agent_store::AgentAdmission {
+            run_id: "duplicate",
+            session_id: "session",
+            goal: "new goal",
+            provider: "ollama",
+            model: "model",
+            plan: None,
+        };
+
+        assert!(store.begin_agent(&temp.0, &admission).is_err());
+        assert!(store.messages("session").unwrap().is_empty());
+        assert_eq!(store.load().unwrap()[0].state, "idle");
+
+        let accepted = crate::agent_store::AgentAdmission {
+            run_id: "new",
+            ..admission
+        };
+        assert!(store.begin_agent(&temp.0, &accepted).unwrap());
+        assert!(audit.contains("new").unwrap());
+        assert_eq!(store.messages("session").unwrap()[0]["content"], "new goal");
+        assert_eq!(store.load().unwrap()[0].run_id, "new");
+    }
+
+    #[test]
+    fn agent_audit_and_chat_terminal_roll_back_and_commit_together() {
+        let temp = Temp::new();
+        let mut store = Store::open(&temp.0).unwrap();
+        let mut audit = crate::agent_store::AgentStore::open(&temp.0).unwrap();
+        store.create("session", "Fixture").unwrap();
+        audit
+            .start("run", "session", "goal", "ollama", "model")
+            .unwrap();
+        assert!(
+            store
+                .begin_with_provider("session", "run", "goal", "model", "ollama")
+                .unwrap()
+        );
+
+        // Force the projection update to fail after the audit update was attempted.
+        store
+            .db
+            .execute("UPDATE sessions SET run_id='' WHERE id='session'", [])
+            .unwrap();
+        let receipt = || AgentTerminal {
+            state: "completed",
+            output: "answer",
+            reason: "",
+        };
+        assert!(
+            store
+                .finish_agent(&temp.0, "session", "run", "model", receipt())
+                .is_err()
+        );
+        let history = audit
+            .history(&["session".into()], "run", "", "")
+            .unwrap()
+            .unwrap();
+        assert_eq!(history["run"]["state"], "running");
+        assert_eq!(history["run"]["confirmed"], false);
+        assert_eq!(store.messages("session").unwrap().len(), 1);
+
+        store
+            .db
+            .execute("UPDATE sessions SET run_id='run' WHERE id='session'", [])
+            .unwrap();
+        store
+            .finish_agent(&temp.0, "session", "run", "model", receipt())
+            .unwrap();
+        let history = audit
+            .history(&["session".into()], "run", "", "")
+            .unwrap()
+            .unwrap();
+        assert_eq!(history["run"]["state"], "completed");
+        assert_eq!(history["run"]["confirmed"], true);
+        let messages = store.messages("session").unwrap();
+        assert_eq!(messages[1]["content"], "answer");
+        assert_eq!(store.load().unwrap()[0].state, "completed");
     }
 
     #[test]
@@ -1012,7 +1444,7 @@ mod tests {
             .db
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, i64::from(VERSION));
         assert_eq!(
             store.load().unwrap()[0].provider_id,
             "openai-compatible-local"
@@ -1062,7 +1494,7 @@ mod tests {
             .db
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, i64::from(VERSION));
     }
 
     #[test]

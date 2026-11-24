@@ -17,6 +17,10 @@ mod claim_grounding;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod coverage;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+mod document;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod document_pdf;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod import;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod memory;
@@ -31,9 +35,19 @@ mod planner;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod plugin_catalog;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-mod set_restore;
+mod provider_catalog;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod qt_preview_import;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod qt_settings_import;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod restore_validate;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod set_restore;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod speech_inspection;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod speech_runner;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod tool_registry;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -50,6 +64,20 @@ mod windows_daemon;
 mod windows_profile;
 
 fn main() {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let mut args = std::env::args_os().skip(1);
+        if args
+            .next()
+            .is_some_and(|arg| arg == document_pdf::WORKER_ARG)
+            && args.next().is_none()
+        {
+            if document_pdf::worker().is_err() {
+                std::process::exit(1);
+            }
+            return;
+        }
+    }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if let Err(error) = unix::run() {
         eprintln!("sentinel-daemon-dev: {error}");

@@ -41,6 +41,7 @@ pub struct Descriptor {
     pub risk: &'static str,
     pub domain: &'static str,
     pub access: &'static str,
+    pub approval_required: bool,
     fields: &'static [Field],
 }
 const PATH: Field = Field {
@@ -147,6 +148,7 @@ const DESCRIPTORS: &[Descriptor] = &[
         risk: "low",
         domain: "filesystem",
         access: "read",
+        approval_required: true,
         fields: &[PATH],
     },
     Descriptor {
@@ -156,6 +158,7 @@ const DESCRIPTORS: &[Descriptor] = &[
         risk: "low",
         domain: "filesystem",
         access: "read",
+        approval_required: false,
         fields: READ,
     },
     Descriptor {
@@ -165,6 +168,7 @@ const DESCRIPTORS: &[Descriptor] = &[
         risk: "low",
         domain: "filesystem",
         access: "read",
+        approval_required: false,
         fields: LIST,
     },
     Descriptor {
@@ -174,6 +178,7 @@ const DESCRIPTORS: &[Descriptor] = &[
         risk: "low",
         domain: "filesystem",
         access: "read",
+        approval_required: true,
         fields: GREP,
     },
     Descriptor {
@@ -183,6 +188,7 @@ const DESCRIPTORS: &[Descriptor] = &[
         risk: "low",
         domain: "filesystem",
         access: "read",
+        approval_required: true,
         fields: GLOB,
     },
     Descriptor {
@@ -192,6 +198,7 @@ const DESCRIPTORS: &[Descriptor] = &[
         risk: "high",
         domain: "filesystem",
         access: "write",
+        approval_required: true,
         fields: WRITE,
     },
     Descriptor {
@@ -201,6 +208,7 @@ const DESCRIPTORS: &[Descriptor] = &[
         risk: "high",
         domain: "filesystem",
         access: "write",
+        approval_required: true,
         fields: EDIT,
     },
     Descriptor {
@@ -210,9 +218,28 @@ const DESCRIPTORS: &[Descriptor] = &[
         risk: "high",
         domain: "process",
         access: "execute",
+        approval_required: true,
         fields: PROCESS,
     },
 ];
+pub fn catalog(process_enabled: bool, require_workspace_approval: bool) -> Vec<Value> {
+    DESCRIPTORS
+        .iter()
+        .filter(|descriptor| descriptor.tool != Tool::ProcessExec || process_enabled)
+        .map(|descriptor| {
+            json!({
+                "id": descriptor.id,
+                "version": descriptor.version,
+                "domain": descriptor.domain,
+                "risk": descriptor.risk,
+                "access": descriptor.access,
+                "requires_approval": descriptor.approval_required || require_workspace_approval,
+                "schema": descriptor.schema(),
+            })
+        })
+        .collect()
+}
+
 pub fn descriptor(tool: Tool) -> &'static Descriptor {
     DESCRIPTORS
         .iter()
@@ -249,6 +276,18 @@ pub fn plan(tool: Tool, args: &Value) -> io::Result<Invocation> {
     })
 }
 impl Descriptor {
+    pub fn event_risk(&self) -> u8 {
+        if self.risk == "high" { 2 } else { 0 }
+    }
+
+    pub fn approval_resource(&self, args: &Value) -> Value {
+        if self.tool == Tool::ProcessExec {
+            json!({"argv":args["argv"],"access":self.access})
+        } else {
+            json!({"path":args["path"],"access":self.access})
+        }
+    }
+
     pub fn schema(&self) -> Value {
         let mut properties = Map::new();
         let mut required = Vec::new();

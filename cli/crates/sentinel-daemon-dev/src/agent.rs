@@ -11,6 +11,26 @@ use std::sync::atomic::{AtomicBool, Ordering};
 const MAX_FILES: usize = 4;
 const MAX_OBSERVATION: usize = 16 * 1024;
 const MAX_TOTAL_OBSERVATION: usize = 24 * 1024;
+const MAX_MODEL_DECISIONS: usize = 24;
+const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+struct RunControl<'a> {
+    cancel: &'a AtomicBool,
+    decisions_remaining: usize,
+}
+
+impl RunControl<'_> {
+    fn admit_model_decision(&mut self) -> Result<(), &'static str> {
+        if self.cancel.load(Ordering::SeqCst) {
+            return Err("cancelled");
+        }
+        self.decisions_remaining = self
+            .decisions_remaining
+            .checked_sub(1)
+            .ok_or("decision-limit")?;
+        Ok(())
+    }
+}
 fn prompt(
     goal: &str,
     observations: &[Option<Value>],
@@ -405,56 +425,66 @@ pub fn plan_metadata(goal: &str) -> Option<Vec<(String, Vec<usize>)>> {
         .collect()
 }
 
-fn run_read_plan(
-    config: &Config,
-    first: PreparedRequest,
-    plan: Vec<(String, Vec<usize>)>,
-    workspace: &Workspace,
+fn with_run_deadline(
     cancel: &AtomicBool,
-    save: &mut dyn FnMut(usize, &str, &str, &Value, bool) -> bool,
-    authorize: &mut dyn FnMut(usize, &str, &Value) -> Result<(), &'static str>,
+    timeout_reason: &'static str,
+    operation: impl FnOnce() -> Result<String, &'static str>,
 ) -> Result<String, &'static str> {
     use std::sync::{Condvar, Mutex};
-    use std::time::{Duration, Instant};
-    let finished = Mutex::new(false);
+    use std::time::Instant;
+
+    // Finished and timeout ownership are serialized together. A user
+    // cancellation that wins the atomic flag retains its terminal reason.
+    let completion = Mutex::new((false, false));
     let wake = Condvar::new();
-    let expired = AtomicBool::new(false);
-    let deadline = Instant::now() + Duration::from_secs(300);
-    struct WakeOnDrop<'a>(&'a Mutex<bool>, &'a Condvar);
+    let deadline = Instant::now() + RUN_TIMEOUT;
+    let expire = |state: &mut (bool, bool)| {
+        if !state.0
+            && cancel
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            state.1 = true;
+        }
+    };
+    struct WakeOnDrop<'a>(&'a Mutex<(bool, bool)>, &'a Condvar);
     impl Drop for WakeOnDrop<'_> {
         fn drop(&mut self) {
-            let mut done = self.0.lock().unwrap_or_else(|error| error.into_inner());
-            *done = true;
+            let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+            state.0 = true;
             self.1.notify_one();
         }
     }
     std::thread::scope(|scope| {
-        let guard = WakeOnDrop(&finished, &wake);
-        scope.spawn(|| {
-            let Ok(guard) = finished.lock() else {
-                cancel.store(true, Ordering::SeqCst);
-                return;
-            };
-            let Ok((done, _)) = wake.wait_timeout_while(
-                guard,
-                deadline.saturating_duration_since(Instant::now()),
-                |done| !*done,
-            ) else {
-                cancel.store(true, Ordering::SeqCst);
-                return;
-            };
-            if !*done && !cancel.load(Ordering::SeqCst) {
-                expired.store(true, Ordering::SeqCst);
-                cancel.store(true, Ordering::SeqCst);
+        let guard = WakeOnDrop(&completion, &wake);
+        std::thread::Builder::new()
+            .name("sentinel-agent-deadline".into())
+            .spawn_scoped(scope, || {
+                let state = completion.lock().unwrap_or_else(|error| error.into_inner());
+                let (mut state, _) = wake
+                    .wait_timeout_while(
+                        state,
+                        deadline.saturating_duration_since(Instant::now()),
+                        |state| !state.0,
+                    )
+                    .unwrap_or_else(|error| error.into_inner());
+                if Instant::now() >= deadline {
+                    expire(&mut state);
+                }
+            })
+            .map_err(|_| "runtime-unavailable")?;
+        let result = operation();
+        let timed_out = {
+            let mut state = completion.lock().unwrap_or_else(|error| error.into_inner());
+            if Instant::now() >= deadline {
+                expire(&mut state);
             }
-        });
-        let result = run_read_plan_inner(config, first, plan, workspace, cancel, save, authorize);
-        if Instant::now() >= deadline && !cancel.swap(true, Ordering::SeqCst) {
-            expired.store(true, Ordering::SeqCst);
-        }
+            state.0 = true;
+            state.1
+        };
         drop(guard);
-        if expired.load(Ordering::SeqCst) {
-            Err("plan-timeout")
+        if timed_out {
+            Err(timeout_reason)
         } else {
             result
         }
@@ -466,15 +496,18 @@ fn run_read_plan_inner(
     first: PreparedRequest,
     plan: Vec<(String, Vec<usize>)>,
     workspace: &Workspace,
-    cancel: &AtomicBool,
+    control: &mut RunControl<'_>,
     save: &mut dyn FnMut(usize, &str, &str, &Value, bool) -> bool,
     authorize: &mut dyn FnMut(usize, &str, &Value) -> Result<(), &'static str>,
 ) -> Result<String, &'static str> {
-    let mut first = Some(first);
+    let cancel = control.cancel;
+    // Freeze all bounded initial requests before any phase can dispatch. In a
+    // work plan an oversized later request must not be discovered after a write.
+    let requests = prepare_plan_requests(config, first, &plan, cancel)?;
     let mut success: Vec<bool> = Vec::new();
     let mut results = Vec::new();
     let mut total = 0usize;
-    for (index, (task, deps)) in plan.iter().enumerate() {
+    for (index, ((task, deps), request)) in plan.iter().zip(requests).enumerate() {
         if cancel.load(Ordering::SeqCst) {
             return Err("cancelled");
         }
@@ -500,11 +533,6 @@ fn run_read_plan_inner(
         ) {
             return Err("storage-failure");
         }
-        let request = if index == 0 {
-            first.take().ok_or("invalid-task")?
-        } else {
-            prepare(config, task).map_err(|_| "context-limit-exceeded")?
-        };
         let mut save_step = |step, tool: &str, version: &str, value: &Value, complete| {
             save(index * 8 + step, tool, version, value, complete)
         };
@@ -520,7 +548,9 @@ fn run_read_plan_inner(
             let save_dyn: &mut dyn FnMut(usize, &str, &str, &Value, bool) -> bool = &mut save_step;
             let auth_dyn: &mut dyn FnMut(usize, &str, &Value) -> Result<(), &'static str> =
                 &mut authorize_step;
-            run(config, request, task, workspace, cancel, save_dyn, auth_dyn)
+            run_inner(
+                config, request, task, workspace, control, save_dyn, auth_dyn,
+            )
         };
         match outcome {
             Ok(output) => {
@@ -542,7 +572,12 @@ fn run_read_plan_inner(
                 success.push(true);
                 results.push(format!("Step {}:\n{}", index + 1, output));
             }
-            Err(error @ ("cancelled" | "storage-failure" | "write-outcome-unknown")) => {
+            Err(
+                error @ ("cancelled"
+                | "storage-failure"
+                | "write-outcome-unknown"
+                | "decision-limit"),
+            ) => {
                 return Err(error);
             }
             Err(error) if write_authorized && error != "write-not-committed" => {
@@ -566,6 +601,27 @@ fn run_read_plan_inner(
         return Err("plan-incomplete");
     }
     Ok(results.join("\n\n"))
+}
+
+fn prepare_plan_requests(
+    config: &Config,
+    first: PreparedRequest,
+    plan: &[(String, Vec<usize>)],
+    cancel: &AtomicBool,
+) -> Result<Vec<PreparedRequest>, &'static str> {
+    if cancel.load(Ordering::SeqCst) {
+        return Err("cancelled");
+    }
+    let mut requests = Vec::with_capacity(plan.len());
+    requests.push(first);
+    for (task, _) in plan.iter().skip(1) {
+        if cancel.load(Ordering::SeqCst) {
+            return Err("cancelled");
+        }
+        let prepared = prepare(config, task).map_err(|_| "plan-preflight-failed")?;
+        requests.push(prepared);
+    }
+    Ok(requests)
 }
 
 pub fn prepare(config: &Config, goal: &str) -> Result<PreparedRequest, provider::ProviderError> {
@@ -648,23 +704,57 @@ pub fn run(
     mut save: impl FnMut(usize, &str, &str, &Value, bool) -> bool,
     mut authorize: impl FnMut(usize, &str, &Value) -> Result<(), &'static str>,
 ) -> Result<String, &'static str> {
+    if cancel.load(Ordering::SeqCst) {
+        return Err("cancelled");
+    }
+    let mut control = RunControl {
+        cancel,
+        decisions_remaining: MAX_MODEL_DECISIONS,
+    };
+    with_run_deadline(
+        cancel,
+        if read_plan(goal).is_some() {
+            "plan-timeout"
+        } else {
+            "agent-timeout"
+        },
+        || {
+            run_inner(
+                config,
+                first,
+                goal,
+                workspace,
+                &mut control,
+                &mut save,
+                &mut authorize,
+            )
+        },
+    )
+}
+
+fn run_inner(
+    config: &Config,
+    first: PreparedRequest,
+    goal: &str,
+    workspace: &Workspace,
+    control: &mut RunControl<'_>,
+    save: &mut dyn FnMut(usize, &str, &str, &Value, bool) -> bool,
+    authorize: &mut dyn FnMut(usize, &str, &Value) -> Result<(), &'static str>,
+) -> Result<String, &'static str> {
+    let cancel = control.cancel;
     if let Some(plan) = read_plan(goal) {
-        return run_read_plan(
-            config,
-            first,
-            plan,
-            workspace,
-            cancel,
-            &mut save,
-            &mut authorize,
-        );
+        return run_read_plan_inner(config, first, plan, workspace, control, save, authorize);
     }
     if classified_inspect_goal(goal).is_some() {
+        control.admit_model_decision()?;
+        if !save(0, "", "", &json!({"_event":"classifying"}), false) {
+            return Err("storage-failure");
+        }
         let output = provider::stream_prepared(config, &first, cancel, |_| Ok(()))
             .map_err(|_| "classification-failed")?;
         let task = classified_task(&output).ok_or("classification-unresolved")?;
         let request = prepare(config, &task).map_err(|_| "classification-failed")?;
-        let result = run(config, request, &task, workspace, cancel, save, authorize)?;
+        let result = run_inner(config, request, &task, workspace, control, save, authorize)?;
         return Ok(format!(
             "Approved inspection task completed. The original natural-language goal was not assessed; coverage is not verified.\n{result}"
         ));
@@ -701,6 +791,10 @@ pub fn run(
     loop {
         if cancel.load(Ordering::SeqCst) {
             return Err("cancelled");
+        }
+        control.admit_model_decision()?;
+        if !save(0, "", "", &json!({"_event":"deciding"}), false) {
+            return Err("storage-failure");
         }
         let output = provider::stream_prepared(config, &request, cancel, |_| Ok(()))
             .map_err(|_| "provider-failed")?;
@@ -872,6 +966,9 @@ pub fn run(
                         ) {
                             return Err("storage-failure");
                         }
+                        if cancel.load(Ordering::SeqCst) {
+                            return Err("cancelled");
+                        }
                         let mut result = if let Some(argv) = &process {
                             let mut result = crate::agent_process::execute(
                                 workspace,
@@ -957,6 +1054,9 @@ pub fn run(
                                 false,
                             ) {
                                 return Err("storage-failure");
+                            }
+                            if cancel.load(Ordering::SeqCst) {
+                                return Err("cancelled");
                             }
                             let read = workspace
                                 .read_file(read_args, PermissionDecision::Allow)
@@ -1386,6 +1486,42 @@ mod tests {
         thread,
     };
     #[test]
+    fn plan_preflight_rejects_an_oversized_later_step() {
+        let config = Config::parse("http://127.0.0.1:9", "fixture-model")
+            .unwrap()
+            .with_context_window(3200)
+            .unwrap();
+        let first = json!({"operation":"inspect-file","path":"note.txt"}).to_string();
+        let later = json!({
+            "operation":"inspect-files",
+            "paths": ["a".repeat(1000), "b".repeat(1000), "c".repeat(1000), "d".repeat(1000)]
+        })
+        .to_string();
+        let requests = prepare_plan_requests(
+            &config,
+            prepare(&config, &first).unwrap(),
+            &[(first, Vec::new()), (later, vec![0])],
+            &AtomicBool::new(false),
+        );
+        assert!(matches!(requests, Err("plan-preflight-failed")));
+    }
+
+    #[test]
+    fn decision_budget_rejects_exhaustion_and_cancellation_before_dispatch() {
+        let cancel = AtomicBool::new(false);
+        let mut control = RunControl {
+            cancel: &cancel,
+            decisions_remaining: MAX_MODEL_DECISIONS,
+        };
+        for _ in 0..MAX_MODEL_DECISIONS {
+            assert_eq!(control.admit_model_decision(), Ok(()));
+        }
+        assert_eq!(control.admit_model_decision(), Err("decision-limit"));
+        cancel.store(true, Ordering::SeqCst);
+        assert_eq!(control.admit_model_decision(), Err("cancelled"));
+    }
+
+    #[test]
     fn task_scope_is_explicit_bounded_and_unique() {
         assert_eq!(
             task_paths(r#"{"operation":"inspect-files","paths":["a","b"]}"#)
@@ -1473,14 +1609,23 @@ mod tests {
             goal,
             &workspace,
             &AtomicBool::new(false),
-            |_, _, _, _, done| {
-                phases.push(done);
+            |_, _, _, value, done| {
+                phases.push((value["_event"].as_str().unwrap_or("").to_owned(), done));
                 true
             },
             |_, _, _| Ok(()),
         )
         .unwrap();
-        assert_eq!(phases, vec![false, true]);
+        assert_eq!(
+            phases,
+            [
+                ("deciding".into(), false),
+                (String::new(), false),
+                ("running".into(), false),
+                (String::new(), true),
+                ("deciding".into(), false),
+            ]
+        );
         assert_eq!(output, "File: note.txt\nproof");
         server.join().unwrap();
         fs::remove_dir_all(root).unwrap();

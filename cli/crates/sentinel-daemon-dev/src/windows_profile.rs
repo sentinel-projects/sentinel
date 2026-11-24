@@ -1,28 +1,35 @@
 //! Disposable Windows development profile ownership; no production profile access.
+use sentinel_daemon_dev::provider::Config;
+use serde::{Deserialize, Serialize};
 use std::{
     ffi::{OsStr, OsString},
-    fs, io,
+    fs,
+    io::{self, Read, Write},
     os::windows::{
         ffi::OsStrExt,
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
     },
-    path::Path,
+    path::{Path, PathBuf},
     ptr::{null, null_mut},
 };
 use windows_sys::Win32::{
     Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree},
     Security::{
-        ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
+        ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, ACL_SIZE_INFORMATION, AclSizeInformation,
+        AddAccessAllowedAce,
         Authorization::{GetSecurityInfo, SE_FILE_OBJECT},
-        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
-        GetSecurityDescriptorControl, GetTokenInformation, IsValidSid, OWNER_SECURITY_INFORMATION,
-        SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation, GetLengthSid,
+        GetSecurityDescriptorControl, GetTokenInformation, InitializeAcl,
+        InitializeSecurityDescriptor, IsValidSid, OWNER_SECURITY_INFORMATION, SE_DACL_PROTECTED,
+        SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR, SetSecurityDescriptorControl,
+        SetSecurityDescriptorDacl, SetSecurityDescriptorOwner, TOKEN_QUERY, TOKEN_USER, TokenUser,
     },
     Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_DIRECTORY,
-        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-        FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle,
-        OPEN_ALWAYS, OPEN_EXISTING, READ_CONTROL,
+        BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateFileW, FILE_ALL_ACCESS,
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FILE_TYPE_DISK, GetFileInformationByHandle, GetFileType, MOVEFILE_REPLACE_EXISTING,
+        MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_ALWAYS, OPEN_EXISTING, READ_CONTROL,
     },
     System::{
         SystemServices::ACCESS_ALLOWED_ACE_TYPE,
@@ -167,6 +174,91 @@ fn check_security(handle: &OwnedHandle, user: &[usize], protected: bool) -> io::
     Ok(())
 }
 
+pub fn with_owner_only_security<T>(
+    current: &[usize],
+    operation: impl FnOnce(&SECURITY_ATTRIBUTES) -> io::Result<T>,
+) -> io::Result<T> {
+    // Keep the owner SID and ACL buffers live until the object is created.
+    let sid = unsafe { (*(current.as_ptr().cast::<TOKEN_USER>())).User.Sid };
+    if unsafe { IsValidSid(sid) } == 0 {
+        return Err(invalid("invalid owner SID"));
+    }
+    let acl_len = (std::mem::size_of::<ACL>() + 64 + unsafe { GetLengthSid(sid) } as usize)
+        .next_multiple_of(std::mem::size_of::<usize>());
+    let mut acl = vec![0usize; acl_len / std::mem::size_of::<usize>()];
+    let acl_ptr = acl.as_mut_ptr().cast::<ACL>();
+    let mut descriptor = SECURITY_DESCRIPTOR::default();
+    let sd = (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast();
+    if unsafe { InitializeSecurityDescriptor(sd, 1) } == 0
+        || unsafe { InitializeAcl(acl_ptr, acl_len as u32, ACL_REVISION) } == 0
+        || unsafe { AddAccessAllowedAce(acl_ptr, ACL_REVISION, FILE_ALL_ACCESS, sid) } == 0
+        || unsafe { SetSecurityDescriptorOwner(sd, sid, 0) } == 0
+        || unsafe { SetSecurityDescriptorDacl(sd, 1, acl_ptr, 0) } == 0
+        || unsafe { SetSecurityDescriptorControl(sd, SE_DACL_PROTECTED, SE_DACL_PROTECTED) } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: sd,
+        bInheritHandle: 0,
+    };
+    operation(&attributes)
+}
+
+const MODEL_FILE: &str = "daemon-dev-model.json";
+const MODEL_PENDING: &str = "daemon-dev-model.pending";
+const MAX_MODEL_FILE_BYTES: u64 = 4096;
+const CHAT_FILE: &str = "daemon-dev-chat.json";
+const CHAT_PENDING: &str = "daemon-dev-chat.pending";
+pub(crate) const MAX_CHAT_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SavedModel {
+    version: u32,
+    pub endpoint: String,
+    pub provider_id: String,
+    pub model: String,
+}
+
+fn validate_private_file(handle: &OwnedHandle, user: &[usize]) -> io::Result<()> {
+    let metadata = info(handle)?;
+    if metadata.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) != 0
+        || metadata.nNumberOfLinks != 1
+        || unsafe { GetFileType(raw(handle)) } != FILE_TYPE_DISK
+    {
+        return Err(invalid("unsafe Windows profile file"));
+    }
+    check_security(handle, user, true)
+}
+
+fn open_private_file(path: &Path, user: &[usize]) -> io::Result<Option<OwnedHandle>> {
+    let name = wide(path)?;
+    let handle = match owned(unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            GENERIC_READ | READ_CONTROL,
+            0,
+            null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            null_mut(),
+        )
+    }) {
+        Ok(handle) => handle,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    validate_private_file(&handle, user)?;
+    Ok(Some(handle))
+}
+
+fn valid_model(record: &SavedModel) -> bool {
+    record.version == 1
+        && Config::valid_persisted_selection(&record.endpoint, &record.provider_id, &record.model)
+}
+
 fn endpoint_for(info: &BY_HANDLE_FILE_INFORMATION) -> io::Result<OsString> {
     let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
     if index == 0 {
@@ -182,10 +274,108 @@ pub struct ProfileGuard {
     _directory: OwnedHandle,
     _lock: OwnedHandle,
     endpoint: OsString,
+    canonical: PathBuf,
+    user: Vec<usize>,
 }
 impl ProfileGuard {
     pub fn endpoint(&self) -> &OsStr {
         &self.endpoint
+    }
+
+    pub fn load_model(&self) -> io::Result<Option<SavedModel>> {
+        let Some(bytes) = self.load_private(MODEL_FILE, MAX_MODEL_FILE_BYTES)? else {
+            return Ok(None);
+        };
+        let record = serde_json::from_slice::<SavedModel>(&bytes)?;
+        if !valid_model(&record) {
+            return Err(invalid("invalid Windows model selection binding"));
+        }
+        Ok(Some(record))
+    }
+
+    /// Update only the profile-owned selection file, under the daemon's profile lock.
+    pub fn save_model(&self, config: &Config, model: &str) -> io::Result<()> {
+        let record = SavedModel {
+            version: 1,
+            endpoint: config.endpoint.clone(),
+            provider_id: config.provider_id.clone(),
+            model: model.to_owned(),
+        };
+        let bytes = serde_json::to_vec(&record)?;
+        if bytes.len() as u64 > MAX_MODEL_FILE_BYTES || !valid_model(&record) {
+            return Err(invalid("invalid Windows model selection binding"));
+        }
+        self.save_private(MODEL_FILE, MODEL_PENDING, &bytes, MAX_MODEL_FILE_BYTES)
+    }
+
+    pub fn load_chat(&self) -> io::Result<Option<Vec<u8>>> {
+        self.load_private(CHAT_FILE, MAX_CHAT_FILE_BYTES)
+    }
+
+    pub fn save_chat(&self, bytes: &[u8]) -> io::Result<()> {
+        self.save_private(CHAT_FILE, CHAT_PENDING, bytes, MAX_CHAT_FILE_BYTES)
+    }
+
+    fn load_private(&self, name: &str, limit: u64) -> io::Result<Option<Vec<u8>>> {
+        let Some(handle) = open_private_file(&self.canonical.join(name), &self.user)? else {
+            return Ok(None);
+        };
+        let mut bytes = Vec::new();
+        fs::File::from(handle)
+            .take(limit + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > limit {
+            return Err(invalid("Windows profile file exceeds byte limit"));
+        }
+        Ok(Some(bytes))
+    }
+
+    fn save_private(&self, name: &str, staged: &str, bytes: &[u8], limit: u64) -> io::Result<()> {
+        if bytes.len() as u64 > limit {
+            return Err(invalid("Windows profile file exceeds byte limit"));
+        }
+        let destination = self.canonical.join(name);
+        let pending = self.canonical.join(staged);
+        let pending_name = wide(&pending)?;
+        let destination_name = wide(&destination)?;
+
+        // Refuse links, foreign ACLs and other untrusted path entries before replacing anything.
+        drop(open_private_file(&destination, &self.user)?);
+        let handle = with_owner_only_security(&self.user, |attributes| {
+            owned(unsafe {
+                CreateFileW(
+                    pending_name.as_ptr(),
+                    GENERIC_WRITE | READ_CONTROL,
+                    0,
+                    attributes,
+                    CREATE_NEW,
+                    FILE_FLAG_OPEN_REPARSE_POINT,
+                    null_mut(),
+                )
+            })
+        })?;
+        let result = (|| {
+            validate_private_file(&handle, &self.user)?;
+            let mut file = fs::File::from(handle);
+            file.write_all(bytes)?;
+            file.sync_all()?;
+            drop(file);
+            if unsafe {
+                MoveFileExW(
+                    pending_name.as_ptr(),
+                    destination_name.as_ptr(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                )
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&pending);
+        }
+        result
     }
 }
 
@@ -236,7 +426,13 @@ pub fn acquire(path: &Path) -> io::Result<ProfileGuard> {
         return Err(invalid("profile identity changed"));
     }
     for entry in fs::read_dir(&canonical)? {
-        if entry?.file_name() != OsStr::new("daemon-dev.lock") {
+        let name = entry?.file_name();
+        if name != OsStr::new("daemon-dev.lock")
+            && name != OsStr::new(MODEL_FILE)
+            && name != OsStr::new(MODEL_PENDING)
+            && name != OsStr::new(CHAT_FILE)
+            && name != OsStr::new(CHAT_PENDING)
+        {
             return Err(invalid("profile contains unexpected files"));
         }
     }
@@ -260,11 +456,20 @@ pub fn acquire(path: &Path) -> io::Result<ProfileGuard> {
         return Err(invalid("unsafe profile lock"));
     }
     check_security(&lock, &user, false)?;
+    for staged in [MODEL_PENDING, CHAT_PENDING] {
+        let pending = canonical.join(staged);
+        if let Some(handle) = open_private_file(&pending, &user)? {
+            drop(handle);
+            fs::remove_file(&pending)?;
+        }
+    }
     let endpoint = endpoint_for(&d)?;
     Ok(ProfileGuard {
         _directory: directory,
         _lock: lock,
         endpoint,
+        canonical,
+        user,
     })
 }
 

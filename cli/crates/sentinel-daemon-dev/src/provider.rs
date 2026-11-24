@@ -40,6 +40,17 @@ pub struct Config {
     pub model: String,
     pub provider_id: String,
     pub context_window_tokens: usize,
+    vision: Option<VisionPolicy>,
+    pub cloud_history: bool,
+    #[cfg(unix)]
+    cloud_authorization: Option<reqwest::header::HeaderValue>,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct VisionPolicy {
+    endpoint: String,
+    provider: String,
+    model: String,
+    tokens: usize,
 }
 
 impl Config {
@@ -118,7 +129,81 @@ impl Config {
             model: model.to_owned(),
             provider_id: "openai-compatible-local".to_owned(),
             context_window_tokens: FALLBACK_CONTEXT_TOKENS,
+            vision: None,
+            cloud_history: false,
+            #[cfg(unix)]
+            cloud_authorization: None,
         })
+    }
+
+    #[cfg(unix)]
+    pub fn cloud(
+        kind: &str,
+        model: &str,
+        key_file: &std::path::Path,
+    ) -> Result<Self, ProviderError> {
+        let provider = Self::cloud_kind(kind)?;
+        Self::cloud_authorized(
+            provider,
+            model,
+            crate::cloud::credential(provider, key_file)
+                .map_err(|_| ProviderError::InvalidConfig("invalid cloud API key file"))?,
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn cloud_keychain(kind: &str, model: &str, account: &str) -> Result<Self, ProviderError> {
+        let provider = Self::cloud_kind(kind)?;
+        Self::cloud_authorized(
+            provider,
+            model,
+            crate::cloud::keychain_credential(provider, account).map_err(|_| {
+                ProviderError::InvalidConfig("cloud Keychain credential unavailable")
+            })?,
+        )
+    }
+
+    #[cfg(unix)]
+    fn cloud_kind(kind: &str) -> Result<crate::cloud::CloudProvider, ProviderError> {
+        crate::cloud::CloudProvider::parse(kind)
+            .ok_or(ProviderError::InvalidConfig("unsupported cloud provider"))
+    }
+
+    #[cfg(unix)]
+    fn cloud_authorized(
+        provider: crate::cloud::CloudProvider,
+        model: &str,
+        authorization: reqwest::header::HeaderValue,
+    ) -> Result<Self, ProviderError> {
+        if provider == crate::cloud::CloudProvider::Gemini && !crate::gemini::valid_model_id(model)
+        {
+            return Err(ProviderError::InvalidConfig("invalid Gemini model ID"));
+        }
+        let mut config = Self::parse("http://127.0.0.1:1", model)?;
+        config.endpoint = provider.origin().to_owned();
+        config.provider_id = provider.id().to_owned();
+        config.cloud_authorization = Some(authorization);
+        Ok(config)
+    }
+
+    pub fn is_cloud(&self) -> bool {
+        #[cfg(unix)]
+        return self.cloud_authorization.is_some();
+        #[cfg(not(unix))]
+        false
+    }
+
+    pub fn valid_persisted_selection(endpoint: &str, provider: &str, model: &str) -> bool {
+        #[cfg(unix)]
+        if let Ok(kind) = Self::cloud_kind(provider) {
+            return endpoint == kind.origin()
+                && (kind != crate::cloud::CloudProvider::Gemini
+                    || crate::gemini::valid_model_id(model))
+                && Self::parse("http://127.0.0.1:1", model).is_ok();
+        }
+        Self::parse(endpoint, model)
+            .and_then(|config| config.with_provider_kind(provider))
+            .is_ok_and(|config| config.endpoint == endpoint)
     }
     /// Select a supported named local identity without discovery or fallback.
     pub fn with_provider_kind(mut self, kind: &str) -> Result<Self, ProviderError> {
@@ -136,6 +221,29 @@ impl Config {
         }
         self.provider_id = kind.to_owned();
         Ok(self)
+    }
+    /// Explicit operator-supplied upper bound for one image, bound to this exact model and origin.
+    pub fn with_vision_budget(mut self, tokens: usize) -> Result<Self, ProviderError> {
+        if tokens == 0 || tokens >= self.context_window_tokens {
+            return Err(ProviderError::InvalidConfig("invalid vision budget"));
+        }
+        self.vision = Some(VisionPolicy {
+            endpoint: self.endpoint.clone(),
+            provider: self.provider_id.clone(),
+            model: self.model.clone(),
+            tokens,
+        });
+        Ok(self)
+    }
+    pub fn vision_tokens(&self) -> Option<usize> {
+        self.vision
+            .as_ref()
+            .filter(|v| {
+                v.endpoint == self.endpoint
+                    && v.provider == self.provider_id
+                    && v.model == self.model
+            })
+            .map(|v| v.tokens)
     }
     /// Set a caller-supplied policy ceiling, refusing unusable values.
     pub fn with_context_window(mut self, tokens: usize) -> Result<Self, ProviderError> {
@@ -183,10 +291,34 @@ impl std::fmt::Display for ProviderError {
 
 impl std::error::Error for ProviderError {}
 
+#[derive(Clone, Copy, Debug)]
+pub enum ImageMime {
+    Png,
+    Jpeg,
+    WebP,
+}
+
+impl ImageMime {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Jpeg => "image/jpeg",
+            Self::WebP => "image/webp",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ChatImage {
+    pub mime: ImageMime,
+    pub base64: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct Turn {
     pub user: String,
     pub assistant: String,
+    pub images: Vec<ChatImage>,
 }
 /// Immutable, already admitted exact request bytes; never rebuilt after persistence.
 pub struct PreparedRequest {
@@ -215,13 +347,59 @@ pub fn prepare_with_profile(
     turns: &[Turn],
     profile: &str,
 ) -> Result<PreparedRequest, ProviderError> {
+    prepare_with_images(config, prompt, &[], turns, profile)
+}
+
+pub fn prepare_with_images(
+    config: &Config,
+    prompt: &str,
+    images: &[ChatImage],
+    turns: &[Turn],
+    profile: &str,
+) -> Result<PreparedRequest, ProviderError> {
+    if config.is_cloud()
+        && (!images.is_empty()
+            || !profile.is_empty()
+            || (!config.cloud_history && !turns.is_empty())
+            || turns.iter().any(|turn| !turn.images.is_empty()))
+    {
+        return Err(ProviderError::InvalidRequest(
+            "cloud attachment, history or profile policy rejected",
+        ));
+    }
+    if images.len() > 1 {
+        return Err(ProviderError::InvalidRequest("too many images"));
+    }
+    let vision = config.vision_tokens();
+    if !images.is_empty() && vision.is_none() {
+        return Err(ProviderError::InvalidConfig(
+            "vision is not configured for this binding",
+        ));
+    }
     if prompt.trim().is_empty() {
         return Err(ProviderError::InvalidRequest("prompt is empty"));
     }
     if prompt.len() > MAX_PROMPT_BYTES {
         return Err(ProviderError::InvalidRequest("prompt exceeds byte limit"));
     }
-    let mandatory = json!({"role":"user","content":prompt});
+    let user_message = |text: &str, images: &[ChatImage]| {
+        if images.is_empty() {
+            json!({"role":"user","content":text})
+        } else if config.provider_id == "ollama" {
+            let binary = images
+                .iter()
+                .map(|image| image.base64.as_str())
+                .collect::<Vec<_>>();
+            json!({"role":"user","content":text,"images":binary})
+        } else {
+            let mut content = vec![json!({"type":"text","text":text})];
+            for image in images {
+                content.push(json!({"type":"image_url","image_url":{"url":format!("data:{};base64,{}", image.mime.as_str(), image.base64)}}));
+            }
+            json!({"role":"user","content":content})
+        }
+    };
+    let mandatory = user_message(prompt, images);
     if profile.encode_utf16().count() > 2000 || profile.contains('\0') {
         return Err(ProviderError::InvalidRequest("invalid response profile"));
     }
@@ -233,8 +411,22 @@ pub fn prepare_with_profile(
     }
     required.push(mandatory.clone());
     let base = |messages: Vec<Value>| {
+        #[cfg(unix)]
+        if config.is_cloud() {
+            match config.provider_id.as_str() {
+                "claude" => {
+                    return crate::claude::prepare(&config.model, messages, OUTPUT_RESERVE_TOKENS);
+                }
+                "gemini" => return crate::gemini::body(messages, OUTPUT_RESERVE_TOKENS),
+                _ => {}
+            }
+        }
         if config.provider_id == "ollama" {
             json!({"model":config.model,"messages":messages,"options":{"num_predict":OUTPUT_RESERVE_TOKENS},"stream":true})
+        } else if config.is_cloud() && config.provider_id == "openai" {
+            json!({"model":config.model,"messages":messages,"max_completion_tokens":OUTPUT_RESERVE_TOKENS,"stream":true,"store":false})
+        } else if config.is_cloud() && config.provider_id == "groq" {
+            json!({"model":config.model,"messages":messages,"max_completion_tokens":OUTPUT_RESERVE_TOKENS,"stream":true})
         } else {
             json!({"model":config.model,"messages":messages,"max_tokens":OUTPUT_RESERVE_TOKENS,"stream":true})
         }
@@ -250,13 +442,21 @@ pub fn prepare_with_profile(
     let mut messages_size = serde_json::to_vec(&required)
         .map_err(|_| ProviderError::Protocol("request serialization failed"))?
         .len();
-    if estimated_total(messages_size) > config.context_window_tokens {
+    // Encoded media counts toward the wire limit. The model receives image tokens,
+    // so only the surrounding JSON and text count toward the text estimate.
+    let mut text_size =
+        messages_size.saturating_sub(images.iter().map(|image| image.base64.len()).sum());
+    let mut image_tokens = vision.unwrap_or(0).saturating_mul(images.len());
+    if estimated_total(text_size).saturating_add(image_tokens) > config.context_window_tokens {
         return Err(ProviderError::ContextLimitExceeded);
     }
     let mut used = mandatory_size;
     let mut chosen = Vec::new();
     for turn in turns.iter().rev() {
-        let user = json!({"role":"user","content":turn.user});
+        if !turn.images.is_empty() && vision.is_none() {
+            break;
+        }
+        let user = user_message(&turn.user, &turn.images);
         let assistant = json!({"role":"assistant","content":turn.assistant});
         let user_len = serde_json::to_vec(&user)
             .map_err(|_| ProviderError::Protocol("request serialization failed"))?
@@ -265,13 +465,35 @@ pub fn prepare_with_profile(
             .map_err(|_| ProviderError::Protocol("request serialization failed"))?
             .len();
         let added = user_len.saturating_add(assistant_len).saturating_add(2);
-        if used.saturating_add(added) > MAX_REQUEST_BYTES
-            || estimated_total(messages_size.saturating_add(added)) > config.context_window_tokens
+        #[cfg(unix)]
+        let wire_added = if config.is_cloud() && config.provider_id == "gemini" {
+            serde_json::to_vec(&[
+                crate::gemini::message_part(&user),
+                crate::gemini::message_part(&assistant),
+            ])
+            .map_err(|_| ProviderError::Protocol("request serialization failed"))?
+            .len()
+                - 1
+        } else {
+            added
+        };
+        #[cfg(not(unix))]
+        let wire_added = added;
+        let text_bytes =
+            added.saturating_sub(turn.images.iter().map(|image| image.base64.len()).sum());
+        let added_images = vision.unwrap_or(0).saturating_mul(turn.images.len());
+        if used.saturating_add(wire_added) > MAX_REQUEST_BYTES
+            || estimated_total(text_size.saturating_add(text_bytes))
+                .saturating_add(image_tokens)
+                .saturating_add(added_images)
+                > config.context_window_tokens
         {
             break;
         }
-        used += added;
+        used += wire_added;
         messages_size += added;
+        text_size += text_bytes;
+        image_tokens = image_tokens.saturating_add(added_images);
         chosen.push((user, assistant));
     }
     let mut messages = Vec::with_capacity(chosen.len() * 2 + required.len());
@@ -328,6 +550,51 @@ pub fn stream_prepared(
         ));
     }
     let body = &request.body;
+    #[cfg(unix)]
+    if config.is_cloud() {
+        let authorization = config
+            .cloud_authorization
+            .as_ref()
+            .ok_or(ProviderError::InvalidConfig("missing cloud authorization"))?;
+        return crate::cloud::run(cancel, async {
+            let kind = Config::cloud_kind(&config.provider_id)?;
+            let resource = match kind {
+                crate::cloud::CloudProvider::Claude => "/messages".into(),
+                crate::cloud::CloudProvider::Gemini => crate::gemini::resource(&config.model)?,
+                _ => "/chat/completions".into(),
+            };
+            let response = crate::cloud::request(
+                authorization,
+                kind,
+                &resource,
+                reqwest::Method::POST,
+                Some(body),
+                "text/event-stream",
+                TOTAL_TIMEOUT,
+            )
+            .await?;
+            if kind == crate::cloud::CloudProvider::Claude {
+                return crate::claude::chat(response, cancel, on_delta).await;
+            }
+            if kind == crate::cloud::CloudProvider::Gemini {
+                return crate::gemini::chat(response, cancel, on_delta).await;
+            }
+            let mut sse = SseConsumer::default();
+            crate::cloud::read(response, MAX_BODY_BYTES, |chunk| {
+                for &byte in chunk {
+                    sse.push(byte, cancel, &mut on_delta)?;
+                }
+                Ok(())
+            })
+            .await?;
+            if !sse.finish_seen {
+                return Err(ProviderError::Protocol(
+                    "cloud stream omitted its terminal finish reason",
+                ));
+            }
+            complete_sse(sse)
+        });
+    }
     let started = Instant::now();
     let mut socket =
         TcpStream::connect_timeout(&config.address, CONNECT_TIMEOUT).map_err(map_io("connect"))?;
@@ -387,17 +654,21 @@ pub fn stream_prepared(
         read_body(&mut reader, &response, |byte| {
             sse.push(byte, cancel, &mut on_delta)
         })?;
-        sse.finish()?;
-        if !sse.done {
-            return Err(ProviderError::Protocol("stream ended without [DONE]"));
-        }
-        if sse.output.trim().is_empty() {
-            return Err(ProviderError::Protocol(
-                "stream contained no assistant text",
-            ));
-        }
-        Ok(sse.output)
+        complete_sse(sse)
     }
+}
+
+fn complete_sse(sse: SseConsumer) -> Result<String, ProviderError> {
+    sse.finish()?;
+    if !sse.done {
+        return Err(ProviderError::Protocol("stream ended without [DONE]"));
+    }
+    if sse.output.trim().is_empty() {
+        return Err(ProviderError::Protocol(
+            "stream contained no assistant text",
+        ));
+    }
+    Ok(sse.output)
 }
 
 fn map_io(stage: &'static str) -> impl FnOnce(io::Error) -> ProviderError {
@@ -409,6 +680,48 @@ fn map_io(stage: &'static str) -> impl FnOnce(io::Error) -> ProviderError {
 
 /// Read a bounded catalog from the configured local provider without loading a model.
 pub fn discover_models(config: &Config, cancel: &AtomicBool) -> Result<Vec<String>, ProviderError> {
+    #[cfg(unix)]
+    if config.is_cloud() {
+        let authorization = config
+            .cloud_authorization
+            .as_ref()
+            .ok_or(ProviderError::InvalidConfig("missing cloud authorization"))?;
+        return crate::cloud::run(cancel, async {
+            let kind = Config::cloud_kind(&config.provider_id)?;
+            let resource = match kind {
+                crate::cloud::CloudProvider::Claude => "/models?limit=256",
+                crate::cloud::CloudProvider::Gemini => crate::gemini::CATALOG_RESOURCE,
+                _ => "/models",
+            };
+            let response = crate::cloud::request(
+                authorization,
+                kind,
+                resource,
+                reqwest::Method::GET,
+                None,
+                "application/json",
+                DISCOVERY_TIMEOUT,
+            )
+            .await?;
+            let mut body = Vec::new();
+            crate::cloud::read(response, MAX_BODY_BYTES, |chunk| {
+                body.extend_from_slice(chunk);
+                Ok(())
+            })
+            .await?;
+            if kind == crate::cloud::CloudProvider::Gemini {
+                return crate::gemini::models(&body);
+            }
+            if kind == crate::cloud::CloudProvider::Claude {
+                let metadata: Value = serde_json::from_slice(&body)
+                    .map_err(|_| ProviderError::Protocol("invalid Claude catalog JSON"))?;
+                if metadata["has_more"].as_bool() != Some(false) {
+                    return Err(ProviderError::Protocol("incomplete Claude model catalog"));
+                }
+            }
+            parse_catalog(&body, "data", "id")
+        });
+    }
     if !config.address.ip().is_loopback() || config.address.port() == 0 {
         return Err(ProviderError::InvalidConfig(
             "endpoint address must be loopback",
@@ -461,7 +774,11 @@ pub fn discover_models(config: &Config, cancel: &AtomicBool) -> Result<Vec<Strin
         body.push(byte);
         Ok(())
     })?;
-    let value: Value = serde_json::from_slice(&body)
+    parse_catalog(&body, field, id_field)
+}
+
+fn parse_catalog(body: &[u8], field: &str, id_field: &str) -> Result<Vec<String>, ProviderError> {
+    let value: Value = serde_json::from_slice(body)
         .map_err(|_| ProviderError::Protocol("invalid catalog JSON"))?;
     let rows = value
         .get(field)
@@ -612,7 +929,7 @@ pub fn ollama_model_operation(
     Ok(())
 }
 
-fn is_content_type(value: &str, expected: &str) -> bool {
+pub(crate) fn is_content_type(value: &str, expected: &str) -> bool {
     let mut parts = value.split(';');
     parts
         .next()
@@ -1027,6 +1344,65 @@ mod tests {
         thread,
     };
 
+    #[cfg(unix)]
+    #[test]
+    fn cloud_chat_refuses_history_and_profile_instructions() {
+        let config = Config::cloud_authorized(
+            crate::cloud::CloudProvider::OpenAi,
+            "fixture-model",
+            reqwest::header::HeaderValue::from_static("Bearer fixture"),
+        )
+        .unwrap();
+        assert!(prepare_with_profile(&config, "prompt", &[], "saved instructions").is_err());
+        let turns = [Turn {
+            user: "prior".into(),
+            assistant: "saved".into(),
+            images: vec![],
+        }];
+        assert!(prepare(&config, "prompt", &turns).is_err());
+        let request = prepare(&config, "current prompt", &[]).unwrap();
+        let json: Value = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(
+            json["messages"],
+            json!([{"role":"user","content":"current prompt"}])
+        );
+        assert_eq!(json["store"], false);
+    }
+
+    #[test]
+    fn vision_request_counts_wire_and_text_bytes_separately() {
+        let image = ChatImage {
+            mime: ImageMime::Jpeg,
+            base64: "AQID".into(),
+        };
+        let turns = [Turn {
+            user: "previous".into(),
+            assistant: "answer".into(),
+            images: vec![image.clone()],
+        }];
+        for kind in ["openai-compatible-local", "ollama"] {
+            let config = Config::parse("http://127.0.0.1:1234", "vision-model")
+                .unwrap()
+                .with_provider_kind(kind)
+                .unwrap()
+                .with_vision_budget(100)
+                .unwrap();
+            let request =
+                prepare_with_images(&config, "now", &[image.clone()], &turns, "").unwrap();
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            for entry in [0, 2] {
+                if kind == "ollama" {
+                    assert_eq!(body["messages"][entry]["images"], json!(["AQID"]));
+                } else {
+                    assert_eq!(
+                        body["messages"][entry]["content"][1]["image_url"]["url"],
+                        "data:image/jpeg;base64,AQID"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn ollama_request_uses_structured_roles_and_freezes_binding() {
         let config = Config::parse("http://127.0.0.1:1234", "fixture-model")
@@ -1036,6 +1412,7 @@ mod tests {
         let turns = vec![Turn {
             user: "previous".into(),
             assistant: "answer".into(),
+            images: vec![],
         }];
         let request = prepare(&config, "now", &turns).unwrap();
         let body: Value = serde_json::from_slice(&request.body).unwrap();
@@ -1098,10 +1475,12 @@ mod tests {
             Turn {
                 user: "old".repeat(300),
                 assistant: "old-answer".into(),
+                images: vec![],
             },
             Turn {
                 user: "new".into(),
                 assistant: "new-answer".into(),
+                images: vec![],
             },
         ];
         let messages = json!([{"role":"user","content":"new"},{"role":"assistant","content":"new-answer"},{"role":"user","content":"now"}]);

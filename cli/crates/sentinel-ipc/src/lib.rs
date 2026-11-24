@@ -92,6 +92,8 @@ impl std::fmt::Display for Error {
                         "Approval is stale or has already been answered. Reattach the session",
                     "unknown-session" =>
                         "Session does not exist. Run sentinel sessions to find its identifier",
+                    "session-archived" =>
+                        "This session is archived. Unarchive it before starting a new request",
                     _ => "The daemon rejected the operation",
                 }
             ),
@@ -188,6 +190,26 @@ pub fn default_socket_path() -> PathBuf {
 #[cfg(windows)]
 pub fn default_socket_path() -> PathBuf {
     windows::default_socket_path()
+}
+/// Resolve the standalone Rust profile. Servers must validate ownership and lock it.
+pub fn persistent_rust_profile_path() -> std::io::Result<PathBuf> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let home = PathBuf::from(
+            std::env::var_os("HOME").ok_or_else(|| std::io::Error::other("HOME is required"))?,
+        );
+        if !home.is_absolute() {
+            return Err(std::io::Error::other("HOME must be absolute"));
+        }
+        Ok(home.canonicalize()?.join(".sentinel-rust"))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "the persistent Rust profile is available on Linux and macOS",
+        ))
+    }
 }
 pub fn decode(bytes: &[u8]) -> Result<Envelope, Error> {
     if bytes.len() > contract::MAX_FRAME_BYTES {
@@ -292,6 +314,10 @@ pub struct Client {
 impl Client {
     pub fn connect(path: &Path, identity: &str) -> Result<Self, Error> {
         let stream = UnixStream::connect(path).map_err(|e| Error::Unavailable(e.to_string()))?;
+        Self::connect_stream(stream, identity)
+    }
+    /// Complete the canonical handshake on a caller-verified connected Unix stream.
+    pub fn connect_stream(stream: UnixStream, identity: &str) -> Result<Self, Error> {
         stream
             .set_read_timeout(Some(std::time::Duration::from_secs(10)))
             .map_err(|e| Error::Unavailable(e.to_string()))?;

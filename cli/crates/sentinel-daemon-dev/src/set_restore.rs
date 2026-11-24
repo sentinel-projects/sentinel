@@ -43,7 +43,7 @@ fn schema(db: &Connection) -> rusqlite::Result<Vec<(String, String, String, Stri
 }
 fn decode(bytes: &[u8]) -> Result<Connection, Box<dyn std::error::Error>> {
     let mut db = Connection::open_in_memory()?;
-    db.deserialize_read_exact("main", &mut bytes.as_ref(), bytes.len(), true)?;
+    db.deserialize_read_exact("main", &mut &bytes[..], bytes.len(), true)?;
     db.execute_batch("PRAGMA trusted_schema=OFF; PRAGMA query_only=ON; PRAGMA foreign_keys=ON;")?;
     let check: String = db.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
     if check != "ok"
@@ -142,7 +142,7 @@ fn validate_relations(dbs: &[Connection]) -> Result<(), Box<dyn std::error::Erro
             || model.len() > 1024
             || !crate::import::timestamp(&timestamp)
             || attachments.len() > 200_000
-            || crate::attachment::context("", &attachments).is_err()
+            || crate::attachment::parts("", &attachments).is_err()
         {
             return Err(bad().into());
         }
@@ -197,7 +197,7 @@ fn validate_relations(dbs: &[Connection]) -> Result<(), Box<dyn std::error::Erro
     }
     Ok(())
 }
-fn publish(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn publish(from: &Path, to: &Path) -> io::Result<()> {
     let from = CString::new(from.as_os_str().as_bytes()).map_err(|_| bad())?;
     let to = CString::new(to.as_os_str().as_bytes()).map_err(|_| bad())?;
     #[cfg(target_os = "macos")]
@@ -217,12 +217,17 @@ fn publish(from: &Path, to: &Path) -> io::Result<()> {
     }
     Ok(())
 }
-pub fn restore(destination: &Path, source: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub fn restore(
+    destination: &Path,
+    source: &Path,
+    persistent: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let tmp = Path::new("/tmp").canonicalize()?;
+    let destination_parent = destination.parent().ok_or_else(bad)?.canonicalize()?;
     if !destination.is_absolute()
-        || destination.parent().ok_or_else(bad)?.canonicalize()? != tmp
+        || (!persistent && destination_parent != tmp)
         || destination.file_name().is_none()
-        || fs::symlink_metadata(destination).is_ok()
+        || !matches!(fs::symlink_metadata(destination), Err(error) if error.kind() == io::ErrorKind::NotFound)
     {
         return Err(bad().into());
     }
@@ -332,7 +337,7 @@ pub fn restore(destination: &Path, source: &Path) -> Result<(), Box<dyn std::err
     }
     let mut stage = None;
     for i in 0..128 {
-        let path = tmp.join(format!(".sentinel-restore-{}-{i}", std::process::id()));
+        let path = destination_parent.join(format!(".sentinel-restore-{}-{i}", std::process::id()));
         match fs::DirBuilder::new().mode(0o700).create(&path) {
             Ok(()) => {
                 stage = Some(path);
@@ -361,7 +366,15 @@ pub fn restore(destination: &Path, source: &Path) -> Result<(), Box<dyn std::err
             reference.query_row("PRAGMA application_id", [], |r| r.get(0))?,
             reference.query_row("PRAGMA user_version", [], |r| r.get(0))?,
         );
-        if id != expected || schema(&incoming)? != schema(&reference)? {
+        let mut reference_schema = schema(&reference)?;
+        let previous_chat =
+            name == NAMES[0] && id.0 == expected.0 && matches!(id.1, 4 | 5) && expected.1 == 6;
+        if previous_chat {
+            reference_schema.retain(|(_, _, table, _)| {
+                table != "imported_message_errors" && (id.1 != 4 || table != "session_flags")
+            });
+        }
+        if (!previous_chat && id != expected) || schema(&incoming)? != reference_schema {
             return Err(bad().into());
         }
         dbs.push(incoming);

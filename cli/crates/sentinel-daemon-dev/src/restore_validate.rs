@@ -20,19 +20,19 @@ pub fn settings_rows(db: &Connection) -> rusqlite::Result<()> {
         )
         .optional()?;
     if let Some((id, endpoint, provider, model)) = selection {
-        if id != 1
-            || Config::parse(&endpoint, &model)
-                .and_then(|c| c.with_provider_kind(&provider))
-                .map_or(true, |c| c.endpoint != endpoint)
-        {
+        if id != 1 || !Config::valid_persisted_selection(&endpoint, &provider, &model) {
             return invalid();
         }
     }
-    let mut stmt = db.prepare("SELECT key,value FROM preferences LIMIT 3")?;
+    let mut stmt = db.prepare("SELECT key,value FROM preferences LIMIT ?1")?;
     let rows = stmt
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .query_map([(settings::MAX_PREFERENCES + 1) as i64], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    if rows.len() > 2 || rows.iter().any(|(k, v)| !settings::valid_preference(k, v)) {
+    if rows.len() > settings::MAX_PREFERENCES
+        || rows.iter().any(|(k, v)| !settings::valid_preference(k, v))
+    {
         return invalid();
     }
     let mut stmt = db.prepare("SELECT id,workspace_id,root FROM workspace_selection LIMIT 2")?;

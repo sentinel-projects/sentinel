@@ -95,6 +95,8 @@ struct Session {
     detail: String,
     created_at: String,
     updated_at: String,
+    archived: bool,
+    pinned: bool,
     seq: u64,
     agent: bool,
     peers: Vec<Weak<Peer>>,
@@ -115,10 +117,17 @@ struct PendingApproval {
     id: String,
     tool: String,
     detail: String,
+    risk: u8,
     resources: Vec<Value>,
     deadline: Instant,
     sender: SyncSender<bool>,
 }
+impl PendingApproval {
+    fn snapshot(&self) -> Value {
+        json!({"approval_id":self.id,"tool":self.tool,"detail":self.detail,"risk":self.risk,"resources":self.resources})
+    }
+}
+
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
 pub struct ConfiguredWorkspace {
     pub id: String,
@@ -131,13 +140,30 @@ pub struct AgentOptions {
     pub approval_required: bool,
     pub process_enabled: bool,
 }
+struct VoiceSession {
+    owner: std::sync::Weak<Peer>,
+    pcm: Vec<u8>,
+    phase: &'static str,
+    transcript: String,
+    cancel: Arc<AtomicBool>,
+    started: Instant,
+}
+pub struct VoiceJob {
+    inspection: crate::speech_inspection::Inspection,
+    profile: PathBuf,
+    pcm: Vec<u8>,
+    cancel: Arc<AtomicBool>,
+}
 pub struct State {
     profile: PathBuf,
     generation: String,
     counter: u64,
     sessions: Vec<Session>,
     active: Option<Active>,
+    agent_live_activity: Option<(String, Value)>,
     provider: Option<Config>,
+    configured_providers: Vec<Config>,
+    startup_providers: Vec<Config>,
     catalog: Vec<String>,
     catalog_known: bool,
     catalog_generation: u64,
@@ -147,6 +173,11 @@ pub struct State {
     model_ops: crate::model_ops::Operations,
     workspace: Option<Arc<crate::agent_gateway::Workspace>>,
     plugin_root: Option<Arc<crate::agent_gateway::Workspace>>,
+    speech_inspection: Option<crate::speech_inspection::Inspection>,
+    speech_execution: bool,
+    voice: Option<VoiceSession>,
+    pending_voice: Option<VoiceJob>,
+    voice_worker_token: Option<Arc<AtomicBool>>,
     workspaces: Vec<ConfiguredWorkspace>,
     selected_workspace: Option<String>,
     backup_transfers: Vec<BackupTransfer>,
@@ -155,6 +186,7 @@ pub struct State {
     approval_required: bool,
     process_enabled: bool,
     pending_approval: Option<PendingApproval>,
+    stopping: bool,
     approval_delivery: Option<(SyncSender<bool>, bool)>,
     settings_failed: bool,
     memory: crate::memory::MemoryStore,
@@ -168,6 +200,11 @@ pub struct Job {
     cancel: Arc<AtomicBool>,
     config: Config,
     agent: Option<(Arc<crate::agent_gateway::Workspace>, String)>,
+}
+impl Job {
+    pub fn cancel_before_dispatch(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
 }
 impl State {
     pub fn new(
@@ -206,6 +243,8 @@ impl State {
                     detail: s.detail,
                     created_at: s.created_at,
                     updated_at: s.updated_at,
+                    archived: s.archived,
+                    pinned: s.pinned,
                     seq: 0,
                     agent,
                     peers: vec![],
@@ -223,6 +262,9 @@ impl State {
             counter: 0,
             sessions,
             active: None,
+            agent_live_activity: None,
+            configured_providers: provider.iter().cloned().collect(),
+            startup_providers: provider.iter().cloned().collect(),
             provider,
             catalog: Vec::new(),
             catalog_known: false,
@@ -233,6 +275,11 @@ impl State {
             model_ops: crate::model_ops::Operations::default(),
             workspace,
             plugin_root: None,
+            speech_inspection: None,
+            speech_execution: false,
+            voice: None,
+            pending_voice: None,
+            voice_worker_token: None,
             workspaces: agent.workspaces,
             selected_workspace: agent.selected_workspace,
             backup_transfers: Vec::new(),
@@ -240,6 +287,7 @@ impl State {
             approval_required: agent.approval_required,
             process_enabled: agent.process_enabled,
             pending_approval: None,
+            stopping: false,
             approval_delivery: None,
             settings_failed: false,
             memory,
@@ -267,8 +315,50 @@ impl State {
     pub fn plugin_root(&self) -> Option<Arc<crate::agent_gateway::Workspace>> {
         self.plugin_root.clone()
     }
+    pub fn set_speech_inspection(&mut self, value: crate::speech_inspection::Inspection) {
+        self.speech_inspection = Some(value);
+    }
+    pub fn enable_speech_execution(&mut self) {
+        self.speech_execution = true;
+    }
+    pub fn has_voice(&self) -> bool {
+        self.speech_execution
+            && self.speech_inspection.is_some()
+            && crate::speech_runner::available()
+    }
+    pub fn take_voice_job(&mut self) -> Option<VoiceJob> {
+        let job = self.pending_voice.take()?;
+        self.voice_worker_token = Some(job.cancel.clone());
+        Some(job)
+    }
+    pub fn voice_worker_running(&self) -> bool {
+        self.voice_worker_token.is_some()
+    }
+    fn expire_voice(&mut self) {
+        if self.voice.as_ref().is_some_and(|v| {
+            v.owner.strong_count() == 0
+                || (v.phase == "Capturing" && v.started.elapsed() > Duration::from_secs(120))
+        }) {
+            if let Some(v) = self.voice.take() {
+                v.cancel.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+    pub fn has_speech_inspection(&self) -> bool {
+        self.speech_inspection.is_some()
+    }
     pub fn has_agent(&self) -> bool {
-        self.provider.is_some() && self.workspace.is_some()
+        self.provider
+            .as_ref()
+            .is_some_and(|provider| !provider.is_cloud())
+            && self.workspace.is_some()
+    }
+    pub fn has_image_attachments(&self) -> bool {
+        self.has_workspace_files()
+            && self
+                .configured_providers
+                .iter()
+                .any(|p| p.vision_tokens().is_some())
     }
     pub fn has_workspace_selection(&self) -> bool {
         !self.workspaces.is_empty()
@@ -336,7 +426,7 @@ impl State {
         &self,
         session_id: &str,
     ) -> Option<(Arc<crate::agent_gateway::Workspace>, u64)> {
-        if self.active.is_some() {
+        if self.active.is_some() || self.ensure_session_writable(session_id).is_err() {
             return None;
         }
         self.workspace_files_access(session_id)
@@ -395,6 +485,11 @@ impl State {
             .as_ref()
             .is_some_and(|p| p.provider_id == "ollama")
     }
+    pub fn has_configured_ollama(&self) -> bool {
+        self.configured_providers
+            .iter()
+            .any(|provider| provider.provider_id == "ollama")
+    }
     fn model_operation_active(&self) -> Result<bool, &'static str> {
         self.model_ops
             .is_active()
@@ -411,10 +506,73 @@ impl State {
             let _ = sender.try_send(allow);
         }
     }
+    fn set_provider_endpoint(
+        &mut self,
+        key: &str,
+        provider_id: &str,
+        endpoint: &str,
+    ) -> Result<ResponsePayload, &'static str> {
+        if self.active.is_some() || self.model_operation_active()? {
+            return Err("runtime-busy");
+        }
+        let config = self
+            .configured_providers
+            .iter_mut()
+            .find(|config| config.provider_id == provider_id)
+            .ok_or("provider-unavailable")?;
+        let startup = crate::provider_catalog::find(&self.startup_providers, provider_id)
+            .ok_or("provider-unavailable")?;
+        let updated =
+            crate::provider_catalog::rebind(startup, endpoint).map_err(|_| "invalid-payload")?;
+        if updated.endpoint == config.endpoint {
+            return typed("desktop.setting", json!({"accepted":true}));
+        }
+        let active = self
+            .provider
+            .as_ref()
+            .is_some_and(|current| current.provider_id == provider_id);
+        let generation = self
+            .catalog_generation
+            .checked_add(1)
+            .ok_or("limit-exceeded")?;
+        if let Err(error) = self
+            .settings
+            .set_provider_endpoint(key, startup, &updated, active)
+        {
+            self.settings_failed = !error.safe_conflict;
+            return Err("storage-failure");
+        }
+        *config = updated.clone();
+        if active {
+            self.provider = Some(updated);
+            self.catalog_generation = generation;
+            self.catalog.clear();
+            self.catalog_known = false;
+            self.model_ops = crate::model_ops::Operations::default();
+        }
+        typed("desktop.setting", json!({"accepted":true}))
+    }
+
+    pub fn set_configured_providers(&mut self, startup: Vec<Config>, effective: Vec<Config>) {
+        self.startup_providers = startup;
+        self.configured_providers = effective;
+    }
+    pub fn has_cloud_history(&self) -> bool {
+        self.provider
+            .as_ref()
+            .is_some_and(|config| config.is_cloud() && config.cloud_history)
+    }
+
+    pub fn has_cloud_provider(&self) -> bool {
+        self.provider.as_ref().is_some_and(Config::is_cloud)
+    }
     pub fn has_provider(&self) -> bool {
         self.provider.is_some()
     }
     pub fn discovery_config(&self) -> Result<(Config, u64), &'static str> {
+        if self.stopping {
+            return Err("runtime-stopping");
+        }
         if self.settings_failed {
             return Err("storage-failure");
         }
@@ -432,7 +590,8 @@ impl State {
         generation: u64,
         models: Vec<String>,
     ) -> Result<ResponsePayload, &'static str> {
-        if self.model_operation_active()?
+        if self.stopping
+            || self.model_operation_active()?
             || self.catalog_generation != generation
             || self.provider.as_ref() != Some(config)
         {
@@ -459,6 +618,16 @@ impl State {
         (u64::from(self.active.is_some()), self.sessions.len() as u64)
     }
     pub fn drop_peer(&mut self, peer: &Arc<Peer>) {
+        if self.voice.as_ref().is_some_and(|v| {
+            v.owner
+                .upgrade()
+                .is_some_and(|owner| Arc::ptr_eq(&owner, peer))
+        }) {
+            if let Some(v) = self.voice.take() {
+                v.cancel.store(true, Ordering::SeqCst);
+            }
+        }
+
         self.backup_transfers.retain(|transfer| {
             transfer
                 .owner
@@ -466,7 +635,15 @@ impl State {
                 .is_some_and(|owner| !Arc::ptr_eq(&owner, peer))
         });
     }
+    pub fn shutdown_pending(&self) -> io::Result<bool> {
+        Ok(self.active.is_some() || self.voice_worker_running() || self.model_ops.is_active()?)
+    }
     pub fn stop(&mut self) {
+        self.stopping = true;
+        if let Some(v) = self.voice.take() {
+            v.cancel.store(true, Ordering::SeqCst);
+        }
+        self.pending_voice.take();
         self.backup_transfers.clear();
         let _ = self.model_ops.cancel();
         if let Some(active) = &self.active {
@@ -479,6 +656,9 @@ impl State {
         peer: &Arc<Peer>,
         job: &mut Option<Job>,
     ) -> Result<ResponsePayload, &'static str> {
+        if self.stopping {
+            return Err("runtime-stopping");
+        }
         match request {
             RequestPayload::BackupTransfer { action, value } => {
                 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -614,7 +794,7 @@ impl State {
                 let properties = if let Some(config) = &self.provider {
                     json!({"activeRuntimeProviderLabel":config.provider_id,"activeRuntimeModelLabel":config.model,
                         "activeRuntimeReadinessState":"unknown", "activeRuntimeReadinessSummary":"Provider connectivity has not been verified.",
-                        "activeRuntimeLocalOnlySummary":"Configured for a local loopback provider."})
+                        "activeRuntimeLocalOnlySummary":if config.cloud_history {"Cloud Chat can include prior text turns from the same provider and model."} else if config.is_cloud() {"Cloud Chat sends the current prompt only."} else {"Configured for a local loopback provider."}})
                 } else {
                     json!({"activeRuntimeProviderLabel":"","activeRuntimeModelLabel":"",
                         "activeRuntimeReadinessState":"unavailable", "activeRuntimeReadinessSummary":"No local provider configured.",
@@ -639,13 +819,129 @@ impl State {
                     .unwrap_or_else(|| json!({}));
                 typed(
                     "terminal.state",
-                    json!({"properties":{},"providers":[],"workspace":workspace,"workspaces":workspaces}),
+                    json!({"properties":{"agent_tools":if !self.storage_failed && self.has_agent() && self.current_workspace().is_ok() {
+                        crate::tool_registry::catalog(self.has_process(), self.approval_required)
+                    } else { vec![] }},"providers":self.configured_providers.iter().map(|config| json!({
+                        "provider_id":config.provider_id,"endpoint":config.endpoint,"local":!config.is_cloud(),
+                        "health":"Unknown","catalog":if self.catalog_known && self.provider.as_ref().is_some_and(|p| p.provider_id == config.provider_id) {"Cached"} else {"Unknown"},
+                        "models":if self.provider.as_ref().is_some_and(|p| p.provider_id == config.provider_id) {self.catalog.iter().take(16).collect::<Vec<_>>()} else {vec![]},
+                        "selected": self.provider.as_ref().is_some_and(|current| current.provider_id == config.provider_id)
+                    })).collect::<Vec<_>>(),"workspace":workspace,"workspaces":workspaces}),
                 )
             }
-            RequestPayload::VoiceState {} => typed(
-                "voice.state",
-                json!({"state":"Unavailable","available":false,"owned":false,"transcript":"","failure":"RuntimeUnavailable","input_device_id":"","vad_enabled":true}),
-            ),
+            RequestPayload::VoiceState {} => {
+                self.expire_voice();
+                let ready = self.has_voice();
+                let owned = self.voice.as_ref().is_some_and(|v| {
+                    v.owner
+                        .upgrade()
+                        .is_some_and(|owner| Arc::ptr_eq(&owner, peer))
+                });
+                let phase = if !ready {
+                    "Unavailable"
+                } else if owned {
+                    self.voice.as_ref().map_or("Idle", |v| v.phase)
+                } else {
+                    "Idle"
+                };
+                let text = if owned {
+                    self.voice.as_ref().map_or("", |v| v.transcript.as_str())
+                } else {
+                    ""
+                };
+                typed(
+                    "voice.state",
+                    json!({"state":phase,"available":ready && (owned || (self.voice.is_none() && self.voice_worker_token.is_none())),"owned":owned,"transcript":text,"failure":if phase=="Failed" {"TranscriptionFailed"} else if !ready {"RuntimeUnavailable"} else {"None"},"input_device_id":"","vad_enabled":false}),
+                )
+            }
+            RequestPayload::VoiceAction { action } => {
+                self.expire_voice();
+                if action != "start" && action != "cancel" {
+                    return Err("invalid-voice-action");
+                }
+                if action == "start" {
+                    if !self.has_voice() || self.active.is_some() {
+                        return Err("voice-unavailable");
+                    }
+                    if self.voice.is_some() || self.voice_worker_token.is_some() {
+                        return Err("voice-busy");
+                    }
+                    self.voice = Some(VoiceSession {
+                        owner: Arc::downgrade(peer),
+                        pcm: Vec::new(),
+                        phase: "Capturing",
+                        transcript: String::new(),
+                        cancel: Arc::new(AtomicBool::new(false)),
+                        started: Instant::now(),
+                    });
+                } else {
+                    if !self.voice.as_ref().is_some_and(|v| {
+                        v.owner
+                            .upgrade()
+                            .is_some_and(|owner| Arc::ptr_eq(&owner, peer))
+                    }) {
+                        return Err("voice-not-owned");
+                    }
+                    if let Some(v) = self.voice.take() {
+                        v.cancel.store(true, Ordering::SeqCst);
+                    }
+                }
+                typed("voice.action", json!({"accepted":true}))
+            }
+            RequestPayload::VoiceAudio {
+                pcm,
+                r#final,
+                speech,
+            } => {
+                use base64::{Engine as _, engine::general_purpose::STANDARD};
+                self.expire_voice();
+                let voice = self
+                    .voice
+                    .as_mut()
+                    .filter(|v| {
+                        v.owner
+                            .upgrade()
+                            .is_some_and(|owner| Arc::ptr_eq(&owner, peer))
+                            && v.phase == "Capturing"
+                    })
+                    .ok_or("voice-not-owned")?;
+                let data = if pcm.len() <= 87_384 {
+                    STANDARD.decode(&pcm).ok()
+                } else {
+                    None
+                };
+                let Some(data) = data.filter(|d| {
+                    d.len() <= sentinel_ipc::voice::MAX_PCM_CHUNK
+                        && d.len() % 2 == 0
+                        && voice
+                            .pcm
+                            .len()
+                            .checked_add(d.len())
+                            .is_some_and(|n| n <= sentinel_ipc::voice::MAX_PCM_CAPTURE)
+                }) else {
+                    if let Some(v) = self.voice.take() {
+                        v.cancel.store(true, Ordering::SeqCst);
+                    }
+                    return Err("invalid-captured-audio");
+                };
+                voice.pcm.extend_from_slice(&data);
+                if r#final {
+                    if voice.pcm.is_empty() || !speech {
+                        if let Some(v) = self.voice.take() {
+                            v.cancel.store(true, Ordering::SeqCst);
+                        }
+                        return Err("invalid-captured-audio");
+                    }
+                    voice.phase = "Transcribing";
+                    self.pending_voice = Some(VoiceJob {
+                        inspection: self.speech_inspection.clone().ok_or("voice-unavailable")?,
+                        profile: self.profile.clone(),
+                        pcm: std::mem::take(&mut voice.pcm),
+                        cancel: voice.cancel.clone(),
+                    });
+                }
+                typed("voice.audio", json!({"accepted":true}))
+            }
             RequestPayload::WorkspaceSelect { workspace_id } => {
                 if self.active.is_some() {
                     return Err("runtime-busy");
@@ -748,6 +1044,26 @@ impl State {
                 typed("agent.history", json!({"history":history}))
             }
             RequestPayload::DesktopSettingsService { action, arguments }
+                if action == "speechSettingsState" && arguments.is_empty() =>
+            {
+                let inspected = self.speech_inspection.as_ref();
+                typed(
+                    "desktop.settings_service",
+                    json!({"result":{
+                        "sttProviderId":if inspected.is_some() {"whisper-cpp"} else {""}, "sttModelId":"", "sttAvailable":self.has_voice(),
+                        "ttsProviderId":"", "ttsModelId":"", "ttsAvailable":false,
+                        "ttsVoices":[], "inputDeviceIds":[], "outputDeviceIds":[],
+                        "selectedInputId":"", "selectedOutputId":"", "vadEnabled":false,
+                        "rawRecordingRetention":false, "sttLocal":inspected.is_some(), "ttsLocal":false,
+                        "inspection":if inspected.is_some() {"DigestAndHeaderMatched"} else {"NotConfigured"},
+                        "inspectionMeaning":"Artifacts checked at daemon startup; model compatibility and transcription success are not verified.",
+                        "binarySha256":inspected.map(|v|v.binary_sha256.as_str()),
+                        "modelSha256":inspected.map(|v|v.model_sha256.as_str()),
+                        "modelBytes":inspected.map(|v|v.model_bytes)
+                    }}),
+                )
+            }
+            RequestPayload::DesktopSettingsService { action, arguments }
                 if action == "providerSettingsState" =>
             {
                 if arguments.len() != 1 {
@@ -757,12 +1073,19 @@ impl State {
                     .as_str()
                     .filter(|id| !id.is_empty() && id.len() <= 128)
                     .ok_or("invalid-payload")?;
-                let result = if let Some(config) = self
+                let active = self
                     .provider
                     .as_ref()
-                    .filter(|config| config.provider_id == id)
-                {
-                    json!({"id":id,"known":true,"health":"Unknown","catalog":if self.catalog_known {"Cached"} else {"Unknown"},"local":true,"endpoint":config.endpoint,"discoveredModels":self.catalog,"contextWindow":config.context_window_tokens,"configuredModel":config.model})
+                    .filter(|config| config.provider_id == id);
+                let configured = active
+                    .or_else(|| crate::provider_catalog::find(&self.configured_providers, id));
+                let result = if let Some(config) = configured {
+                    let catalog = if active.is_some() && self.catalog_known {
+                        Some(&self.catalog)
+                    } else {
+                        None
+                    };
+                    json!({"id":id,"known":true,"health":"Unknown","catalog":if catalog.is_some() {"Cached"} else {"Unknown"},"local":!config.is_cloud(),"endpoint":config.endpoint,"discoveredModels":catalog.map_or(&[][..], Vec::as_slice),"contextWindow":config.context_window_tokens,"configuredModel":config.model})
                 } else {
                     json!({"id":id,"known":false,"health":"Unknown","catalog":"Unknown","local":false,"endpoint":"","discoveredModels":[],"contextWindow":0,"configuredModel":""})
                 };
@@ -794,6 +1117,43 @@ impl State {
                         typed(
                             "desktop.action",
                             json!({"accepted":true,"result":{"value":result}}),
+                        )
+                    }
+                    "archiveConversation"
+                    | "unarchiveConversation"
+                    | "pinConversation"
+                    | "unpinConversation"
+                        if arguments.len() == 1 =>
+                    {
+                        if arguments[0].as_str() != Some(&session_id) {
+                            return Err("invalid-payload");
+                        }
+                        let session = self
+                            .sessions
+                            .iter_mut()
+                            .find(|s| s.id == session_id)
+                            .ok_or("unknown-session")?;
+                        let archived = match action.as_str() {
+                            "archiveConversation" => true,
+                            "unarchiveConversation" => false,
+                            _ => session.archived,
+                        };
+                        let pinned = match action.as_str() {
+                            "pinConversation" => true,
+                            "unpinConversation" => false,
+                            _ => session.pinned,
+                        };
+                        if let Err(error) =
+                            self.store.set_session_flags(&session_id, archived, pinned)
+                        {
+                            self.storage_failed = !error.safe_conflict;
+                            return Err("storage-failure");
+                        }
+                        session.archived = archived;
+                        session.pinned = pinned;
+                        typed(
+                            "desktop.action",
+                            json!({"accepted":true,"result":{"value":true}}),
                         )
                     }
                     "renameConversation" if arguments.len() == 2 => {
@@ -863,11 +1223,23 @@ impl State {
                         .map_err(|_| "storage-failure")?;
                     values["devWorkspaceAccess"] = json!(if enabled { "true" } else { "false" });
                 }
+                for (key, provider_id) in crate::provider_catalog::ENDPOINT_KEYS {
+                    if let Some(config) =
+                        crate::provider_catalog::find(&self.configured_providers, provider_id)
+                    {
+                        values[key] = json!(config.endpoint);
+                    } else if let Some(map) = values.as_object_mut() {
+                        map.remove(key);
+                    }
+                }
                 typed("desktop.settings", json!({"values":values}))
             }
             RequestPayload::DesktopSetting { key, value } => {
                 if self.settings_failed {
                     return Err("storage-failure");
+                }
+                if let Some(provider_id) = crate::provider_catalog::provider_for_key(&key) {
+                    return self.set_provider_endpoint(&key, provider_id, &value);
                 }
                 if key == "devWorkspaceAccess" {
                     let enabled = match value.as_str() {
@@ -1027,10 +1399,29 @@ impl State {
                 if self.model_operation_active()? || self.active.is_some() {
                     return Err("runtime-busy");
                 }
-                let config = self.provider.as_ref().ok_or("provider-unavailable")?;
-                if provider_id != config.provider_id {
-                    return Err("provider-unavailable");
+                if self
+                    .provider
+                    .as_ref()
+                    .is_none_or(|current| current.provider_id != provider_id)
+                {
+                    let config =
+                        crate::provider_catalog::find(&self.configured_providers, &provider_id)
+                            .cloned()
+                            .ok_or("provider-unavailable")?;
+                    let generation = self
+                        .catalog_generation
+                        .checked_add(1)
+                        .ok_or("limit-exceeded")?;
+                    if let Err(error) = self.settings.select(&config, &config.model) {
+                        self.settings_failed = !error.safe_conflict;
+                        return Err("storage-failure");
+                    }
+                    self.provider = Some(config);
+                    self.catalog_generation = generation;
+                    self.catalog.clear();
+                    self.catalog_known = false;
                 }
+                let config = self.provider.as_ref().ok_or("provider-unavailable")?;
                 typed(
                     "provider.select",
                     json!({"provider_id":config.provider_id,"model_id":config.model}),
@@ -1089,6 +1480,8 @@ impl State {
                     detail: String::new(),
                     created_at: String::new(),
                     updated_at: String::new(),
+                    archived: false,
+                    pinned: false,
                     seq: 0,
                     agent: false,
                     peers: vec![Arc::downgrade(peer)],
@@ -1108,10 +1501,11 @@ impl State {
                 if self.storage_failed {
                     return Err("storage-failure");
                 }
-                let sessions: Vec<Value> = self
-                    .sessions
-                    .iter()
-                    .map(|s| json!({"session_id":s.id,"title":s.title,"state":s.state,"created_at":s.created_at,"updated_at":s.updated_at}))
+                let mut ordered: Vec<_> = self.sessions.iter().collect();
+                ordered.sort_by_key(|session| (session.archived, !session.pinned));
+                let sessions: Vec<Value> = ordered
+                    .into_iter()
+                    .map(|s| json!({"session_id":s.id,"title":s.title,"state":s.state,"created_at":s.created_at,"updated_at":s.updated_at,"archived":s.archived,"pinned":s.pinned}))
                     .collect();
                 typed("session.list", json!({"sessions":sessions}))
             }
@@ -1122,13 +1516,22 @@ impl State {
                 if !self.sessions.iter().any(|s| s.id == session_id) {
                     return Err("unknown-session");
                 }
-                let messages = match self.store.messages(&session_id) {
+                let mut messages = match self.store.messages(&session_id) {
                     Ok(messages) => messages,
                     Err(_) => {
                         self.storage_failed = true;
                         return Err("storage-failure");
                     }
                 };
+                for message in &mut messages {
+                    if let Some(attachments) = message["attachments"].as_array_mut() {
+                        for attachment in attachments {
+                            if crate::attachment::stored_image_mime(&attachment["mime"]).is_some() {
+                                attachment["image"] = Value::Null;
+                            }
+                        }
+                    }
+                }
                 if !store::history_fits(&session_id, &messages) {
                     return Err("message-too-large");
                 }
@@ -1150,10 +1553,12 @@ impl State {
                 if self.model_operation_active()? || self.active.is_some() {
                     return Err("runtime-busy");
                 }
-                if !self.sessions.iter().any(|s| s.id == session_id) {
-                    return Err("unknown-session");
-                }
+                self.ensure_session_writable(&session_id)?;
                 let attachment_values = attachments.unwrap_or_default();
+                if config.is_cloud() && !attachment_values.is_empty() && !self.has_workspace_files()
+                {
+                    return Err("cloud-attachments-unavailable");
+                }
                 let loaded = if attachment_values.is_empty() {
                     Vec::new()
                 } else {
@@ -1162,33 +1567,59 @@ impl State {
                         .map_err(|_| "invalid-attachments")?
                 };
                 let encoded = serde_json::to_string(&loaded).map_err(|_| "invalid-attachments")?;
-                let provider_text = crate::attachment::context(&text, &encoded)
-                    .map_err(|_| "invalid-attachments")?;
-                let profile = self.response_profile()?;
+                let (provider_text, images) =
+                    crate::attachment::parts(&text, &encoded).map_err(|_| "invalid-attachments")?;
+                if config.is_cloud() && !images.is_empty() {
+                    return Err("cloud-image-attachments-unavailable");
+                }
+                let profile = if config.is_cloud() {
+                    String::new()
+                } else {
+                    self.response_profile()?
+                };
                 // Reject a mandatory-only request before even reading history or writing a run.
-                match provider::prepare_with_profile(&config, &provider_text, &[], &profile) {
+                match provider::prepare_with_images(&config, &provider_text, &images, &[], &profile)
+                {
                     Ok(_) => {}
                     Err(ProviderError::InvalidRequest(_)) => return Err("message-too-large"),
+                    Err(ProviderError::InvalidConfig(_)) => return Err("vision-unavailable"),
                     Err(ProviderError::ContextLimitExceeded) => {
                         return Err("context-limit-exceeded");
                     }
                     Err(_) => return Err("runtime-unavailable"),
                 }
-                let history = match self.store.context_turns(&session_id) {
-                    Ok(history) => history,
-                    Err(error) => {
-                        self.storage_failed = !store::is_conflict(&error);
-                        return Err("storage-failure");
+                let history = {
+                    let loaded = if config.is_cloud() {
+                        if config.cloud_history {
+                            self.store.cloud_context_turns(
+                                &session_id,
+                                &config.provider_id,
+                                &config.model,
+                            )
+                        } else {
+                            Ok(Vec::new())
+                        }
+                    } else {
+                        self.store.context_turns(&session_id)
+                    };
+                    match loaded {
+                        Ok(history) => history,
+                        Err(error) => {
+                            self.storage_failed = !store::is_conflict(&error);
+                            return Err("storage-failure");
+                        }
                     }
                 };
-                let request = match provider::prepare_with_profile(
+                let request = match provider::prepare_with_images(
                     &config,
                     &provider_text,
+                    &images,
                     &history,
                     &profile,
                 ) {
                     Ok(request) => request,
                     Err(ProviderError::InvalidRequest(_)) => return Err("message-too-large"),
+                    Err(ProviderError::InvalidConfig(_)) => return Err("vision-unavailable"),
                     Err(ProviderError::ContextLimitExceeded) => {
                         return Err("context-limit-exceeded");
                     }
@@ -1266,6 +1697,9 @@ impl State {
                 text,
                 attachments,
             } => {
+                if self.has_cloud_provider() {
+                    return Err("unsupported-capability");
+                }
                 if self.settings_failed || self.storage_failed {
                     return Err("storage-failure");
                 }
@@ -1278,13 +1712,11 @@ impl State {
                 {
                     return Err("invalid-payload");
                 }
+                self.ensure_session_writable(&session_id)?;
                 let config = self.provider.clone().ok_or("provider-unavailable")?;
                 let workspace = self.current_workspace()?;
                 if crate::agent::requires_process(&text) && !self.has_process() {
                     return Err("runtime-unavailable");
-                }
-                if !self.sessions.iter().any(|s| s.id == session_id) {
-                    return Err("unknown-session");
                 }
                 let request =
                     crate::agent::prepare(&config, &text).map_err(|error| match error {
@@ -1294,44 +1726,20 @@ impl State {
                     })?;
                 let run_id = self.id("run");
                 let plan_metadata = crate::agent::plan_metadata(&text);
-                if self
-                    .agent_store
-                    .start_with_plan(
-                        &run_id,
-                        &session_id,
-                        &text,
-                        &config.provider_id,
-                        &config.model,
-                        plan_metadata.as_deref(),
-                    )
-                    .is_err()
-                {
-                    self.storage_failed = true;
-                    return Err("storage-failure");
-                }
-                match self.store.begin_with_provider(
-                    &session_id,
-                    &run_id,
-                    &text,
-                    &config.model,
-                    &config.provider_id,
-                ) {
+                let admission = crate::agent_store::AgentAdmission {
+                    run_id: &run_id,
+                    session_id: &session_id,
+                    goal: &text,
+                    provider: &config.provider_id,
+                    model: &config.model,
+                    plan: plan_metadata.as_deref(),
+                };
+                match self.store.begin_agent(&self.profile, &admission) {
                     Ok(true) => {}
-                    result => {
-                        if result.is_err() {
-                            self.storage_failed = true;
-                            return Err("storage-failure");
-                        }
-                        if self
-                            .agent_store
-                            .finish(&run_id, "failed", "", "limit-exceeded")
-                            .is_err()
-                            || self.agent_store.confirm(&run_id).is_err()
-                        {
-                            self.storage_failed = true;
-                            return Err("storage-failure");
-                        }
-                        return Err("limit-exceeded");
+                    Ok(false) => return Err("limit-exceeded"),
+                    Err(error) => {
+                        self.storage_failed = !error.safe_conflict;
+                        return Err("storage-failure");
                     }
                 }
                 let session = self
@@ -1377,6 +1785,9 @@ impl State {
                 approval_id,
                 allow,
             } => {
+                if self.storage_failed || self.settings_failed {
+                    return Err("storage-failure");
+                }
                 let pending = self
                     .pending_approval
                     .as_ref()
@@ -1390,6 +1801,18 @@ impl State {
                     })
                     .ok_or("invalid-approval")?;
                 let session_id = pending.session_id.clone();
+                if !self.sessions.iter().any(|session| {
+                    session.id == session_id
+                        && session
+                            .peers
+                            .iter()
+                            .any(|candidate| candidate.ptr_eq(&Arc::downgrade(peer)))
+                }) {
+                    return Err("permission-denied");
+                }
+                if allow {
+                    self.current_workspace()?;
+                }
                 let resolution = if allow {
                     crate::agent_store::ApprovalResolution::Allow
                 } else {
@@ -1452,18 +1875,35 @@ impl State {
         }
         let binding = (!session.provider_id.is_empty()).then_some(session.provider_id.as_str());
         let model = (!session.model.is_empty()).then_some(session.model.as_str());
-        let reply = typed(
-            name,
-            json!({"session_id":session.id,"state":session.state,"output":session.output,"run_id":session.run_id,"run_type":if session.agent {"agent"} else {"chat"},"provider_id":binding,"model_id":model,"server_generation":self.generation,"event_sequence":session.seq,"title":session.title,"detail":session.detail,"created_at":session.created_at}),
-        );
-        if self
-            .pending_approval
-            .as_ref()
-            .is_some_and(|p| p.session_id == session_id)
+        let mut snapshot = json!({"session_id":session.id,"state":session.state,"output":session.output,"run_id":session.run_id,"run_type":if session.agent {"agent"} else {"chat"},"provider_id":binding,"model_id":model,"server_generation":self.generation,"event_sequence":session.seq,"title":session.title,"detail":session.detail,"created_at":session.created_at});
+        if let Some(pending) = self.pending_approval.as_ref()
+            && pending.session_id == session_id
+            && pending.run_id == session.run_id
         {
-            self.approval_event(Some(peer));
+            snapshot["approval_id"] = json!(pending.id);
+            snapshot["approval"] = pending.snapshot();
         }
-        reply
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.run_id == session.run_id)
+            && let Some((run_id, activity)) = &self.agent_live_activity
+            && run_id == &session.run_id
+        {
+            snapshot["properties"] = json!({"agent_activity":activity});
+        }
+        typed(name, snapshot)
+    }
+    fn ensure_session_writable(&self, session_id: &str) -> Result<(), &'static str> {
+        match self
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+        {
+            Some(session) if session.archived => Err("session-archived"),
+            Some(_) => Ok(()),
+            None => Err("unknown-session"),
+        }
     }
     fn start_existing(
         &mut self,
@@ -1482,10 +1922,11 @@ impl State {
         if self.model_operation_active()? || self.active.is_some() {
             return Err("runtime-busy");
         }
-        if !self.sessions.iter().any(|s| s.id == sid) {
-            return Err("unknown-session");
-        }
+        self.ensure_session_writable(sid)?;
         let config = self.provider.clone().ok_or("provider-unavailable")?;
+        if config.is_cloud() {
+            return Err("unsupported-capability");
+        }
         let retry = matches!(revision, Revision::Retry);
         let target = match self.store.retry_target(sid, message_id, retry) {
             Ok(Some(target)) => target,
@@ -1512,14 +1953,15 @@ impl State {
         } else {
             text
         };
-        let provider_text = self
+        let (provider_text, images) = self
             .store
-            .user_context(sid, user_id, &text)
+            .user_parts(sid, user_id, &text)
             .map_err(|_| "storage-failure")?;
         let profile = self.response_profile()?;
-        match provider::prepare_with_profile(&config, &provider_text, &[], &profile) {
+        match provider::prepare_with_images(&config, &provider_text, &images, &[], &profile) {
             Ok(_) => {}
             Err(ProviderError::InvalidRequest(_)) => return Err("message-too-large"),
+            Err(ProviderError::InvalidConfig(_)) => return Err("vision-unavailable"),
             Err(ProviderError::ContextLimitExceeded) => return Err("context-limit-exceeded"),
             Err(_) => return Err("runtime-unavailable"),
         }
@@ -1530,13 +1972,19 @@ impl State {
                 return Err("storage-failure");
             }
         };
-        let request =
-            match provider::prepare_with_profile(&config, &provider_text, &history, &profile) {
-                Ok(request) => request,
-                Err(ProviderError::InvalidRequest(_)) => return Err("message-too-large"),
-                Err(ProviderError::ContextLimitExceeded) => return Err("context-limit-exceeded"),
-                Err(_) => return Err("runtime-unavailable"),
-            };
+        let request = match provider::prepare_with_images(
+            &config,
+            &provider_text,
+            &images,
+            &history,
+            &profile,
+        ) {
+            Ok(request) => request,
+            Err(ProviderError::InvalidRequest(_)) => return Err("message-too-large"),
+            Err(ProviderError::InvalidConfig(_)) => return Err("vision-unavailable"),
+            Err(ProviderError::ContextLimitExceeded) => return Err("context-limit-exceeded"),
+            Err(_) => return Err("runtime-unavailable"),
+        };
         let rid = self.id("run");
         let branch_id = branching.then(|| self.id("session"));
         let title = format!(
@@ -1589,6 +2037,8 @@ impl State {
                 detail: String::new(),
                 created_at: String::new(),
                 updated_at: String::new(),
+                archived: false,
+                pinned: false,
                 seq: 0,
                 agent: false,
                 peers: Vec::new(),
@@ -1637,7 +2087,7 @@ impl State {
             json!({"session_id":target_sid,"run_id":rid}),
         )
     }
-    fn approval_event(&mut self, peer: Option<&Arc<Peer>>) {
+    fn approval_event(&mut self) {
         let Some(pending) = &self.pending_approval else {
             return;
         };
@@ -1649,7 +2099,12 @@ impl State {
             return;
         };
         session.seq += 1;
-        let payload = json!({"session_id":pending.session_id,"run_id":pending.run_id,"approval_id":pending.id,"tool":pending.tool,"detail":pending.detail,"risk":if matches!(pending.tool.as_str(), "write-file" | "edit-file" | "process-exec") {2} else {0},"resources":pending.resources,"server_generation":self.generation,"event_sequence":session.seq,"state":"approval"});
+        let mut payload = pending.snapshot();
+        payload["session_id"] = json!(pending.session_id);
+        payload["run_id"] = json!(pending.run_id);
+        payload["server_generation"] = json!(self.generation);
+        payload["event_sequence"] = json!(session.seq);
+        payload["state"] = json!("approval");
         let env = Envelope {
             version: Version {
                 major: contract::MAJOR,
@@ -1667,14 +2122,10 @@ impl State {
             return;
         }
         bytes.push(b'\n');
-        if let Some(peer) = peer {
-            let _ = peer.send(bytes);
-        } else {
-            session.peers.retain(|weak| {
-                weak.upgrade()
-                    .is_some_and(|p| p.send(bytes.clone()).is_ok())
-            });
-        }
+        session.peers.retain(|weak| {
+            weak.upgrade()
+                .is_some_and(|peer| peer.send(bytes.clone()).is_ok())
+        });
     }
     fn begin_approval(
         &mut self,
@@ -1690,6 +2141,7 @@ impl State {
         {
             return Err("runtime-unavailable");
         }
+        let descriptor = crate::tool_registry::find(tool).ok_or("unknown-tool")?;
         let id = format!("{run_id}-approval-{step}");
         let detail = args.to_string();
         if self
@@ -1707,13 +2159,8 @@ impl State {
             id,
             tool: tool.into(),
             detail,
-            resources: if tool == "process-exec" {
-                vec![json!({"argv":args["argv"],"access":"execute"})]
-            } else {
-                vec![
-                    json!({"path":args["path"],"access":if matches!(tool, "write-file" | "edit-file") {"write"} else {"read"}}),
-                ]
-            },
+            risk: descriptor.event_risk(),
+            resources: vec![descriptor.approval_resource(args)],
             deadline: Instant::now() + APPROVAL_TIMEOUT,
             sender,
         });
@@ -1729,7 +2176,7 @@ impl State {
             .as_ref()
             .ok_or("runtime-unavailable")?
             .deadline;
-        self.approval_event(None);
+        self.approval_event();
         Ok((receiver, deadline))
     }
     fn event(&mut self, sid: &str, rid: &str, name: &str, text: &str, state: Option<&str>) {
@@ -1809,8 +2256,16 @@ impl State {
         let payload = if name == "agent.activity" {
             json!({"session_id":sid,"run_id":rid,"activity":phase,"step":step,"server_generation":self.generation,"event_sequence":session.seq})
         } else {
-            json!({"session_id":sid,"run_id":rid,"tool":tool,"detail":match phase { "requested" => "Tool requested", "running" => "Tool running", "completed" => "Tool completed", _ => "Tool failed; inspect authoritative run outcome" },"risk":if matches!(tool,"write-file"|"edit-file"|"process-exec") {2} else {0},"resources":[],"tool_call_id":format!("{rid}-step-{step}"),"state":phase,"server_generation":self.generation,"event_sequence":session.seq})
+            json!({"session_id":sid,"run_id":rid,"tool":tool,"detail":match phase { "requested" => "Tool requested", "running" => "Tool running", "completed" => "Tool completed", _ => "Tool failed; inspect authoritative run outcome" },"risk":crate::tool_registry::find(tool).map_or(0, |descriptor| descriptor.event_risk()),"resources":[],"tool_call_id":format!("{rid}-step-{step}"),"state":phase,"server_generation":self.generation,"event_sequence":session.seq})
         };
+        self.agent_live_activity = Some((
+            rid.to_owned(),
+            if name == "agent.activity" {
+                json!({"activity":phase,"step":step})
+            } else {
+                json!({"activity":payload["detail"],"step":step,"tool":tool})
+            },
+        ));
         let Ok(typed) = serde_json::from_value::<contract::EventPayload>(
             json!({"name":name,"payload":payload}),
         ) else {
@@ -1966,13 +2421,8 @@ fn await_approval(
         if cancel.load(Ordering::SeqCst) {
             return Err("cancelled");
         }
-        if !force_approval
-            && !state.approval_required
-            && !matches!(
-                tool,
-                "write-file" | "edit-file" | "process-exec" | "grep" | "glob" | "stat-path"
-            )
-        {
+        let descriptor = crate::tool_registry::find(tool).ok_or("unknown-tool")?;
+        if !force_approval && !state.approval_required && !descriptor.approval_required {
             return Ok(());
         }
         state.begin_approval(run_id, session_id, step, tool, args)?
@@ -2007,6 +2457,11 @@ fn await_approval(
         }
         match receiver.recv_timeout(Duration::from_millis(100)) {
             Ok(true) if !cancel.load(Ordering::SeqCst) && Instant::now() < deadline => {
+                let state = state.lock().map_err(|_| "storage-failure")?;
+                state.current_workspace()?;
+                if cancel.load(Ordering::SeqCst) {
+                    return Err("cancelled");
+                }
                 return Ok(());
             }
             Ok(_) => {
@@ -2022,13 +2477,43 @@ fn await_approval(
     }
 }
 
+pub fn voice_worker(state: Arc<Mutex<State>>, job: VoiceJob) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::speech_runner::transcribe(&job.inspection, &job.profile, &job.pcm, &job.cancel)
+    }));
+    if let Ok(mut state) = state.lock() {
+        if state
+            .voice_worker_token
+            .as_ref()
+            .is_some_and(|token| Arc::ptr_eq(token, &job.cancel))
+        {
+            state.voice_worker_token = None;
+        }
+        if let Some(voice) = state.voice.as_mut()
+            && Arc::ptr_eq(&voice.cancel, &job.cancel)
+            && voice.phase == "Transcribing"
+            && !job.cancel.load(Ordering::SeqCst)
+        {
+            match result {
+                Ok(Ok(text)) if !text.is_empty() && text.len() <= 32_768 => {
+                    voice.transcript = text;
+                    voice.phase = "Completed";
+                }
+                _ => voice.phase = "Failed",
+            }
+        }
+    }
+}
+
 fn agent_worker(state: Arc<Mutex<State>>, job: Job) {
     let Some((workspace, goal)) = job.agent else {
         return;
     };
     let mutation_authorized = AtomicBool::new(false);
     let current_tool = Mutex::new(None::<(usize, String)>);
-    if let Ok(mut locked) = state.lock() {
+    if !job.cancel.load(Ordering::SeqCst)
+        && let Ok(mut locked) = state.lock()
+    {
         locked.agent_progress(
             &job.session_id,
             &job.run_id,
@@ -2040,6 +2525,9 @@ fn agent_worker(state: Arc<Mutex<State>>, job: Job) {
     }
     let result =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if job.cancel.load(Ordering::SeqCst) {
+                return Err("cancelled");
+            }
             crate::agent::run(
                 &job.config,
                 job.request,
@@ -2057,15 +2545,50 @@ fn agent_worker(state: Arc<Mutex<State>>, job: Job) {
                     {
                         return false;
                     }
+                    if !completed {
+                        let activity = match observation["_event"].as_str() {
+                            Some("classifying") => Some("Classifying the inspection request"),
+                            Some("deciding") => Some("Waiting for a model decision"),
+                            _ => None,
+                        };
+                        if let Some(activity) = activity {
+                            locked.agent_progress(
+                                &job.session_id,
+                                &job.run_id,
+                                "agent.activity",
+                                0,
+                                "",
+                                activity,
+                            );
+                            return true;
+                        }
+                    }
                     if observation["_event"] == "plan-step" && !completed {
+                        let status = observation["status"].as_str().unwrap_or("");
                         let result = locked.agent_store.plan_step(
                             &job.run_id,
                             step,
-                            observation["status"].as_str().unwrap_or(""),
+                            status,
                             observation["reason"].as_str().unwrap_or(""),
                         );
                         if result.is_err() {
                             locked.storage_failed = true;
+                        } else {
+                            let activity = match status {
+                                "started" => "Plan step started",
+                                "succeeded" => "Plan step succeeded",
+                                "failed" => "Plan step failed",
+                                "blocked" => "Plan step blocked by a dependency",
+                                _ => unreachable!("plan_step accepts only defined states"),
+                            };
+                            locked.agent_progress(
+                                &job.session_id,
+                                &job.run_id,
+                                "agent.activity",
+                                step,
+                                "",
+                                activity,
+                            );
                         }
                         return result.is_ok();
                     }
@@ -2177,7 +2700,10 @@ fn agent_worker(state: Arc<Mutex<State>>, job: Job) {
                             "failed",
                         );
                     }
-                    if matches!(tool, "write-file" | "edit-file") && result.is_ok() {
+                    if result.is_ok()
+                        && crate::tool_registry::find(tool)
+                            .is_some_and(|descriptor| descriptor.access == "write")
+                    {
                         mutation_authorized.store(true, Ordering::SeqCst);
                     }
                     result
@@ -2206,7 +2732,7 @@ fn agent_worker(state: Arc<Mutex<State>>, job: Job) {
             "failed",
         );
     }
-    let timed_out = matches!(result, Ok(Err("plan-timeout")));
+    let timed_out = matches!(result, Ok(Err("plan-timeout" | "agent-timeout")));
     let cancelled =
         !timed_out && (job.cancel.load(Ordering::SeqCst) || matches!(result, Ok(Err("cancelled"))));
     let (mut terminal, mut text, reason) = if cancelled {
@@ -2227,31 +2753,23 @@ fn agent_worker(state: Arc<Mutex<State>>, job: Job) {
     }
     let committed = !locked.storage_failed
         && locked
-            .agent_store
-            .finish(&job.run_id, terminal, &text, reason)
-            .is_ok()
-        && locked
             .store
-            .finish(
+            .finish_agent(
+                &locked.profile,
                 &job.session_id,
                 &job.run_id,
-                terminal,
-                &text,
                 &job.config.model,
+                store::AgentTerminal {
+                    state: terminal,
+                    output: &text,
+                    reason,
+                },
             )
-            .is_ok()
-        && locked.agent_store.confirm(&job.run_id).is_ok();
+            .is_ok();
     if !committed {
+        // An uncertain terminal commit must be reconciled from durable state
+        // at restart. Rewriting only the Chat store here could destroy a receipt.
         locked.storage_failed = true;
-        if locked
-            .store
-            .validate_agent_owner(&job.run_id, &job.session_id)
-            .is_ok()
-        {
-            let _ = locked
-                .store
-                .invalidate_agent(&job.run_id, mutation_authorized.load(Ordering::SeqCst));
-        }
         terminal = "failed";
         if mutation_authorized.load(Ordering::SeqCst) {
             text =

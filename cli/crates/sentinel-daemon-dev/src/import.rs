@@ -37,6 +37,8 @@ pub struct Conversation {
     pub title: String,
     pub created_at: String,
     pub updated_at: String,
+    pub archived: bool,
+    pub pinned: bool,
     pub messages: Vec<Message>,
 }
 pub struct Message {
@@ -50,9 +52,76 @@ pub struct Message {
     pub partial: i64,
     pub reply_to: i64,
     pub replaces: i64,
+    pub attachments: String,
+    pub error_category: String,
 }
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+/// Historical Qt provider categories are data only and never influence dispatch.
+pub(crate) fn valid_message_error(role: &str, status: &str, category: &str) -> bool {
+    category == "None"
+        || (role == "assistant"
+            && matches!(status, "error" | "failed" | "cancelled" | "interrupted")
+            && matches!(
+                category,
+                "AuthenticationRequired"
+                    | "ModelNotFound"
+                    | "ProviderUnavailable"
+                    | "ConnectionFailed"
+                    | "Timeout"
+                    | "RateLimited"
+                    | "RequestRejected"
+                    | "CapabilityUnsupported"
+                    | "MalformedResponse"
+                    | "Cancelled"
+                    | "ProviderFailure"
+                    | "Offline"
+            ))
+}
+
+/// Convert the original inline Qt snapshot. Import never reopens a source file
+/// named in a message and only admits what Rust Chat can safely replay.
+fn attachments_for_message(role: &str, raw: &str) -> io::Result<String> {
+    if raw.len() > 200_000 {
+        return Err(invalid("source attachment snapshot exceeds limit"));
+    }
+    let mut attachments: Vec<Value> =
+        serde_json::from_str(raw).map_err(|_| invalid("invalid source attachment snapshot"))?;
+    if attachments.len() > 4 || (!attachments.is_empty() && role != "user") {
+        return Err(invalid("unsupported source attachments"));
+    }
+    for attachment in &mut attachments {
+        let object = attachment
+            .as_object_mut()
+            .ok_or_else(|| invalid("invalid source attachment"))?;
+        if object.len() != 4
+            || !object.get("name").is_some_and(Value::is_string)
+            || !object.get("text").is_some_and(Value::is_string)
+        {
+            return Err(invalid("invalid source attachment fields"));
+        }
+        let mime = object
+            .get("mime")
+            .and_then(Value::as_str)
+            .filter(|mime| {
+                !mime.is_empty() && mime.len() <= 128 && !mime.chars().any(char::is_control)
+            })
+            .ok_or_else(|| invalid("invalid source attachment MIME"))?;
+        let image = object
+            .get("image")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid("invalid source attachment image"))?;
+        if image.is_empty() && !mime.starts_with("image/") {
+            object.insert("mime".into(), Value::String("text/plain".into()));
+        } else if mime != "image/png" || image.is_empty() {
+            return Err(invalid("unsupported source image attachment"));
+        }
+    }
+    let encoded = serde_json::to_string(&attachments)?;
+    crate::attachment::parts("", &encoded)
+        .map_err(|_| invalid("source attachment exceeds Rust Chat limits or is invalid"))?;
+    Ok(encoded)
 }
 pub(crate) fn no_sidecars(path: &Path) -> io::Result<()> {
     let name = path
@@ -303,7 +372,10 @@ pub fn read(path: &Path, destination: &Path) -> Result<Snapshot, Box<dyn std::er
             || title.len() > 1024
             || !timestamp(&created_at)
             || !timestamp(&updated_at)
-            || [archived, pinned, deleted, renamed] != [0, 0, 0, 0]
+            || !matches!(archived, 0 | 1)
+            || !matches!(pinned, 0 | 1)
+            || deleted != 0
+            || !matches!(renamed, 0 | 1)
             || index.contains_key(&id)
         {
             return Err(invalid("unsupported conversation").into());
@@ -314,6 +386,8 @@ pub fn read(path: &Path, destination: &Path) -> Result<Snapshot, Box<dyn std::er
             title,
             created_at,
             updated_at,
+            archived: archived == 1,
+            pinned: pinned == 1,
             messages: Vec::new(),
         });
     }
@@ -333,9 +407,12 @@ pub fn read(path: &Path, destination: &Path) -> Result<Snapshot, Box<dyn std::er
         let pos = *index
             .get(&sid)
             .ok_or_else(|| invalid("orphan source message"))?;
+        let role: String = row.get(2)?;
+        let raw_attachments: String = row.get(12)?;
+        let attachments = attachments_for_message(&role, &raw_attachments)?;
         let message = Message {
             id: row.get(1)?,
-            role: row.get(2)?,
+            role,
             content: row.get(3)?,
             timestamp: row.get(4)?,
             status: row.get(5)?,
@@ -344,9 +421,9 @@ pub fn read(path: &Path, destination: &Path) -> Result<Snapshot, Box<dyn std::er
             reply_to: row.get(8)?,
             replaces: row.get(9)?,
             partial: row.get(10)?,
+            attachments,
+            error_category: row.get(11)?,
         };
-        let category: String = row.get(11)?;
-        let attachments: String = row.get(12)?;
         let refs: HashSet<i64> = conversations[pos].messages.iter().map(|m| m.id).collect();
         let allowed_status = [
             "sent",
@@ -367,8 +444,7 @@ pub fn read(path: &Path, destination: &Path) -> Result<Snapshot, Box<dyn std::er
             || message.model.len() > 1024
             || !timestamp(&message.timestamp)
             || ![0, 1].contains(&message.partial)
-            || category != "None"
-            || !matches!(serde_json::from_str::<Value>(&attachments),Ok(Value::Array(a)) if a.is_empty())
+            || !valid_message_error(&message.role, &message.status, &message.error_category)
             || (message.reply_to != 0 && !refs.contains(&message.reply_to))
             || (message.replaces != 0 && !refs.contains(&message.replaces))
             || refs.contains(&message.id)
@@ -401,7 +477,23 @@ pub fn read(path: &Path, destination: &Path) -> Result<Snapshot, Box<dyn std::er
 
 #[cfg(test)]
 mod tests {
-    use super::timestamp;
+    use super::{attachments_for_message, timestamp};
+    #[test]
+    fn imports_inline_qt_document_text_without_opening_a_file() {
+        let snapshot = r#"[{"name":"notes.pdf","mime":"application/pdf","text":"Existing extraction","image":""}]"#;
+        let stored = attachments_for_message("user", snapshot).unwrap();
+        let (text, images) = crate::attachment::parts("query", &stored).unwrap();
+        assert!(text.contains("Existing extraction"));
+        assert!(images.is_empty());
+        assert!(attachments_for_message("assistant", snapshot).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_inline_image_snapshots() {
+        let snapshot = r#"[{"name":"sample.png","mime":"image/png","text":"","image":"AAAA"}]"#;
+        assert!(attachments_for_message("user", snapshot).is_err());
+    }
+
     #[test]
     fn utc_timestamps_validate_calendar_and_leap_days() {
         assert!(timestamp("2024-02-29T23:59:59.999Z"));

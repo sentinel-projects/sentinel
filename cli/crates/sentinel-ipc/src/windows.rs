@@ -483,15 +483,11 @@ mod tests {
     };
     #[test]
     fn full_qt_endpoint_keeps_entire_resolved_path() {
-        let name = pipe_name(Path::new(
-            "C:/Example/Temp/sentinel-daemon-Example",
-        ))
-        .unwrap();
-        let expected: Vec<u16> =
-            OsStr::new(r"\\.\pipe\C:/Example/Temp/sentinel-daemon-Example")
-                .encode_wide()
-                .chain(Some(0))
-                .collect();
+        let name = pipe_name(Path::new("C:/Example/Temp/sentinel-daemon-Example")).unwrap();
+        let expected: Vec<u16> = OsStr::new(r"\\.\pipe\C:/Example/Temp/sentinel-daemon-Example")
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
         assert_eq!(name, expected);
         assert!(pipe_name(Path::new("C:/bad\0name")).is_err());
     }

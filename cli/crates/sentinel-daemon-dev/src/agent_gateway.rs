@@ -85,6 +85,113 @@ pub struct WorkspaceSnapshot {
 }
 
 impl Workspace {
+    /// Bounded binary input for an explicitly selected attachment under the held root.
+    pub fn read_attachment_bytes(
+        &self,
+        path: &str,
+        max_bytes: usize,
+        decision: PermissionDecision,
+    ) -> io::Result<Vec<u8>> {
+        use std::os::unix::fs::MetadataExt;
+        if decision != PermissionDecision::Allow {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "attachment requires authorization",
+            ));
+        }
+        if path.is_empty() || path.len() > 4096 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid attachment path",
+            ));
+        }
+        let parts: Vec<_> = Path::new(path).components().collect();
+        if parts.is_empty()
+            || parts
+                .iter()
+                .any(|part| !matches!(part, Component::Normal(_)))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid attachment path",
+            ));
+        }
+        let mut file = self.0.try_clone()?;
+        let mut parent = None;
+        for (index, part) in parts.iter().enumerate() {
+            let Component::Normal(name) = part else {
+                unreachable!()
+            };
+            let name = CString::new(name.as_bytes())
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid path"))?;
+            let flags = libc::O_RDONLY
+                | libc::O_NONBLOCK
+                | libc::O_NOFOLLOW
+                | libc::O_CLOEXEC
+                | if index + 1 == parts.len() {
+                    0
+                } else {
+                    libc::O_DIRECTORY
+                };
+            if index + 1 == parts.len() {
+                parent = Some((file.try_clone()?, name.clone()));
+            }
+            let fd = unsafe { libc::openat(file.as_raw_fd(), name.as_ptr(), flags) };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            file = unsafe { File::from_raw_fd(fd) };
+        }
+        let before = file.metadata()?;
+        if !before.is_file() || before.nlink() != 1 || before.len() > max_bytes as u64 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "unsafe attachment",
+            ));
+        }
+        let mut bytes = Vec::new();
+        Read::by_ref(&mut file)
+            .take((max_bytes + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        let after = file.metadata()?;
+        let (parent, leaf) = parent.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "invalid attachment path")
+        })?;
+        let mut current = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if unsafe {
+            libc::fstatat(
+                parent.as_raw_fd(),
+                leaf.as_ptr(),
+                current.as_mut_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let current = unsafe { current.assume_init() };
+        if bytes.len() > max_bytes
+            || bytes.len() as u64 != before.len()
+            || before.dev() != after.dev()
+            || before.ino() != after.ino()
+            || before.len() != after.len()
+            || before.mtime() != after.mtime()
+            || before.mtime_nsec() != after.mtime_nsec()
+            || before.ctime() != after.ctime()
+            || before.ctime_nsec() != after.ctime_nsec()
+            || after.nlink() != 1
+            || current.st_mode & libc::S_IFMT != libc::S_IFREG
+            || current.st_nlink != 1
+            || current.st_dev as u64 != before.dev()
+            || current.st_ino as u64 != before.ino()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "attachment changed during read",
+            ));
+        }
+        Ok(bytes)
+    }
     /// Inspect a single existing file or directory without following links.
     pub fn stat_path(&self, args: &Value, decision: PermissionDecision) -> io::Result<Value> {
         use std::os::unix::fs::MetadataExt;

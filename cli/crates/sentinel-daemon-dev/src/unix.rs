@@ -10,15 +10,15 @@ use std::{
     os::{
         fd::AsRawFd,
         unix::{
-            fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
-            net::{UnixListener, UnixStream},
+            fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+            net::{SocketAddr, UnixListener, UnixStream},
         },
     },
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        mpsc::sync_channel,
+        mpsc::{SyncSender, TrySendError, sync_channel},
     },
     thread,
     time::{Duration, Instant},
@@ -26,28 +26,71 @@ use std::{
 
 const CLIENT_LIFETIME: Duration = Duration::from_secs(1800);
 const MAX_CLIENTS: usize = 8;
+const SHUTDOWN_DRAIN: Duration = Duration::from_secs(5);
 const FRAME_LIFETIME: Duration = Duration::from_secs(3);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(3);
 
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
-fn private_directory(path: &Path) -> io::Result<()> {
+fn checked_profile_directory(path: &Path) -> io::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
-    // A development profile is a direct child of /tmp, never a real Sentinel profile.
+    if !metadata.file_type().is_dir()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o7777 != 0o700
+    {
+        return Err(invalid("profile must be an owner-only directory"));
+    }
+    Ok(())
+}
+fn private_directory(path: &Path) -> io::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| invalid("profile needs a parent"))?
         .canonicalize()?;
-    if parent != Path::new("/tmp").canonicalize()?
-        || !metadata.file_type().is_dir()
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o7777 != 0o700
-    {
-        return Err(invalid(
-            "profile must be an existing private owner-owned directory directly under /tmp",
-        ));
+    if parent != Path::new("/tmp").canonicalize()? {
+        return Err(invalid("development profile must be directly under /tmp"));
     }
+    checked_profile_directory(path)?;
+    profile_inventory(path)
+}
+fn persistent_profile_path() -> io::Result<PathBuf> {
+    let path = sentinel_ipc::persistent_rust_profile_path()?;
+    let home = path
+        .parent()
+        .ok_or_else(|| invalid("missing profile parent"))?;
+    let uid = unsafe { libc::geteuid() };
+    if fs::metadata(home)?.uid() != uid {
+        return Err(invalid("HOME must be owned by the current user"));
+    }
+    for directory in home.ancestors() {
+        let metadata = fs::symlink_metadata(directory)?;
+        if !metadata.is_dir()
+            || (metadata.uid() != uid && metadata.uid() != 0)
+            || metadata.mode() & 0o022 != 0
+        {
+            return Err(invalid("unsafe persistent profile parent"));
+        }
+    }
+    SocketAddr::from_pathname(path.join("daemon-dev.sock"))?;
+    Ok(path)
+}
+fn persistent_profile() -> io::Result<PathBuf> {
+    let path = persistent_profile_path()?;
+    match fs::DirBuilder::new().mode(0o700).create(&path) {
+        Ok(()) => File::open(
+            path.parent()
+                .ok_or_else(|| invalid("missing profile parent"))?,
+        )?
+        .sync_all()?,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    checked_profile_directory(&path)?;
+    profile_inventory(&path)?;
+    Ok(path)
+}
+fn profile_inventory(path: &Path) -> io::Result<()> {
     for entry in fs::read_dir(path)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -107,6 +150,42 @@ pub(crate) fn lock_profile(profile: &Path) -> io::Result<File> {
         return Err(io::Error::last_os_error());
     }
     Ok(lock)
+}
+/// Run under the profile lock. Only a refused connection to the same private
+/// socket can authorize removal of a crash residue.
+fn remove_stale_persistent_socket(path: &Path) -> io::Result<()> {
+    let before = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if !before.file_type().is_socket()
+        || before.uid() != unsafe { libc::geteuid() }
+        || before.mode() & 0o7777 != 0o600
+        || before.nlink() != 1
+    {
+        return Err(invalid("unsafe persistent profile endpoint"));
+    }
+    match UnixStream::connect(path) {
+        Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {}
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                "persistent endpoint may be live",
+            ));
+        }
+    }
+    let after = fs::symlink_metadata(path)?;
+    if !after.file_type().is_socket()
+        || before.dev() != after.dev()
+        || before.ino() != after.ino()
+        || before.uid() != after.uid()
+        || before.mode() != after.mode()
+        || before.nlink() != after.nlink()
+    {
+        return Err(invalid("persistent endpoint changed before cleanup"));
+    }
+    fs::remove_file(path)
 }
 struct Endpoint {
     path: PathBuf,
@@ -207,6 +286,7 @@ fn serve(
     state: Arc<Mutex<chat::State>>,
     stopping: Arc<AtomicBool>,
     wake: Arc<UnixStream>,
+    jobs: SyncSender<Option<chat::Job>>,
 ) -> io::Result<()> {
     if peer_uid(&stream)? != unsafe { libc::geteuid() } {
         return Err(io::Error::new(
@@ -252,18 +332,28 @@ fn serve(
             "session-management".into(),
             "dev-backup-export".into(),
             "dev-backup-set".into(),
+            "session-flags".into(),
         ];
-        if state
-            .lock()
-            .map_err(|_| io::Error::other("state lock"))?
-            .has_provider()
         {
-            capabilities.extend([
-                "chat".into(),
-                "events".into(),
-                "model-selection".into(),
-                "chat-revisions".into(),
-            ]);
+            let state = state.lock().map_err(|_| io::Error::other("state lock"))?;
+            if state.has_provider() {
+                capabilities.extend(["chat".into(), "events".into(), "model-selection".into()]);
+                if state.has_cloud_provider() {
+                    capabilities.push("dev-cloud-chat".into());
+                    if state.has_workspace_files() {
+                        capabilities.push("dev-cloud-document-attachments".into());
+                    }
+                    if state.has_cloud_history() {
+                        capabilities.push("dev-cloud-history".into());
+                    }
+                } else {
+                    capabilities.extend([
+                        "dev-local-provider-catalog".into(),
+                        "dev-local-provider-endpoints".into(),
+                        "chat-revisions".into(),
+                    ]);
+                }
+            }
         }
         if state
             .lock()
@@ -284,9 +374,27 @@ fn serve(
         if state
             .lock()
             .map_err(|_| io::Error::other("state lock"))?
+            .has_voice()
+        {
+            capabilities.push("voice".into());
+        }
+        if state
+            .lock()
+            .map_err(|_| io::Error::other("state lock"))?
+            .has_speech_inspection()
+        {
+            capabilities.push("speech-inspection".into());
+        }
+        if state
+            .lock()
+            .map_err(|_| io::Error::other("state lock"))?
             .has_workspace_files()
         {
             capabilities.push("workspace-files".into());
+            capabilities.push("chat-workspace-attachments".into());
+            capabilities.push("chat-attachments-fodt".into());
+            capabilities.push("chat-attachments-docx".into());
+            capabilities.push("chat-attachments-pdf-text".into());
             capabilities.push("workspace-changes".into());
         }
         if state
@@ -324,15 +432,33 @@ fn serve(
         if state
             .lock()
             .map_err(|_| io::Error::other("state lock"))?
-            .has_ollama_operations()
+            .has_configured_ollama()
         {
             capabilities.push("ollama-model-operations".into());
         }
+        if state
+            .lock()
+            .map_err(|_| io::Error::other("state lock"))?
+            .has_image_attachments()
+        {
+            capabilities.push("chat-image-png".into());
+            capabilities.push("chat-image-jpeg-webp".into());
+        }
         dispatcher.set_capabilities(capabilities);
         let deadline = Instant::now() + CLIENT_LIFETIME;
-        loop {
-            wait_input(&reader, deadline)?;
-            let frame = read_frame(&mut reader, deadline.min(Instant::now() + FRAME_LIFETIME))?;
+        let hello_deadline = deadline.min(Instant::now() + FRAME_LIFETIME);
+        let mut hello_received = false;
+        while !stopping.load(Ordering::SeqCst) {
+            let input_deadline = if hello_received {
+                deadline
+            } else {
+                hello_deadline
+            };
+            wait_input(&reader, input_deadline)?;
+            let frame = read_frame(
+                &mut reader,
+                input_deadline.min(Instant::now() + FRAME_LIFETIME),
+            )?;
             let mut state_guard = Some(state.lock().map_err(|_| io::Error::other("state lock"))?);
             let mut job = None;
             let (active, sessions) = state_guard.as_ref().unwrap().counts();
@@ -351,7 +477,7 @@ fn serve(
                 ) {
                     let (config, generation) = state_guard.as_ref().unwrap().discovery_config()?;
                     drop(state_guard.take());
-                    let models = crate::provider::discover_models(&config, &AtomicBool::new(false))
+                    let models = crate::provider::discover_models(&config, &stopping)
                         .map_err(|_| "provider-unavailable")?;
                     state
                         .lock()
@@ -413,6 +539,8 @@ fn serve(
                         .handle(request, &peer, &mut job)
                 }
             });
+            hello_received |=
+                reply.name == "hello" && reply.kind == sentinel_ipc::MessageType::Response;
             let mut state_guard = match state_guard {
                 Some(guard) => guard,
                 None => state.lock().map_err(|_| io::Error::other("state lock"))?,
@@ -424,12 +552,17 @@ fn serve(
             bytes.push(b'\n');
             if dispatcher.shutdown_requested() {
                 state_guard.stop();
-                peer.send_confirm(bytes)?;
                 stopping.store(true, Ordering::SeqCst);
-                wake.shutdown(std::net::Shutdown::Write)?;
-                return Ok(());
+                drop(state_guard);
+                let delivery = peer.send_confirm(bytes);
+                let notified = wake.shutdown(std::net::Shutdown::Write);
+                delivery?;
+                return notified;
             }
-            let delivery = if matches!(reply.name.as_str(), "run.cancel" | "approval.respond")
+            let agent_admission =
+                reply.name == "agent.start" && reply.kind == sentinel_ipc::MessageType::Response;
+            let delivery = if (agent_admission
+                || matches!(reply.name.as_str(), "run.cancel" | "approval.respond"))
                 && reply.kind == sentinel_ipc::MessageType::Response
             {
                 peer.send_confirm(bytes)
@@ -441,13 +574,28 @@ fn serve(
             } else {
                 state_guard.discard_approval();
             }
-            if let Some(job) = job {
-                state_guard.start(&job);
+            if let Some(voice_job) = state_guard.take_voice_job() {
                 let state = state.clone();
-                thread::spawn(move || chat::worker(state, job));
+                thread::spawn(move || chat::voice_worker(state, voice_job));
+            }
+            if let Some(job) = job {
+                if agent_admission && delivery.is_err() {
+                    job.cancel_before_dispatch();
+                } else {
+                    state_guard.start(&job);
+                }
+                if let Err(TrySendError::Full(Some(job)) | TrySendError::Disconnected(Some(job))) =
+                    jobs.try_send(Some(job))
+                {
+                    job.cancel_before_dispatch();
+                    drop(state_guard);
+                    chat::worker(state.clone(), job);
+                    return Err(io::Error::other("runtime worker unavailable"));
+                }
             }
             delivery?;
         }
+        Ok(())
     })();
     if let Ok(mut guard) = state.lock() {
         guard.drop_peer(&peer);
@@ -472,22 +620,132 @@ fn try_acquire_client(clients: &AtomicUsize) -> bool {
 pub fn run() -> io::Result<()> {
     let mut args = env::args_os();
     let _ = args.next();
-    if args.next().as_deref() != Some(std::ffi::OsStr::new("--profile")) {
+    let profile_option = args.next();
+    let persistent =
+        profile_option.as_deref() == Some(std::ffi::OsStr::new("--persistent-profile"));
+    if !persistent && profile_option.as_deref() != Some(std::ffi::OsStr::new("--profile")) {
         return Err(invalid(
-            "usage: sentinel-daemon-dev --profile /tmp/PRIVATE_DIRECTORY [--provider ORIGIN --model ID [--context-window-tokens N] [--provider-kind ID] [--agent-workspace PATH [--workspace ID PATH]... [--agent-approval required|workspace] [--agent-process]] | --restore-dev-set /tmp/SOURCE/SET | --restore-dev-settings-copy /tmp/SOURCE/COPY.sqlite3 | --import-qt-copy /tmp/SOURCE/COPY.sqlite3 | --import-qt-memory-copy /tmp/SOURCE/COPY.sqlite3]",
+            "usage: sentinel-daemon-dev (--profile /tmp/PRIVATE_DIRECTORY | --persistent-profile) [--provider ORIGIN --model ID [--context-window-tokens N [--image-token-upper-bound N]] [--provider-kind ID] [--provider-config KIND ORIGIN MODEL]... [--agent-workspace PATH [--workspace ID PATH]... [--agent-approval required|workspace] [--agent-process]] [--speech-binary PATH --speech-binary-sha256 HEX --speech-model PATH --speech-model-sha256 HEX [--speech-execution]] | --cloud-provider KIND MODEL PRIVATE_KEY_FILE [--cloud-history] [--cloud-attachment-root PATH] | --cloud-keychain KIND MODEL ACCOUNT [--cloud-history] [--cloud-attachment-root PATH] | --import-qt-preview-subset CONVERSATIONS SETTINGS MEMORY --acknowledge-preview-subset | --check-qt-preview-subset CONVERSATIONS SETTINGS MEMORY | --import-qt-settings-copy /tmp/SOURCE/settings.json | --restore-dev-set /tmp/SOURCE/SET | --restore-dev-settings-copy /tmp/SOURCE/COPY.sqlite3 | --import-qt-copy /tmp/SOURCE/COPY.sqlite3 | --import-qt-memory-copy /tmp/SOURCE/COPY.sqlite3]",
         ));
     }
-    let profile = PathBuf::from(args.next().ok_or_else(|| invalid("missing profile"))?);
-    if !profile.is_absolute() {
+    let profile = if persistent {
+        PathBuf::new()
+    } else {
+        PathBuf::from(args.next().ok_or_else(|| invalid("missing profile"))?)
+    };
+    if !persistent && !profile.is_absolute() {
         return Err(invalid("profile must be an absolute path"));
     }
     let next = args.next();
+    if persistent
+        && next.as_ref().is_some_and(|arg| {
+            arg != "--provider"
+                && arg != "--cloud-openai"
+                && arg != "--cloud-openai-keychain"
+                && arg != "--cloud-provider"
+                && arg != "--cloud-keychain"
+                && arg != "--restore-dev-set"
+                && arg != "--import-qt-preview-subset"
+                && arg != "--check-qt-preview-subset"
+        })
+    {
+        return Err(invalid("option unavailable for persistent profiles"));
+    }
+    let check_preview = next.as_deref() == Some(std::ffi::OsStr::new("--check-qt-preview-subset"));
+    if check_preview || next.as_deref() == Some(std::ffi::OsStr::new("--import-qt-preview-subset"))
+    {
+        let conversations = PathBuf::from(
+            args.next()
+                .ok_or_else(|| invalid("missing conversations copy"))?,
+        );
+        let settings = PathBuf::from(
+            args.next()
+                .ok_or_else(|| invalid("missing settings copy"))?,
+        );
+        let memory = PathBuf::from(args.next().ok_or_else(|| invalid("missing memory copy"))?);
+        if !check_preview
+            && args.next().as_deref() != Some(std::ffi::OsStr::new("--acknowledge-preview-subset"))
+        {
+            return Err(invalid(
+                "preview import requires explicit subset acknowledgement",
+            ));
+        }
+        if args.next().is_some() {
+            return Err(invalid("unexpected preview argument"));
+        }
+        let destination = if persistent {
+            persistent_profile_path()?
+        } else {
+            profile
+        };
+        let report = crate::qt_preview_import::import(
+            &destination,
+            &conversations,
+            &settings,
+            &memory,
+            persistent,
+            if check_preview {
+                crate::qt_preview_import::Mode::Check
+            } else {
+                crate::qt_preview_import::Mode::Publish
+            },
+        )
+        .map_err(|error| io::Error::other(format!("Qt preview import failed: {error}")))?;
+        if report.settings.skipped_theme {
+            println!("Unsupported Qt theme was skipped; no theme approximation was applied.");
+        }
+        let outcome = if check_preview {
+            "Validated preview subset without publishing a profile"
+        } else {
+            "Imported preview subset"
+        };
+        println!(
+            "{outcome}: {} conversations ({} archived, {} pinned), {} messages, {} session memories, {} preferences. {} Excluded: other Qt settings, credentials, Agent runs, permissions, chat history, IPC projections, workspace/global memory and other stores.",
+            report.conversations,
+            report.archived,
+            report.pinned,
+            report.messages,
+            report.memory,
+            report.settings.preferences,
+            report.settings.binding.summary(),
+        );
+        return Ok(());
+    }
+    if next.as_deref() == Some(std::ffi::OsStr::new("--import-qt-settings-copy")) {
+        let source = PathBuf::from(
+            args.next()
+                .ok_or_else(|| invalid("missing Qt settings copy"))?,
+        );
+        if args.next().is_some() {
+            return Err(invalid("unexpected argument"));
+        }
+        private_directory(&profile)?;
+        let profile = profile.canonicalize()?;
+        let _lock = lock_profile(&profile)?;
+        match fs::symlink_metadata(profile.join("daemon-dev.sock")) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            _ => return Err(invalid("destination endpoint exists")),
+        }
+        let report = crate::qt_settings_import::import(&profile, &source)
+            .map_err(|_| invalid("unsupported Qt settings copy or existing destination setting"))?;
+        println!(
+            "Imported {} supported preferences. {} Other Qt settings and credentials were excluded.",
+            report.preferences,
+            report.binding.summary(),
+        );
+        return Ok(());
+    }
     if next.as_deref() == Some(std::ffi::OsStr::new("--restore-dev-set")) {
         let source = PathBuf::from(args.next().ok_or_else(|| invalid("missing snapshot set"))?);
         if args.next().is_some() {
             return Err(invalid("unexpected argument"));
         }
-        crate::set_restore::restore(&profile, &source).map_err(|error| {
+        let destination = if persistent {
+            persistent_profile_path()?
+        } else {
+            profile
+        };
+        crate::set_restore::restore(&destination, &source, persistent).map_err(|error| {
             io::Error::other(format!("development snapshot restore failed: {error}"))
         })?;
         println!("Restored development profile snapshot set");
@@ -610,11 +868,61 @@ pub fn run() -> io::Result<()> {
     }
     let mut agent_workspace = None;
     let mut plugin_root = None;
+    let mut speech_binary = None;
+    let mut speech_binary_hash = None;
+    let mut speech_model = None;
+    let mut speech_model_hash = None;
+    let mut speech_execution = false;
     let mut extra_workspaces: Vec<(String, PathBuf)> = Vec::new();
     let mut process_enabled = false;
     let mut approval_required = false;
     let mut seen_approval = false;
-    let mut provider = if let Some(flag) = next {
+    let mut other_providers = Vec::new();
+    let mut cloud_key_path = None;
+    let cloud_flag = next.as_deref().and_then(std::ffi::OsStr::to_str);
+    let mut provider = if matches!(
+        cloud_flag,
+        Some(
+            "--cloud-openai" | "--cloud-openai-keychain" | "--cloud-provider" | "--cloud-keychain"
+        )
+    ) {
+        let mut string_arg = || {
+            args.next()
+                .and_then(|value| value.into_string().ok())
+                .ok_or_else(|| invalid("missing cloud provider argument"))
+        };
+        let kind = if matches!(cloud_flag, Some("--cloud-provider" | "--cloud-keychain")) {
+            string_arg()?
+        } else {
+            "openai".into()
+        };
+        let model = string_arg()?;
+        if matches!(
+            cloud_flag,
+            Some("--cloud-openai-keychain" | "--cloud-keychain")
+        ) {
+            #[cfg(not(target_os = "macos"))]
+            return Err(invalid("cloud Keychain credentials require macOS"));
+            #[cfg(target_os = "macos")]
+            {
+                let account = string_arg()?;
+                Some(
+                    Config::cloud_keychain(&kind, &model, &account)
+                        .map_err(|error| invalid(&error.to_string()))?,
+                )
+            }
+        } else {
+            let key_file = PathBuf::from(
+                args.next()
+                    .ok_or_else(|| invalid("missing cloud key file"))?,
+            );
+            cloud_key_path = Some(key_file.canonicalize()?);
+            Some(
+                Config::cloud(&kind, &model, &key_file)
+                    .map_err(|error| invalid(&error.to_string()))?,
+            )
+        }
+    } else if let Some(flag) = next {
         if flag != "--provider" {
             return Err(invalid("expected --provider"));
         }
@@ -631,6 +939,7 @@ pub fn run() -> io::Result<()> {
             .ok_or_else(|| invalid("missing model"))?;
         let mut config = Config::parse(&endpoint, &model)
             .map_err(|_| invalid("invalid provider configuration"))?;
+        let mut vision_tokens = None;
         let mut seen_context = false;
         let mut seen_kind = false;
         while let Some(flag) = args.next() {
@@ -649,6 +958,28 @@ pub fn run() -> io::Result<()> {
                 config = config
                     .with_context_window(tokens)
                     .map_err(|_| invalid("invalid context window"))?;
+            } else if flag == "--image-token-upper-bound" && vision_tokens.is_none() {
+                vision_tokens = Some(
+                    args.next()
+                        .and_then(|v| v.to_str()?.parse::<usize>().ok())
+                        .ok_or_else(|| invalid("invalid image token upper bound"))?,
+                );
+            } else if flag == "--provider-config"
+                && other_providers.len() < crate::provider_catalog::MAX_CONFIGURED_PROVIDERS - 1
+            {
+                let mut value = || {
+                    args.next()
+                        .and_then(|v| v.into_string().ok())
+                        .ok_or_else(|| invalid("expected --provider-config KIND ORIGIN MODEL"))
+                };
+                let kind = value()?;
+                let endpoint = value()?;
+                let model = value()?;
+                other_providers.push(
+                    Config::parse(&endpoint, &model)
+                        .and_then(|config| config.with_provider_kind(&kind))
+                        .map_err(|_| invalid("invalid additional provider configuration"))?,
+                );
             } else if flag == "--provider-kind" && !seen_kind {
                 seen_kind = true;
                 let kind = args
@@ -666,6 +997,29 @@ pub fn run() -> io::Result<()> {
                     Some("workspace") => false,
                     _ => return Err(invalid("invalid Agent approval mode")),
                 };
+            } else if flag == "--speech-execution" && !speech_execution {
+                speech_execution = true;
+            } else if flag == "--speech-binary" && speech_binary.is_none() {
+                speech_binary = Some(PathBuf::from(
+                    args.next()
+                        .ok_or_else(|| invalid("missing speech binary"))?,
+                ));
+            } else if flag == "--speech-binary-sha256" && speech_binary_hash.is_none() {
+                speech_binary_hash = Some(
+                    args.next()
+                        .and_then(|v| v.into_string().ok())
+                        .ok_or_else(|| invalid("missing speech binary hash"))?,
+                );
+            } else if flag == "--speech-model" && speech_model.is_none() {
+                speech_model = Some(PathBuf::from(
+                    args.next().ok_or_else(|| invalid("missing speech model"))?,
+                ));
+            } else if flag == "--speech-model-sha256" && speech_model_hash.is_none() {
+                speech_model_hash = Some(
+                    args.next()
+                        .and_then(|v| v.into_string().ok())
+                        .ok_or_else(|| invalid("missing speech model hash"))?,
+                );
             } else if flag == "--plugin-root" && plugin_root.is_none() {
                 let path =
                     PathBuf::from(args.next().ok_or_else(|| invalid("missing plugin root"))?);
@@ -708,23 +1062,79 @@ pub fn run() -> io::Result<()> {
                 return Err(invalid("unknown or duplicate option"));
             }
         }
+        if let Some(tokens) = vision_tokens {
+            if !seen_context {
+                return Err(invalid(
+                    "image token upper bound requires explicit context window",
+                ));
+            }
+            config = config
+                .with_vision_budget(tokens)
+                .map_err(|_| invalid("invalid vision configuration"))?;
+        }
         Some(config)
     } else {
         None
     };
-    if args.next().is_some() {
-        return Err(invalid("unexpected argument"));
+    while let Some(flag) = args.next() {
+        let config = provider
+            .as_mut()
+            .filter(|config| config.is_cloud())
+            .ok_or_else(|| invalid("unexpected argument"))?;
+        if flag == "--cloud-history" && !config.cloud_history {
+            config.cloud_history = true;
+        } else if flag == "--cloud-attachment-root" && agent_workspace.is_none() {
+            let root = PathBuf::from(
+                args.next()
+                    .ok_or_else(|| invalid("missing cloud attachment root"))?,
+            );
+            if !root.is_absolute() {
+                return Err(invalid("cloud attachment root must be absolute"));
+            }
+            agent_workspace = Some(root);
+        } else {
+            return Err(invalid("unknown or duplicate cloud option"));
+        }
     }
     if (seen_approval || process_enabled || !extra_workspaces.is_empty())
         && agent_workspace.is_none()
     {
         return Err(invalid("Agent approval mode requires workspace"));
     }
-    private_directory(&profile)?;
-    let profile = profile.canonicalize()?;
+    let speech_inspection = match (
+        speech_binary,
+        speech_binary_hash,
+        speech_model,
+        speech_model_hash,
+    ) {
+        (None, None, None, None) => None,
+        (Some(binary), Some(binary_hash), Some(model), Some(model_hash)) => Some(
+            crate::speech_inspection::inspect_pair(&binary, &binary_hash, &model, &model_hash)
+                .map_err(|_| invalid("speech artifact inspection failed"))?,
+        ),
+        _ => {
+            return Err(invalid(
+                "speech inspection requires both paths and both SHA-256 hashes",
+            ));
+        }
+    };
+    if speech_execution && (speech_inspection.is_none() || !crate::speech_runner::available()) {
+        return Err(invalid(
+            "speech execution requires inspected artifacts and macOS",
+        ));
+    }
+    let profile = if persistent {
+        persistent_profile()?
+    } else {
+        private_directory(&profile)?;
+        profile.canonicalize()?
+    };
     let _lock = lock_profile(&profile)?;
-    // bind never unlinks a pre-existing file or socket, including crash-stale sockets.
     let path = profile.join("daemon-dev.sock");
+    if persistent {
+        profile_inventory(&profile)?;
+        remove_stale_persistent_socket(&path)?;
+    }
     let listener = UnixListener::bind(&path)?;
     let meta = fs::symlink_metadata(&path)?;
     let _endpoint = Endpoint {
@@ -735,12 +1145,36 @@ pub fn run() -> io::Result<()> {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
     let settings = crate::settings::Settings::open(&profile)
         .map_err(|_| invalid("development settings unavailable"))?;
-    if let Some(config) = &mut provider
-        && let Some(model) = settings
+    let startup_providers =
+        crate::provider_catalog::validate(provider.into_iter().chain(other_providers).collect())
+            .map_err(invalid)?;
+    let mut providers = startup_providers.clone();
+    let preferences = settings
+        .desktop_values()
+        .map_err(|_| invalid("development settings unavailable"))?;
+    for (key, provider_id) in crate::provider_catalog::ENDPOINT_KEYS {
+        if let Some((startup, endpoint)) = preferences[key]
+            .as_str()
+            .and_then(crate::provider_catalog::endpoint_override)
+            && let Some(config) = providers
+                .iter_mut()
+                .find(|config| config.provider_id == provider_id && config.endpoint == startup)
+        {
+            *config = crate::provider_catalog::rebind(config, &endpoint)
+                .map_err(|_| invalid("development provider settings unavailable"))?;
+        }
+    }
+    let mut provider = providers.first().cloned();
+    for config in &providers {
+        if let Some(model) = settings
             .restore(config)
             .map_err(|_| invalid("development settings unavailable"))?
-    {
-        config.model = model;
+        {
+            let mut selected = config.clone();
+            selected.model = model;
+            provider = Some(selected);
+            break;
+        }
     }
     let mut workspaces = Vec::new();
     if let Some(path) = agent_workspace {
@@ -753,6 +1187,16 @@ pub fn run() -> io::Result<()> {
                 .into_os_string()
                 .into_string()
                 .map_err(|_| invalid("workspace path is not UTF-8"))?;
+            if provider.as_ref().is_some_and(Config::is_cloud)
+                && (profile.starts_with(&root)
+                    || cloud_key_path
+                        .as_ref()
+                        .is_some_and(|path| path.starts_with(&root)))
+            {
+                return Err(invalid(
+                    "cloud attachment root contains profile data or the API key file",
+                ));
+            }
             if !crate::settings::valid_workspace_binding(&id, &root)
                 || workspaces
                     .iter()
@@ -776,55 +1220,15 @@ pub fn run() -> io::Result<()> {
         .or_else(|| workspaces.first().map(|w| w.id.clone()));
     let memory = crate::memory::MemoryStore::open(&profile)
         .map_err(|_| invalid("development memory unavailable"))?;
-    let mut agent_store = crate::agent_store::AgentStore::open(&profile)
+    let agent_store = crate::agent_store::AgentStore::open(&profile)
         .map_err(|_| invalid("development Agent audit unavailable"))?;
     let mut store = crate::store::Store::open_deferred(&profile)
         .map_err(|_| invalid("development store unavailable"))?;
-    let pending = agent_store
-        .pending()
-        .map_err(|_| invalid("development Agent audit unavailable"))?;
-    for session in store
-        .load()
-        .map_err(|_| invalid("development store unavailable"))?
-    {
-        if let Some(owner) = agent_store
-            .owner(&session.run_id)
-            .map_err(|_| invalid("development Agent audit unavailable"))?
-            && owner != session.id
-        {
-            return Err(invalid("Agent projection identity mismatch"));
-        }
-    }
-    for id in &pending {
-        let owner = agent_store
-            .owner(id)
-            .map_err(|_| invalid("development Agent recovery failed"))?
-            .ok_or_else(|| invalid("missing Agent recovery owner"))?;
-        store
-            .validate_agent_owner(id, &owner)
-            .map_err(|_| invalid("Agent recovery identity mismatch"))?;
-    }
+    crate::store::Store::recover_agent_runs(&profile)
+        .map_err(|_| invalid("development Agent recovery failed"))?;
     store
         .recover_interrupted()
         .map_err(|_| invalid("development Chat recovery failed"))?;
-    for id in pending {
-        let owner = agent_store
-            .owner(&id)
-            .map_err(|_| invalid("development Agent recovery failed"))?
-            .ok_or_else(|| invalid("missing Agent recovery owner"))?;
-        store
-            .validate_agent_owner(&id, &owner)
-            .map_err(|_| invalid("Agent recovery identity mismatch"))?;
-        let possible_write = agent_store
-            .may_have_written(&id)
-            .map_err(|_| invalid("development Agent recovery failed"))?;
-        store
-            .invalidate_agent(&id, possible_write)
-            .map_err(|_| invalid("development Agent recovery failed"))?;
-        agent_store
-            .recover(&id)
-            .map_err(|_| invalid("development Agent recovery failed"))?;
-    }
     let mut daemon_state = chat::State::new(
         provider,
         store,
@@ -840,66 +1244,133 @@ pub fn run() -> io::Result<()> {
         profile.clone(),
     )
     .map_err(|_| invalid("development store unavailable"))?;
+    daemon_state.set_configured_providers(startup_providers, providers);
     if let Some(root) = plugin_root {
         daemon_state.set_plugin_root(Arc::new(crate::agent_gateway::Workspace::open(&root)?));
     }
+    if let Some(inspection) = speech_inspection {
+        daemon_state.set_speech_inspection(inspection);
+    }
+    if speech_execution {
+        daemon_state.enable_speech_execution();
+    }
     let state = Arc::new(Mutex::new(daemon_state));
     listener.set_nonblocking(true)?;
+    let (jobs, pending_jobs) = sync_channel::<Option<chat::Job>>(1);
+    let worker_state = state.clone();
+    let run_worker = thread::Builder::new()
+        .name("sentinel-run-worker".into())
+        .spawn(move || {
+            while let Ok(Some(job)) = pending_jobs.recv() {
+                chat::worker(worker_state.clone(), job);
+            }
+        })?;
     let started = Instant::now();
     let stopping = Arc::new(AtomicBool::new(false));
     let clients = Arc::new(AtomicUsize::new(0));
     let (wake_read, wake_write) = UnixStream::pair()?;
     let wake_write = Arc::new(wake_write);
-    while !stopping.load(Ordering::SeqCst) {
-        let mut fds = [
-            libc::pollfd {
-                fd: listener.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: wake_read.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-        ];
-        let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
-        if ready < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(error);
-        }
-        if stopping.load(Ordering::SeqCst) {
-            break;
-        }
-        if fds[1].revents != 0 {
-            return Err(io::Error::other("shutdown notification failed"));
-        }
-        if fds[0].revents & libc::POLLIN == 0 {
-            return Err(io::Error::other("listener poll failed"));
-        }
-        match listener.accept() {
-            Ok((stream, _)) => {
-                if !try_acquire_client(&clients) {
+    let mut signals = signal_hook::iterator::Signals::new([libc::SIGINT, libc::SIGTERM])?;
+    let signal_handle = signals.handle();
+    let signal_worker = {
+        let state = state.clone();
+        let stopping = stopping.clone();
+        let wake = wake_write.clone();
+        thread::Builder::new()
+            .name("sentinel-shutdown-signal".into())
+            .spawn(move || {
+                if signals.forever().next().is_some() {
+                    if let Ok(mut state) = state.lock() {
+                        state.stop();
+                    }
+                    stopping.store(true, Ordering::SeqCst);
+                    let _ = wake.shutdown(std::net::Shutdown::Write);
+                }
+            })?
+    };
+    let accept_result = (|| -> io::Result<()> {
+        while !stopping.load(Ordering::SeqCst) {
+            let mut fds = [
+                libc::pollfd {
+                    fd: listener.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: wake_read.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
+            if ready < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
                     continue;
                 }
-                let state = state.clone();
-                let stopping = stopping.clone();
-                let clients = clients.clone();
-                let wake = wake_write.clone();
-                thread::spawn(move || {
-                    let _ = serve(stream, started, state, stopping, wake);
-                    clients.fetch_sub(1, Ordering::SeqCst);
-                });
+                return Err(error);
             }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
+            if stopping.load(Ordering::SeqCst) {
+                break;
+            }
+            if fds[1].revents != 0 {
+                return Err(io::Error::other("shutdown notification failed"));
+            }
+            if fds[0].revents & libc::POLLIN == 0 {
+                return Err(io::Error::other("listener poll failed"));
+            }
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    if !try_acquire_client(&clients) {
+                        continue;
+                    }
+                    let state = state.clone();
+                    let stopping = stopping.clone();
+                    let clients = clients.clone();
+                    let wake = wake_write.clone();
+                    let jobs = jobs.clone();
+                    thread::spawn(move || {
+                        let _ = serve(stream, started, state, stopping, wake, jobs);
+                        clients.fetch_sub(1, Ordering::SeqCst);
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            }
         }
+        Ok(())
+    })();
+    signal_handle.close();
+    let _ = signal_worker.join();
+    if accept_result.is_err() {
+        state
+            .lock()
+            .map_err(|_| io::Error::other("state lock"))?
+            .stop();
+        stopping.store(true, Ordering::SeqCst);
     }
-    Ok(())
+    // Keep the profile lock until workers have committed their terminal state,
+    // or return a failure so restart recovery can reconcile interrupted runs.
+    let deadline = Instant::now() + SHUTDOWN_DRAIN;
+    while state
+        .lock()
+        .map_err(|_| io::Error::other("state lock"))?
+        .shutdown_pending()?
+    {
+        if Instant::now() >= deadline {
+            return Err(io::Error::other(
+                "runtime workers did not stop before shutdown",
+            ));
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    jobs.try_send(None)
+        .map_err(|_| io::Error::other("runtime worker did not accept shutdown"))?;
+    run_worker
+        .join()
+        .map_err(|_| io::Error::other("runtime worker panicked"))?;
+    accept_result
 }
 
 #[cfg(test)]

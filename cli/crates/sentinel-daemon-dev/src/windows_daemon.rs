@@ -1,6 +1,14 @@
-//! Isolated, non-production Windows development pipe with no storage or Chat.
+//! Isolated Windows development pipe with opt-in local model discovery and Chat.
+#[path = "windows_chat.rs"]
+mod windows_chat;
 use crate::windows_profile;
-use sentinel_ipc::{contract, server::Dispatcher};
+use sentinel_daemon_dev::provider::{self, Config};
+use sentinel_ipc::{
+    Envelope, MessageType,
+    contract::{self, RequestPayload, ResponsePayload},
+    server::Dispatcher,
+};
+use serde_json::json;
 use std::{
     env,
     ffi::OsStr,
@@ -12,8 +20,9 @@ use std::{
     path::PathBuf,
     ptr::{null, null_mut},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
+        mpsc::{SyncSender, TrySendError, sync_channel},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -23,15 +32,10 @@ use windows_sys::Win32::{
         ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, GetLastError,
         INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
     },
-    Security::{
-        ACL, ACL_REVISION, AddAccessAllowedAce, EqualSid, GetLengthSid, GetTokenInformation,
-        InitializeAcl, InitializeSecurityDescriptor, IsValidSid, SE_DACL_PROTECTED,
-        SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR, SetSecurityDescriptorControl,
-        SetSecurityDescriptorDacl, SetSecurityDescriptorOwner, TOKEN_QUERY, TOKEN_USER, TokenUser,
-    },
+    Security::{EqualSid, GetTokenInformation, IsValidSid, TOKEN_QUERY, TOKEN_USER, TokenUser},
     Storage::FileSystem::{
-        FILE_ALL_ACCESS, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX,
-        ReadFile, WriteFile,
+        FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX, ReadFile,
+        WriteFile,
     },
     System::{
         IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
@@ -47,7 +51,7 @@ use windows_sys::Win32::{
 };
 
 const ACCEPT_WAIT: Duration = Duration::from_secs(300);
-const CLIENT_LIFETIME: Duration = Duration::from_secs(15);
+const CLIENT_LIFETIME: Duration = Duration::from_secs(1800);
 const IO_WAIT: Duration = Duration::from_secs(3);
 const CANCEL_GRACE_MS: u32 = 250;
 const MAX_CLIENTS: usize = 8;
@@ -132,46 +136,23 @@ fn create_pipe(name: &OsStr, current: &[usize], first_instance: bool) -> io::Res
         return Err(invalid("invalid pipe name"));
     }
     wide.push(0);
-    // The current SID and ACL buffers remain alive until CreateNamedPipe returns.
-    let sid = unsafe { (*(current.as_ptr().cast::<TOKEN_USER>())).User.Sid };
-    if unsafe { IsValidSid(sid) } == 0 {
-        return Err(invalid("invalid owner SID"));
-    }
-    let acl_len = (std::mem::size_of::<ACL>() + 64 + unsafe { GetLengthSid(sid) } as usize)
-        .next_multiple_of(std::mem::size_of::<usize>());
-    let mut acl = vec![0usize; acl_len / std::mem::size_of::<usize>()];
-    let acl_ptr = acl.as_mut_ptr().cast::<ACL>();
-    let mut descriptor = SECURITY_DESCRIPTOR::default();
-    let sd = (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast();
-    if unsafe { InitializeSecurityDescriptor(sd, 1) } == 0
-        || unsafe { InitializeAcl(acl_ptr, acl_len as u32, ACL_REVISION) } == 0
-        || unsafe { AddAccessAllowedAce(acl_ptr, ACL_REVISION, FILE_ALL_ACCESS, sid) } == 0
-        || unsafe { SetSecurityDescriptorOwner(sd, sid, 0) } == 0
-        || unsafe { SetSecurityDescriptorDacl(sd, 1, acl_ptr, 0) } == 0
-        || unsafe { SetSecurityDescriptorControl(sd, SE_DACL_PROTECTED, SE_DACL_PROTECTED) } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    let attributes = SECURITY_ATTRIBUTES {
-        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: sd,
-        bInheritHandle: 0,
-    };
     let mut open_mode = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED;
     if first_instance {
         open_mode |= FILE_FLAG_FIRST_PIPE_INSTANCE;
     }
-    owned(unsafe {
-        CreateNamedPipeW(
-            wide.as_ptr(),
-            open_mode,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-            MAX_PIPE_INSTANCES,
-            65536,
-            65536,
-            0,
-            &attributes,
-        )
+    windows_profile::with_owner_only_security(current, |attributes| {
+        owned(unsafe {
+            CreateNamedPipeW(
+                wide.as_ptr(),
+                open_mode,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                MAX_PIPE_INSTANCES,
+                65536,
+                65536,
+                0,
+                attributes,
+            )
+        })
     })
 }
 struct Op {
@@ -308,7 +289,12 @@ impl Op {
         let _ = self.cancel_and_drain();
         Err(error)
     }
-    fn transfer(mut self, write: bool, deadline: Instant) -> io::Result<Vec<u8>> {
+    fn transfer(
+        mut self,
+        write: bool,
+        deadline: Instant,
+        shutdown: Option<&OwnedHandle>,
+    ) -> io::Result<Vec<u8>> {
         wait_ms(deadline)?;
         let result = unsafe {
             if write {
@@ -330,41 +316,172 @@ impl Op {
             }
         };
         let pending = result == 0 && unsafe { GetLastError() } == ERROR_IO_PENDING;
+        if pending && let Some(shutdown) = shutdown {
+            let handles = [raw(shutdown), raw(&self.event)];
+            // A pending read must be cancelled and drained before its buffers can drop.
+            let timeout = wait_ms(deadline).unwrap_or(0);
+            let wait = unsafe {
+                WaitForMultipleObjects(handles.len() as u32, handles.as_ptr(), 0, timeout)
+            };
+            if wait == WAIT_OBJECT_0 + 1 {
+                return self.finish(true, false, deadline);
+            }
+            let error = match wait {
+                WAIT_OBJECT_0 => io::Error::new(io::ErrorKind::Interrupted, "daemon shutdown"),
+                WAIT_TIMEOUT => io::Error::new(io::ErrorKind::TimedOut, "pipe read deadline"),
+                WAIT_FAILED => io::Error::last_os_error(),
+                _ => io::Error::other("unexpected named-pipe read wait result"),
+            };
+            let _ = self.cancel_and_drain()?;
+            return Err(error);
+        }
         self.finish(result != 0, pending, deadline)
     }
 }
-fn serve(pipe: Arc<OwnedHandle>, started: Instant, shutdown: &OwnedHandle) -> io::Result<bool> {
+
+fn discover_models(
+    chat: &Mutex<windows_chat::State>,
+    cancel: &AtomicBool,
+) -> Result<ResponsePayload, &'static str> {
+    let (config, epoch) = chat
+        .lock()
+        .map_err(|_| "runtime-unavailable")?
+        .start_discovery()?;
+    let models = provider::discover_models(&config, cancel).map_err(|_| "provider-unavailable")?;
+    chat.lock()
+        .map_err(|_| "runtime-unavailable")?
+        .install_catalog(models, epoch)
+}
+
+struct Peer {
+    pipe: Arc<OwnedHandle>,
+    writer: Mutex<()>,
+    alive: AtomicBool,
+    deadline: Instant,
+}
+impl Peer {
+    fn write(&self, envelope: &Envelope) -> io::Result<()> {
+        let _write = self
+            .writer
+            .lock()
+            .map_err(|_| invalid("pipe writer unavailable"))?;
+        self.write_locked(envelope, Duration::from_millis(350))
+    }
+
+    fn write_locked(&self, envelope: &Envelope, timeout: Duration) -> io::Result<()> {
+        if !self.alive.load(Ordering::Relaxed) {
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "pipe closed"));
+        }
+        let mut bytes = serde_json::to_vec(envelope)?;
+        if bytes.len() + 1 > contract::MAX_FRAME_BYTES {
+            return Err(invalid("reply too large"));
+        }
+        bytes.push(b'\n');
+        let write_deadline = self.deadline.min(Instant::now() + timeout);
+        let mut offset = 0;
+        while offset < bytes.len() {
+            if let Ok(written) = Op::new(self.pipe.clone(), bytes[offset..].to_vec())
+                .and_then(|operation| operation.transfer(true, write_deadline, None))
+                && !written.is_empty()
+            {
+                offset += written.len();
+            } else {
+                // A partial frame may already have reached the peer.
+                self.alive.store(false, Ordering::Relaxed);
+                unsafe {
+                    DisconnectNamedPipe(raw(&self.pipe));
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "pipe write failed",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn serve(
+    peer: Arc<Peer>,
+    started: Instant,
+    shutdown: &OwnedHandle,
+    cancel: &AtomicBool,
+    chat: &Mutex<windows_chat::State>,
+    jobs: &SyncSender<windows_chat::Job>,
+) -> io::Result<bool> {
     let mut dispatcher = Dispatcher::with_started(started);
     dispatcher.allow_shutdown();
-    let deadline = Instant::now() + CLIENT_LIFETIME;
+    let mut capabilities = vec![json!("terminal-state")];
+    if chat
+        .lock()
+        .map_err(|_| invalid("Chat state unavailable"))?
+        .has_provider()
+    {
+        capabilities.extend([
+            json!("model-discovery"),
+            json!("model-selection"),
+            json!("chat"),
+            json!("events"),
+        ]);
+    }
+    capabilities.extend([
+        json!("sessions"),
+        json!("session-messages"),
+        json!("session-management"),
+    ]);
+    dispatcher.set_capabilities(capabilities);
+    let deadline = peer.deadline;
+    let hello_deadline = deadline.min(Instant::now() + IO_WAIT);
+    let mut frame_deadline = Some(hello_deadline);
+    let mut handshaken = false;
     let mut incoming = Vec::new();
     loop {
         while let Some(end) = incoming.iter().position(|b| *b == b'\n') {
+            if unsafe { WaitForSingleObject(raw(shutdown), 0) } == WAIT_OBJECT_0 {
+                return Ok(false);
+            }
+            wait_ms(frame_deadline.unwrap_or(deadline))?;
             if end + 1 > contract::MAX_FRAME_BYTES {
                 return Err(invalid("frame too large"));
             }
             let frame: Vec<u8> = incoming.drain(..=end).collect();
-            let reply = dispatcher.dispatch(&frame);
-            let shutdown_requested = dispatcher.shutdown_requested();
-            let write_result = (|| -> io::Result<()> {
-                let mut bytes = serde_json::to_vec(&reply)?;
-                if bytes.len() + 1 > contract::MAX_FRAME_BYTES {
-                    return Err(invalid("reply too large"));
-                }
-                bytes.push(b'\n');
-                let write_deadline = deadline.min(Instant::now() + IO_WAIT);
-                let mut offset = 0;
-                while offset < bytes.len() {
-                    let written = Op::new(pipe.clone(), bytes[offset..].to_vec())?
-                        .transfer(true, write_deadline)?
-                        .len();
-                    if written == 0 {
-                        return Err(io::Error::new(io::ErrorKind::WriteZero, "pipe closed"));
+            let mut job = None;
+            let (write_result, shutdown_requested) = {
+                // Serialize the ACK with events. An attaching client sees either the
+                // last event in its snapshot or the event after the ACK.
+                let _write = peer
+                    .writer
+                    .lock()
+                    .map_err(|_| invalid("pipe writer unavailable"))?;
+                let (active, sessions) = chat
+                    .lock()
+                    .map_err(|_| invalid("Chat state unavailable"))?
+                    .counts();
+                dispatcher.set_counts(active, sessions);
+                let reply = dispatcher.dispatch_with(&frame, |request| match request {
+                    RequestPayload::ModelList {} => discover_models(chat, cancel),
+                    _ => chat
+                        .lock()
+                        .map_err(|_| "runtime-unavailable")?
+                        .dispatch(request, &peer, &mut job),
+                });
+                handshaken |= reply.kind == MessageType::Response && reply.name == "hello";
+                (
+                    peer.write_locked(&reply, IO_WAIT),
+                    dispatcher.shutdown_requested(),
+                )
+            };
+            if let Some(job) = job {
+                if write_result.is_ok() && !cancel.load(Ordering::Relaxed) {
+                    if let Err(TrySendError::Full(job) | TrySendError::Disconnected(job)) =
+                        jobs.try_send(job)
+                    {
+                        windows_chat::reject_unacknowledged(chat, &job);
                     }
-                    offset += written;
+                } else {
+                    windows_chat::reject_unacknowledged(chat, &job);
                 }
-                Ok(())
-            })();
+            }
             // Once shutdown was accepted, wake the accept loop after the bounded ACK
             // attempt even when delivery is ambiguous or the peer closes early.
             if shutdown_requested {
@@ -380,11 +497,22 @@ fn serve(pipe: Arc<OwnedHandle>, started: Instant, shutdown: &OwnedHandle) -> io
         if incoming.len() >= contract::MAX_FRAME_BYTES {
             return Err(invalid("frame too large"));
         }
-        let chunk = Op::new(pipe.clone(), vec![0; 4096])?
-            .transfer(false, deadline.min(Instant::now() + IO_WAIT))?;
+        if incoming.is_empty() {
+            frame_deadline = if handshaken {
+                None
+            } else {
+                Some(hello_deadline)
+            };
+        }
+        let chunk = Op::new(peer.pipe.clone(), vec![0; 4096])?.transfer(
+            false,
+            frame_deadline.unwrap_or(deadline),
+            Some(shutdown),
+        )?;
         if chunk.is_empty() {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "pipe closed"));
         }
+        frame_deadline.get_or_insert_with(|| deadline.min(Instant::now() + IO_WAIT));
         incoming.extend_from_slice(&chunk);
     }
 }
@@ -393,17 +521,67 @@ pub fn run() -> io::Result<()> {
     let _ = args.next();
     if args.next().as_deref() != Some(OsStr::new("--profile")) {
         return Err(invalid(
-            "usage: sentinel-daemon-dev --profile PRIVATE_TEMP_DIRECTORY",
+            "usage: sentinel-daemon-dev --profile PRIVATE_TEMP_DIRECTORY [--provider ORIGIN --model ID [--provider-kind ID]]",
         ));
     }
     let profile = PathBuf::from(args.next().ok_or_else(|| invalid("missing profile"))?);
+    let mut config = if let Some(flag) = args.next() {
+        if flag != "--provider" {
+            return Err(invalid("expected --provider"));
+        }
+        let origin = args
+            .next()
+            .and_then(|value| value.into_string().ok())
+            .ok_or_else(|| invalid("missing provider origin"))?;
+        if args.next().as_deref() != Some(OsStr::new("--model")) {
+            return Err(invalid("expected --model"));
+        }
+        let model = args
+            .next()
+            .and_then(|value| value.into_string().ok())
+            .ok_or_else(|| invalid("missing model"))?;
+        let mut config = Config::parse(&origin, &model)
+            .map_err(|_| invalid("invalid provider configuration"))?;
+        if let Some(flag) = args.next() {
+            if flag != "--provider-kind" {
+                return Err(invalid("expected --provider-kind"));
+            }
+            let kind = args
+                .next()
+                .and_then(|value| value.into_string().ok())
+                .ok_or_else(|| invalid("missing provider kind"))?;
+            config = config
+                .with_provider_kind(&kind)
+                .map_err(|_| invalid("invalid provider kind"))?;
+        }
+        Some(config)
+    } else {
+        None
+    };
     if args.next().is_some() {
-        return Err(invalid("unexpected arguments; Windows Chat is unavailable"));
+        return Err(invalid("unexpected argument"));
     }
-    let guard = windows_profile::acquire(&profile)?;
+    let guard = Arc::new(windows_profile::acquire(&profile)?);
+    if let Some(saved) = guard.load_model()?
+        && let Some(config) = config.as_mut()
+        && saved.endpoint == config.endpoint
+        && saved.provider_id == config.provider_id
+    {
+        config.model = saved.model;
+    }
     let current = windows_profile::current_user_sid()?;
     let started = Instant::now();
     let shutdown = Arc::new(owned(unsafe { CreateEventW(null(), 1, 0, null()) })?);
+    let cancel_discovery = Arc::new(AtomicBool::new(false));
+    let chat = Arc::new(Mutex::new(windows_chat::State::load(
+        config,
+        Arc::clone(&guard),
+    )?));
+    let (jobs, pending_jobs) = sync_channel(1);
+    let worker_chat = Arc::clone(&chat);
+    let chat_worker = thread::Builder::new()
+        .name("sentinel-windows-chat".into())
+        .spawn(move || windows_chat::worker(worker_chat, pending_jobs))?;
     let mut workers: Vec<JoinHandle<io::Result<bool>>> = Vec::new();
     let result = (|| -> io::Result<()> {
         let mut first_instance = true;
@@ -463,19 +641,35 @@ pub fn run() -> io::Result<()> {
                         }
                         continue;
                     }
-                    let peer = connected.clone();
+                    let peer = Arc::new(Peer {
+                        pipe: connected.clone(),
+                        writer: Mutex::new(()),
+                        alive: AtomicBool::new(true),
+                        deadline: Instant::now() + CLIENT_LIFETIME,
+                    });
                     let peer_shutdown = shutdown.clone();
+                    let peer_cancel = cancel_discovery.clone();
+                    let peer_chat = chat.clone();
+                    let peer_jobs = jobs.clone();
                     match thread::Builder::new()
                         .name("sentinel-dev-pipe-peer".into())
                         .spawn(move || {
-                            let result = serve(peer.clone(), started, &peer_shutdown);
+                            let result = serve(
+                                peer.clone(),
+                                started,
+                                &peer_shutdown,
+                                &peer_cancel,
+                                &peer_chat,
+                                &peer_jobs,
+                            );
+                            peer.alive.store(false, Ordering::Relaxed);
                             if matches!(&result, Ok(true)) || QUARANTINED.load(Ordering::SeqCst) {
                                 unsafe {
                                     SetEvent(raw(&peer_shutdown));
                                 }
                             }
                             unsafe {
-                                DisconnectNamedPipe(raw(&peer));
+                                DisconnectNamedPipe(raw(&peer.pipe));
                             }
                             result
                         }) {
@@ -494,13 +688,19 @@ pub fn run() -> io::Result<()> {
     })();
     // Wake the accept anchor on every exit path, then join every peer before releasing
     // the profile guard and its named-pipe identity.
+    cancel_discovery.store(true, Ordering::Relaxed);
     unsafe {
         SetEvent(raw(&shutdown));
     }
+    if let Ok(state) = chat.lock() {
+        state.cancel_active();
+    }
+    drop(jobs);
     let mut worker_panicked = false;
     for worker in workers {
         worker_panicked |= worker.join().is_err();
     }
+    worker_panicked |= chat_worker.join().is_err();
     if worker_panicked && result.is_ok() {
         Err(io::Error::other("named-pipe peer worker panicked"))
     } else {

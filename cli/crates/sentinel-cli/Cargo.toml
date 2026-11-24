@@ -19,3 +19,6 @@ clap_complete = "4.5"
 [[bin]]
 name = "sentinel"
 path = "src/main.rs"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

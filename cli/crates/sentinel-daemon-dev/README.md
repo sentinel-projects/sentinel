@@ -8,17 +8,26 @@ messages are stored in the dedicated `daemon-dev-chat.sqlite3` development file.
 It never reads or writes a Qt profile; its development lock is not compatible with
 Qt's runtime lock.
 
-A separate Windows development listener is cross-compiled but has not been
-validated on native Windows. It accepts only `--profile PRIVATE_TEMP_DIRECTORY`:
+A separate Windows development named-pipe listener is available in source and
+has not been validated on native Windows. It requires `--profile PRIVATE_TEMP_DIRECTORY`:
 the directory must already be a direct child of the OS temporary directory,
-owned by the current user with a protected owner-only DACL, and contain only the
-daemon lock if present. It prints its private named-pipe endpoint after creation;
-pass that endpoint explicitly to the CLI `--socket` option. It accepts one
-same-user client at a time, with a three-second I/O deadline and a 15-second
-client lifetime. Only hello, status and shutdown are supported; Chat and storage
-are unavailable. Its lock and endpoint are separate from Qt. Native pipe,
-security, cancellation and interoperability testing remain required before use
-as a supported Windows runtime.
+owned by the current user with a protected owner-only DACL. The daemon accepts
+its lock and bounded model-selection and Chat snapshot files in that profile.
+It prints its private named-pipe endpoint after creation. Pass that endpoint
+explicitly to the CLI `--socket` option. It accepts up to eight same-user peers
+with a three-second handshake, partial-frame and reply deadline and a 30-minute
+connection lifetime. Idle reads are interruptible on shutdown.
+
+An explicitly configured `--provider ORIGIN --model ID [--provider-kind ID]`
+enables literal-loopback model discovery and text Chat with streaming,
+cancellation and reattachment. The daemon writes new sessions and Chat run
+start/terminal snapshots under the profile lock, before acknowledgement and
+terminal publication respectively. It restores interrupted runs without
+replaying their request. Live deltas are kept in memory until terminal commit.
+Snapshots are limited to 8 MiB, 32 sessions and 16 turns per session. The
+daemon restores a saved model selection for the same startup provider and
+exact loopback address. The discovery catalog remains process-local. Native
+Windows pipe, storage recovery and cancellation acceptance remain open.
 
 From the `cli` directory, create an empty private directory directly under `/tmp`.
 Start the daemon with a local provider and model, then use another terminal:
@@ -209,6 +218,33 @@ to contain no data to retain. Unknown database application IDs or versions are
 refused. SQLite is compiled from the rusqlite bundled source and does not depend
 on the host SQLite library.
 
+## Persistent standalone Rust profile (Linux and macOS)
+
+Use `sentinel-daemon-dev --persistent-profile --provider ORIGIN --model MODEL`
+or pass `--persistent-profile` to the staged desktop launcher. This explicitly
+selects `$HOME/.sentinel-rust` outside the temporary directory. The daemon
+validates directory ownership and permissions, acquires an exclusive lock, and
+serves `daemon-dev.sock` from that profile. A crash-stale private socket is
+removed only under the lock after a refused connection and an identity recheck.
+Use `sentinel --persistent-profile status`, `sentinel --persistent-profile tui`
+or `sentinel-slint-prototype --persistent-profile` to connect. These client
+options select the same endpoint as the launcher.
+
+For a **new, absent** persistent directory, use either:
+
+```sh
+sentinel-daemon-dev --persistent-profile --restore-dev-set /tmp/PRIVATE_COPY/snapshot
+sentinel-daemon-dev --persistent-profile --import-qt-preview-subset \
+  /tmp/PRIVATE_COPY/conversations.sqlite3 /tmp/PRIVATE_COPY/settings.json \
+  /tmp/PRIVATE_COPY/memory.sqlite3 --acknowledge-preview-subset
+```
+
+Both commands stage under the destination parent and publish with an exclusive
+rename. A concurrent creation wins without overwriting the directory. The Qt
+command requires offline copies and keeps the existing subset restrictions.
+It does not convert the active Qt profile or import credentials, Agent runs or
+permissions. Leave the Qt profile intact for access to the original data.
+
 ## Import a disposable Qt transcript copy
 
 The development-only importer accepts a finalized, quiescent **copy** of the Qt
@@ -235,7 +271,9 @@ It preserves session UUIDs, titles, creation/update timestamps, per-session mess
 IDs and order, system/user/assistant content, message timestamps/status, partial
 flags, provider/model and valid earlier reply/replacement links. It rejects unknown
 schema, malformed or oversized rows, live message states, nondefault conversation
-flags, summaries, attachments and nondefault error categories. Each imported session
+deletion flags, summaries and unsupported attachment snapshots. Known Qt provider
+error categories on historical assistant failures are preserved in the
+`session.messages` projection. Explicitly renamed titles and archive/pin flags are retained. Each imported session
 is limited to 32 messages and must fit the unpaged `session.messages` IPC response.
 A nonempty destination, rerun, unknown schema or unsafe source fails without a
 partial import. Existing native history can later exceed the IPC limit and then
@@ -321,9 +359,20 @@ and invalidates workspace change baselines; later workspace operations are denie
 until an explicit idle re-enable. Revocation is not a quiescence barrier: I/O
 already past its final cancellation check may finish, and a write can have an
 uncertain outcome. This development control is separate from Qt's privacy policy.
-Agent activity and tool lifecycle IPC events contain generic descriptions, not
-file contents or tool arguments; session attach and Agent history remain the
-reconnection sources of record.
+Agent activity events cover model decisions and committed plan-step transitions.
+Tool lifecycle and activity events contain generic descriptions. Reattaching
+returns the latest bounded activity in `properties.agent_activity` and any
+pending approval in the attach snapshot without consuming an event sequence.
+Agent history continues to expose durable step records.
+Each Agent execution has a shared five-minute wall-clock deadline and at most
+24 model requests across classification, retries and delegated plan steps.
+The deadline requests cooperative cancellation. It preserves an earlier
+explicit cancellation and reports failed timeout or decision-limit outcomes
+through the existing run terminal event. For a plan, the runtime prepares and
+freezes every initial step request before any model or tool dispatch. A failed
+preflight ends the run with no executed steps. Dependency checks, authorization
+and budgets still apply at dispatch.
+
 
 The `agent-stat-path` task accepts `{ "operation":"stat-path", "path":"." }`
 for an existing workspace-relative file or directory. It requires approval and
@@ -368,3 +417,306 @@ after publication reports that the destination may already be visible. This is
 a conservative development format; older or otherwise incompatible schemas are
 refused, and Qt profiles and independently captured per-domain exports cannot be
 restored by this command. It is not a power-loss or authenticity guarantee.
+
+For local Rust-only development, build `sentinel-dev-launch`, the Rust daemon,
+and the Slint prototype, then run:
+
+```sh
+sentinel-dev-launch --daemon /absolute/path/sentinel-daemon-dev --desktop /absolute/path/sentinel-slint-prototype --provider http://127.0.0.1:1234 --model MODEL
+```
+
+The launcher creates and retains a private `/tmp` development profile and prints
+its path. To resume that profile, pass `--profile /tmp/PROFILE`; an existing
+socket is refused and never removed automatically. `--provider-kind` explicitly
+selects the supported local adapter; `--panel` and optional `--global-shortcut`
+select the compact macOS UI. On desktop exit or interrupt the launcher requests
+shutdown from its own verified child daemon, then terminates the child if it
+does not exit. This launcher supports Linux and macOS development only; it does
+not start, migrate, or replace the production Qt application. Same-user socket
+replacement while the desktop is running remains outside its ownership guarantee.
+
+To enable the scoped Agent and workspace attachment features through the
+launcher, pass `--agent-workspace /absolute/workspace` and explicitly choose
+`--agent-approval required` or `--agent-approval workspace`. Additional
+configured roots use repeatable `--workspace ID /absolute/path` arguments.
+The workspace policy is not selected automatically.
+The launcher also accepts explicit `--context-window-tokens N`,
+`--plugin-root /absolute/path`, and, on macOS with an Agent workspace,
+`--agent-process`. Process execution remains opt-in and subject to the daemon's
+sandbox and per-call approval. If forced daemon termination occurs during a
+process invocation, the launcher cannot guarantee cleanup of that invocation's
+separate process group; the normal shutdown path requests cancellation first.
+
+## Import a Qt preview subset from disposable copies
+
+This Unix-only, development-only command imports a deliberately narrow preview
+into a **new** private Rust profile. It never discovers, opens, or changes a Qt
+profile. First stop the Qt writer and prepare disposable copies of these three
+inputs: the conversation database, `settings.json`, and the session-memory
+database. Do not copy a live SQLite main file by itself: committed WAL content
+may be omitted. Use a SQLite backup operation on the disposable inputs, put
+SQLite copies in rollback/DELETE journal mode, close all SQLite handles, and
+confirm no `-wal`, `-shm`, or `-journal` sidecars remain. Put all copies in one
+owner-only directory directly under `/tmp` (mode `0700`); each input must be a
+regular owner-only file (mode `0400` or `0600`) with one hard link. The three
+input paths must be distinct. The importer rechecks source identity and
+metadata during import, but it cannot establish a cross-database point-in-time
+snapshot. Keep the Qt writer stopped until the disposable copies are complete.
+
+Choose a destination path that does not exist and is a direct child of `/tmp`,
+separate from the source directory. The importer builds all stores in a locked
+private sibling staging directory, validates the inputs and imported records,
+then publishes the completed profile with a no-replace directory rename. A
+failure before publication removes the staging directory. If parent-directory
+sync fails after rename, the destination may already be visible; inspect it
+before retrying.
+
+Run a non-publishing rehearsal with the same input copies and a new destination:
+
+```sh
+sentinel-daemon-dev --profile /tmp/NEW_PRIVATE_PROFILE \
+  --check-qt-preview-subset \
+  /tmp/PRIVATE_SOURCE/conversations.sqlite3 \
+  /tmp/PRIVATE_SOURCE/settings.json \
+  /tmp/PRIVATE_SOURCE/memory.sqlite3
+```
+
+The rehearsal writes and validates the same temporary stores, reports import
+counts and discards the staging directory without publishing the destination.
+It also supports `--persistent-profile` when the persistent destination is absent.
+Use the same quiescent copies for a later import. To publish the supported
+subset, use the explicit acknowledgement flag:
+
+```sh
+sentinel-daemon-dev --profile /tmp/NEW_PRIVATE_PROFILE \
+  --import-qt-preview-subset \
+  /tmp/PRIVATE_SOURCE/conversations.sqlite3 \
+  /tmp/PRIVATE_SOURCE/settings.json \
+  /tmp/PRIVATE_SOURCE/memory.sqlite3 \
+  --acknowledge-preview-subset
+```
+
+The accepted conversation input is Qt conversation schema v6. It preserves
+supported conversation/message IDs, order, text, timestamps, status and
+provider/model/reply metadata, including explicitly renamed titles. It rejects
+summaries, deletion flags, unsupported attachment snapshots or unknown or
+inconsistent error categories, malformed rows and limits
+above 64 conversations, 2,048 total messages or 32 messages per conversation.
+Archive and pin flags carry into the Rust session list. Active conversations come first, with pinned conversations first within each group. Archived history stays readable, and new requests require unarchiving the conversation in Slint. Deleted source conversations cause staged import to fail before publication.
+
+Inline user attachment snapshots are retained when they fit Rust Chat limits.
+This includes text previously extracted by Qt from PDF or DOCX and validated
+Qt PNG snapshots. Migration reads the stored bytes only. Unsupported or
+oversized content fails the staged import before publication.
+The memory input is Qt schema v7 session-scoped memory only, associated with
+the imported sessions. The settings input contributes
+`responseProfileInstructions` (up to 2,000 UTF-16 units), a supported
+`themeName`, and one explicit local model selection when its provider and
+origin are supported. The importer reports unsupported themes and model
+selections without substituting a value. Other Qt settings and credentials,
+Agent runs, permissions, the separate
+`chat_history.sqlite3`/FTS search history, IPC projections, workspace/global
+memory and other stores are excluded. This does not migrate a complete profile
+or establish production Qt/Rust lock compatibility.
+
+To return to Qt, keep both profiles. Export the Rust data with
+`sentinel --persistent-profile backup export profile /absolute/new/backup.snt`
+while the Rust daemon is still running, shut down Rust, then open Qt with its
+original untouched profile. For a temporary Rust profile, pass its socket with
+`--socket` in place of `--persistent-profile`. The Rust archive is restorable
+into Rust. New or changed Rust records do not appear in Qt. Interrupted,
+non-published imports may leave a private sibling staging directory, which is
+separate from both published profiles.
+
+For settings-only development import, first initialize its isolated profile
+and run:
+
+```sh
+sentinel-daemon-dev --profile /tmp/PRIVATE_PROFILE --import-qt-settings-copy /tmp/PRIVATE_COPY/settings.json
+```
+
+The copy must be an owner-only regular file in a separate private direct `/tmp`
+child. The caller must prepare the copy after stopping the Qt writer; the
+importer reads it without modifying it and does not access a Qt profile. It
+recognizes Qt's optional schema version 1. It transfers present `themeName`
+(`system`, `light`, or `dark`), `responseProfileInstructions` (at most 2,000
+UTF-16 units), and one explicitly selected Ollama, LM Studio, or llama.cpp
+model with a valid literal-loopback origin. The daemon restores the model
+only when the configured provider and origin match. Importing the selection
+does not configure or contact an endpoint. Other keys, including credentials,
+remain excluded. Existing destination values for any imported setting refuse
+the entire transaction. Unsupported preference values, duplicate selected
+keys, and unknown schema versions are refused. This is not
+a complete settings migration or a Qt backup import.
+
+The daemon can inspect explicitly selected local speech artifacts at startup with `--speech-binary PATH --speech-binary-sha256 HEX --speech-model PATH --speech-model-sha256 HEX` after `--provider ORIGIN --model ID`. All four options are required together. It reads only regular single-link files owned by the current user or root, rejects group/other-writable inputs and symlink leaves, bounds the binary to 256 MiB and model to 4 GiB, checks both supplied SHA-256 digests and the Whisper GGML magic, then exposes the startup result through the read-only `speechSettingsState` query and `speech-inspection` capability. Inspection alone is not publisher authentication, full model validation, or runtime readiness. Hashing a large model can delay startup.
+
+On macOS only, explicitly add `--speech-execution` with those four inspection
+options to enable the `voice` capability. The worker rechecks the pinned hashes
+before execution, writes only the supplied PCM to a private temporary WAV, and
+runs the selected Whisper binary with a deny-by-default `sandbox-exec` profile:
+no network or file writes, bounded output, and a 120-second deadline. It does
+not capture a microphone, send the transcript to Chat, or claim voice output.
+`voice.state` remains unavailable unless execution is explicitly enabled and
+the local sandbox executable is present. Native Whisper/model compatibility
+and successful macOS sandbox execution have not been verified; forced-kill
+cleanup is best effort. This remains a development-only opt-in, not production
+speech support.
+
+Example (with hashes computed independently for the local artifacts):
+
+```sh
+sentinel-daemon-dev --profile /tmp/PRIVATE_PROFILE \
+  --provider http://127.0.0.1:1234 --model MODEL \
+  --speech-execution \
+  --speech-binary /absolute/path/whisper-cli \
+  --speech-binary-sha256 BINARY_SHA256 \
+  --speech-model /absolute/path/ggml-model.bin \
+  --speech-model-sha256 MODEL_SHA256
+```
+
+The provider/model pair is required by the daemon's current option parser even
+when the requested operation is speech transcription. The CLI client reads an
+explicitly named `.wav` or raw PCM file and supplies its decoded PCM; it does not
+invoke the microphone capture path.
+
+Flat OpenDocument Text attachments are a restricted development feature advertised as `chat-attachments-fodt` when the configured workspace attachment path is available; they use the existing `chat.send` attachment paths and require no additional command-line flag. Inputs must be explicitly selected workspace-relative `.fodt` files. The parser accepts UTF-8 flat XML up to 1 MiB and extracts at most 8 KiB from simple text paragraphs, headings, lists, spans, links, tabs, and spaces; DTDs, external entities, unsupported content, excessive nesting, and oversized output are rejected. Formatting and link targets are not preserved. Zipped ODT, scanned documents and OCR are not supported. The extracted text is treated as untrusted user-supplied attachment data.
+
+Word document attachments are advertised separately as `chat-attachments-docx`.
+The Rust ZIP reader opens only the main `word/document.xml` part from an
+authorized workspace-relative `.docx` snapshot. Files are limited to 1 MiB,
+256 archive entries, 256 KiB of inflated XML and 8 KiB of extracted text.
+Simple paragraphs, tables and hyperlinks are supported. Hyperlink targets,
+external relationships, embedded resources and formatting are excluded.
+The extractor rejects unsupported body markup and never writes ZIP entries
+to disk.
+
+Text PDF attachments are advertised as `chat-attachments-pdf-text`. The
+daemon passes the held workspace snapshot through a socketpair to a separate
+process running the same Rust binary. The worker limits input to 1 MiB,
+the document to 16 pages and 2,048 objects, stream decompression to 128 KiB
+and extracted text to 8 KiB. A process memory/CPU limit and the parent's
+900 ms deadline bound parser failures. Encrypted, malformed, scanned and
+textless documents are refused. Links and embedded files are not opened.
+
+
+
+
+### Local provider catalog and image attachments
+
+Repeat `--provider-config KIND ORIGIN MODEL` after the primary
+`--provider ORIGIN --model MODEL` to configure up to four distinct local
+provider kinds. For example:
+
+```sh
+sentinel-daemon-dev --profile /tmp/PRIVATE_DIRECTORY \
+  --provider http://127.0.0.1:1234 --model LM_STUDIO_MODEL --provider-kind lm-studio \
+  --provider-config ollama http://127.0.0.1:11434 OLLAMA_MODEL
+sentinel --socket /tmp/PRIVATE_DIRECTORY/daemon-dev.sock provider list
+sentinel --socket /tmp/PRIVATE_DIRECTORY/daemon-dev.sock provider select ollama
+sentinel --socket /tmp/PRIVATE_DIRECTORY/daemon-dev.sock models
+```
+
+Slint's Models page shows the configured provider picker. Provider selection
+persists with the model and exact origin, and discovery queries the selected
+endpoint. Reselecting a different provider uses that provider's startup model.
+All endpoints use literal loopback HTTP. Configure the provider kinds at daemon
+startup. For a configured Ollama, LM Studio or llama.cpp provider, set a new
+origin with `sentinel provider endpoint KIND http://127.0.0.1:PORT` or the
+Desktop settings equivalent. Changes are rejected while a run or a local
+Ollama operation is active. Changing the active origin resets discovery and
+selects the provider's startup model. Refresh discovery to choose another
+model. An override is restored only when its provider and exact startup
+origin still match. A different origin uses default context policy until the
+runtime is explicitly restarted with policy for that origin. Qt settings
+imports cannot grant endpoint overrides.
+
+Images require the primary binding, an authorized workspace,
+`--context-window-tokens N` and `--image-token-upper-bound N`. Set both limits
+using the actual model and server configuration. The image limit must bound
+the provider's token cost for every supported image. The daemon refuses an
+image on any other origin, adapter, or model. A Chat message can attach one
+PNG, JPEG, or static WebP of up to 32 KiB, with dimensions up to 2048 × 2048, within the four-file
+limit. The daemon retains validated attachment snapshots for history, retry,
+and branching. Session-message IPC omits image bytes.
+
+Use the Slint workspace picker or `sentinel chat --attach relative/path.png 'prompt'`.
+Use the same entry points for UTF-8 text or supported FODT documents. Both
+OpenAI-compatible and Ollama Chat request paths send images in their respective wire formats. Cloud
+providers, credential management, PDF and DOCX extraction remain outside
+this implementation.
+
+### Explicit cloud Chat
+
+Linux and macOS support text Chat with fixed OpenAI, Groq, Mistral, Claude and
+Gemini HTTPS endpoints.
+Choose an explicit model and credential source:
+
+```sh
+sentinel-daemon-dev --persistent-profile --cloud-provider openai MODEL /absolute/private/api-key
+sentinel-daemon-dev --persistent-profile --cloud-keychain mistral MODEL ACCOUNT
+```
+
+The key file must be a regular, single-link, owner-only file in an owner-only
+directory. The Keychain option is macOS-only and reads an existing generic
+password for service `com.sentinel.rust.PROVIDER` and the given account.
+Provider IDs are `openai`, `groq`, `mistral`, `claude` and `gemini`.
+For Gemini, enter the short model ID, without the `models/` prefix. The staged launcher accepts
+`--cloud-provider PROVIDER --model MODEL --cloud-key-file PATH` or the same
+provider and model options with `--cloud-keychain ACCOUNT`. Credentials are read at startup.
+Restart the daemon after replacing or rotating the credential.
+
+Cloud mode sends only the current prompt by default. Add `--cloud-history`
+to the daemon or staged launcher to include completed text turns in the same
+conversation from the exact same provider and model. Imported and local turns
+are excluded. This option can include earlier turns sent with another account
+at that provider. Use `--cloud-attachment-root /absolute/path` on the daemon
+or launcher to allow explicit UTF-8, FODT, DOCX and text PDF attachments from
+one workspace. The provider receives extracted text for the current request.
+The root cannot contain the active profile or credential file. Image files,
+response-profile instructions, retry/edit replay and Agent tooling remain
+unavailable in cloud mode. HTTPS uses native
+certificate validation, a fixed host, bounded responses, and direct connections.
+Model discovery and selection use the existing model IPC. Persisted selections
+can identify the provider and model, while credentials stay out of IPC,
+profiles, backups and Qt migration. Claude and Gemini use their native text
+streaming protocols. A model catalog that exceeds the bounded page is refused
+rather than presented as complete.
+
+
+### Unix shutdown
+
+On Linux and macOS, `daemon.shutdown`, SIGINT and SIGTERM stop new run
+admission and signal cancellation to active Chat, Agent, speech and model
+operations. The daemon retains the profile lock while waiting up to five
+seconds for workers to finish. A drain timeout exits with failure and
+leaves incomplete runs for restart recovery. Cancelling a local model wait
+does not establish the remote Ollama operation's outcome. Unauthenticated
+IPC clients must complete their handshake within three seconds.
+
+
+### Agent authorization and capability inspection
+
+Tool descriptors supply the argument schema, access type, risk and baseline
+approval requirement. `sentinel doctor` includes the enabled descriptors
+under `terminal.properties.agent_tools`. A task may require approval beyond
+this baseline. The daemon accepts approval responses only from a peer
+attached to that Agent session, and rechecks workspace access before treating
+an approval as executable. Tools still execute through the bounded workspace
+gateway and platform policy.
+
+
+Typed Agent execution shares a five-minute wall-clock window and a 24-request
+model budget across classification, retries and plan phases. The daemon
+reports explicit cancellation, elapsed deadline and exhausted decision
+budget separately. The existing per-call authorization policy still applies.
+
+
+An Agent request is admitted durably before the start reply. The Unix daemon
+waits for the reply write before releasing the Agent worker to execute. Failed
+delivery cancels the admitted run before a provider or tool call.
+
+Linux and macOS reuse one Chat/Agent worker behind a bounded queue. An explicit
+Agent plan prepares every phase's initial provider request before dispatching
+its first phase. An invalid later phase therefore fails before an earlier
+phase can make workspace changes.

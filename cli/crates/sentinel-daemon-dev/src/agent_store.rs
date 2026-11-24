@@ -15,6 +15,14 @@ pub enum ApprovalResolution {
     Timeout,
     Cancelled,
 }
+pub(crate) struct AgentAdmission<'a> {
+    pub run_id: &'a str,
+    pub session_id: &'a str,
+    pub goal: &'a str,
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub plan: Option<&'a [(String, Vec<usize>)]>,
+}
 pub struct AgentStore {
     db: Connection,
 }
@@ -79,17 +87,37 @@ impl AgentStore {
         provider: &str,
         model: &str,
     ) -> rusqlite::Result<()> {
-        self.start_with_plan(id, session, goal, provider, model, None)
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        Self::record_admission(
+            &tx,
+            &AgentAdmission {
+                run_id: id,
+                session_id: session,
+                goal,
+                provider,
+                model,
+                plan: None,
+            },
+            false,
+        )?;
+        tx.commit()
     }
-    pub fn start_with_plan(
-        &mut self,
-        id: &str,
-        session: &str,
-        goal: &str,
-        provider: &str,
-        model: &str,
-        plan: Option<&[(String, Vec<usize>)]>,
+
+    pub(crate) fn record_admission(
+        tx: &rusqlite::Transaction<'_>,
+        admission: &AgentAdmission<'_>,
+        attached: bool,
     ) -> rusqlite::Result<()> {
+        let AgentAdmission {
+            run_id: id,
+            session_id: session,
+            goal,
+            provider,
+            model,
+            plan,
+        } = *admission;
         if let Some(steps) = plan {
             if steps.is_empty() || steps.len() > 4 {
                 return Err(rusqlite::Error::InvalidQuery);
@@ -119,18 +147,27 @@ impl AgentStore {
                 }
             }
         }
-        let tx = self
-            .db
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute("INSERT INTO runs(id,session_id,state,goal,provider_id,model,created_at) VALUES(?1,?2,'running',?3,?4,?5,strftime('%Y-%m-%dT%H:%M:%fZ','now'))",params![id,session,goal,provider,model])?;
+        // The caller selects one of two static schema names.
+        let schema = if attached { "agent" } else { "main" };
+        tx.execute(
+            &format!(
+                "INSERT INTO {schema}.runs(id,session_id,state,goal,provider_id,model,created_at)
+                      VALUES(?1,?2,'running',?3,?4,?5,strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
+            ),
+            params![id, session, goal, provider, model],
+        )?;
         if let Some(steps) = plan {
+            let mut stmt = tx.prepare(&format!(
+                "INSERT INTO {schema}.plan_steps(run_id,step,status,reason,operation,dependencies)
+                                               VALUES(?1,?2,'pending','',?3,?4)"
+            ))?;
             for (index, (operation, dependencies)) in steps.iter().enumerate() {
                 let encoded = serde_json::to_string(dependencies)
                     .map_err(|_| rusqlite::Error::InvalidQuery)?;
-                tx.execute("INSERT INTO plan_steps(run_id,step,status,reason,operation,dependencies) VALUES(?1,?2,'pending','',?3,?4)", params![id,(index+1) as i64,operation,encoded])?;
+                stmt.execute(params![id, (index + 1) as i64, operation, encoded])?;
             }
         }
-        tx.commit()
+        Ok(())
     }
     pub fn intention(
         &mut self,
@@ -269,6 +306,7 @@ impl AgentStore {
         }
         tx.commit()
     }
+    #[cfg(test)]
     pub fn finish(
         &mut self,
         id: &str,
@@ -298,45 +336,6 @@ impl AgentStore {
         }
         tx.execute("UPDATE plan_steps SET status=CASE status WHEN 'pending' THEN 'skipped' ELSE 'interrupted' END,reason='run-ended' WHERE run_id=?1 AND status IN ('pending','started')", [id])?;
         tx.commit()
-    }
-    pub fn pending(&self) -> rusqlite::Result<Vec<String>> {
-        let mut stmt = self.db.prepare("SELECT id FROM runs WHERE confirmed=0")?;
-        let rows = stmt.query_map([], |row| row.get(0))?;
-        rows.collect()
-    }
-    pub fn confirm(&mut self, id: &str) -> rusqlite::Result<()> {
-        if self.db.execute(
-            "UPDATE runs SET confirmed=1 WHERE id=?1 AND state!='running'",
-            [id],
-        )? != 1
-        {
-            return Err(rusqlite::Error::QueryReturnedNoRows);
-        }
-        Ok(())
-    }
-    pub fn recover(&mut self, id: &str) -> rusqlite::Result<()> {
-        let maybe_written = self.may_have_written(id)?;
-        let tx = self
-            .db
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute(
-            "UPDATE approvals SET decision='denied-restart' WHERE run_id=?1 AND decision='pending'",
-            [id],
-        )?;
-        tx.execute("UPDATE plan_steps SET status=CASE status WHEN 'pending' THEN 'skipped' ELSE 'interrupted' END,reason='daemon-restarted' WHERE run_id=?1 AND status IN ('pending','started')", [id])?;
-        let (reason, output) = if maybe_written {
-            (
-                "write-outcome-unknown",
-                "A file may have been created or modified. Inspect the workspace before retrying.",
-            )
-        } else {
-            ("daemon-restarted", "")
-        };
-        tx.execute("UPDATE runs SET state='failed',output=?2,reason=?3,confirmed=1 WHERE id=?1 AND confirmed=0", params![id,output,reason])?;
-        tx.commit()
-    }
-    pub fn may_have_written(&self, id: &str) -> rusqlite::Result<bool> {
-        self.db.query_row("SELECT EXISTS(SELECT 1 FROM approvals WHERE run_id=?1 AND tool IN ('write-file','edit-file') AND decision='allow')", [id], |r| r.get(0))
     }
     pub fn owner(&self, id: &str) -> rusqlite::Result<Option<String>> {
         self.db
@@ -631,6 +630,12 @@ mod tests {
             std::env::temp_dir().join(format!("sentinel-write-recovery-{}", std::process::id()));
         fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
         let dir = dir.canonicalize().unwrap();
+        let mut chat = store::Store::open_deferred(&dir).unwrap();
+        chat.create("s", "title").unwrap();
+        assert!(
+            chat.begin_with_provider("s", "r", "goal", "m", "p")
+                .unwrap()
+        );
         let mut audit = AgentStore::open(&dir).unwrap();
         audit.start("r", "s", "goal", "p", "m").unwrap();
         let args = r#"{"path":"x","content":"value"}"#;
@@ -644,9 +649,13 @@ mod tests {
             .resolve_approval("r", "a", ApprovalResolution::Allow)
             .unwrap();
         drop(audit);
-        let mut audit = AgentStore::open(&dir).unwrap();
-        assert!(audit.may_have_written("r").unwrap());
-        audit.recover("r").unwrap();
+        let audit = AgentStore::open(&dir).unwrap();
+        store::Store::recover_agent_runs(&dir).unwrap();
+        let session = chat.load().unwrap().remove(0);
+        assert_eq!(session.detail, "write-outcome-unknown");
+        assert_eq!(chat.messages("s").unwrap()[1]["status"], "interrupted");
+        store::Store::recover_agent_runs(&dir).unwrap();
+        assert_eq!(chat.messages("s").unwrap().len(), 2);
         let (reason, output): (String, String) = audit
             .db
             .query_row("SELECT reason,output FROM runs WHERE id='r'", [], |r| {
@@ -656,6 +665,7 @@ mod tests {
         assert_eq!(reason, "write-outcome-unknown");
         assert!(output.contains("may have been created or modified"));
         drop(audit);
+        drop(chat);
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
@@ -664,6 +674,12 @@ mod tests {
             std::env::temp_dir().join(format!("sentinel-approval-test-{}", std::process::id()));
         fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
         let dir = dir.canonicalize().unwrap();
+        let mut chat = store::Store::open_deferred(&dir).unwrap();
+        chat.create("s", "title").unwrap();
+        assert!(
+            chat.begin_with_provider("s", "r", "goal", "m", "p")
+                .unwrap()
+        );
         let mut agent = AgentStore::open(&dir).unwrap();
         agent.start("r", "s", "goal", "p", "m").unwrap();
         let read_args = r#"{"path":"x","offset":1,"limit":2000}"#;
@@ -703,7 +719,7 @@ mod tests {
         agent
             .request_approval("r", "two", 2, "list-directory", list_args)
             .unwrap();
-        agent.recover("r").unwrap();
+        store::Store::recover_agent_runs(&dir).unwrap();
         let decision: String = agent
             .db
             .query_row("SELECT decision FROM approvals WHERE id='two'", [], |r| {
@@ -717,6 +733,7 @@ mod tests {
                 .is_err()
         );
         drop(agent);
+        drop(chat);
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
@@ -794,13 +811,9 @@ mod tests {
             .unwrap();
         drop(agent);
         drop(chat);
-        let mut chat = store::Store::open(&dir).unwrap();
-        let mut agent = AgentStore::open(&dir).unwrap();
-        for id in agent.pending().unwrap() {
-            chat.invalidate_agent(&id, agent.may_have_written(&id).unwrap())
-                .unwrap();
-            agent.recover(&id).unwrap();
-        }
+        let chat = store::Store::open_deferred(&dir).unwrap();
+        let agent = AgentStore::open(&dir).unwrap();
+        store::Store::recover_agent_runs(&dir).unwrap();
         assert_eq!(chat.load().unwrap()[0].state, "failed");
         let (state, confirmed): (String, i64) = agent
             .db
