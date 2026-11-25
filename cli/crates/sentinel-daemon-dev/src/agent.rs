@@ -761,8 +761,11 @@ fn run_inner(
         if !save(0, "", "", &json!({"_event":"classifying"}), false) {
             return Err("storage-failure");
         }
-        let output = provider::stream_prepared(config, &first, cancel, |_| Ok(()))
-            .map_err(|_| "classification-failed")?;
+        let output = provider::stream_prepared(config, &first, cancel, |_| Ok(()));
+        if cancel.load(Ordering::SeqCst) {
+            return Err("cancelled");
+        }
+        let output = output.map_err(|_| "classification-failed")?;
         let task = classified_task(&output).ok_or("classification-unresolved")?;
         let request = prepare(config, &task).map_err(|_| "classification-failed")?;
         let result = run_inner(config, request, &task, workspace, control, save, authorize)?;
@@ -807,8 +810,11 @@ fn run_inner(
         if !save(0, "", "", &json!({"_event":"deciding"}), false) {
             return Err("storage-failure");
         }
-        let output = provider::stream_prepared(config, &request, cancel, |_| Ok(()))
-            .map_err(|_| "provider-failed")?;
+        let output = provider::stream_prepared(config, &request, cancel, |_| Ok(()));
+        if cancel.load(Ordering::SeqCst) {
+            return Err("cancelled");
+        }
+        let output = output.map_err(|_| "provider-failed")?;
         let decision = match crate::planner::parse(&output) {
             Ok(decision) => decision,
             Err(

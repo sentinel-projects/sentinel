@@ -414,6 +414,13 @@ impl AgentStore {
         if run_id.is_empty() {
             return Ok(Some(bound_history(result)?));
         }
+        let requested_id = run_id;
+        let child = run_id.rsplit_once("-child-").and_then(|(parent, suffix)| {
+            let step = suffix.parse::<i64>().ok()?;
+            (matches!(suffix, "1" | "2" | "3" | "4") && !parent.is_empty())
+                .then_some((parent, step))
+        });
+        let run_id = child.map_or(run_id, |(parent, _)| parent);
         let detail_sql = format!(
             "SELECT session_id,state,goal,provider_id,model,output,reason,confirmed,created_at FROM runs WHERE id=? AND session_id IN ({placeholders})"
         );
@@ -496,13 +503,36 @@ impl AgentStore {
                     .collect(),
             );
         }
-        result["steps"] = Value::Array(plan_rows.into_iter().map(|(step,status,reason,operation,dependencies)| { let deps = dependencies.and_then(|d| serde_json::from_str::<Value>(&d).ok()); json!({"stepId":format!("{run_id}-plan-{step}"),"runId":run_id,"sequence":step,"status":status,"stepType":"plan","reason":reason,"operation":operation,"dependsOn":deps}) }).collect());
-        if goal.len() > 4096 || output.len() > 4096 {
+        if child.is_some() {
+            let selected = result["children"]
+                .as_array()
+                .and_then(|rows| {
+                    rows.iter()
+                        .find(|row| row["runId"].as_str() == Some(requested_id))
+                })
+                .cloned();
+            let Some(selected) = selected else {
+                return Ok(None);
+            };
+            result["child"] = selected;
+            result["runs"] = json!([]);
+            result["truncated"] = json!(false);
+            result["children"] = json!([]);
+            // Parent prompt and output cover siblings and are outside this view.
+            result["run"]["goalSummary"] = json!("");
+            result["run"]["finalAnswer"] = json!("");
+        }
+        let stride = crate::agent::PLAN_TOOL_STEP_STRIDE as i64;
+        let (first_tool_step, last_tool_step) = child.map_or((i64::MIN, i64::MAX), |(_, step)| {
+            ((step - 1) * stride + 1, step * stride)
+        });
+        result["steps"] = Value::Array(plan_rows.into_iter().filter(|(step, ..)| child.is_none_or(|(_, selected)| *step == selected)).map(|(step,status,reason,operation,dependencies)| { let deps = dependencies.and_then(|d| serde_json::from_str::<Value>(&d).ok()); json!({"stepId":format!("{run_id}-plan-{step}"),"runId":run_id,"sequence":step,"status":status,"stepType":"plan","reason":reason,"operation":operation,"dependsOn":deps}) }).collect());
+        if child.is_none() && (goal.len() > 4096 || output.len() > 4096) {
             result["truncated"] = json!(true);
         }
-        let mut stmt = self.db.prepare("SELECT step,tool,path,content,complete,arguments,descriptor_version,failure_category FROM observations WHERE run_id=?1 ORDER BY step LIMIT 27")?;
+        let mut stmt = self.db.prepare("SELECT step,tool,path,content,complete,arguments,descriptor_version,failure_category FROM observations WHERE run_id=?1 AND step BETWEEN ?2 AND ?3 ORDER BY step LIMIT 27")?;
         let observations = stmt
-            .query_map([run_id], |r| {
+            .query_map(params![run_id, first_tool_step, last_tool_step], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
                     r.get::<_, String>(1)?,
@@ -542,9 +572,9 @@ impl AgentStore {
         }
         result["tools"] = Value::Array(tools);
         result["evidence"] = Value::Array(evidence);
-        let mut stmt = self.db.prepare("SELECT id,step,tool,args,decision FROM approvals WHERE run_id=?1 ORDER BY step LIMIT 27")?;
+        let mut stmt = self.db.prepare("SELECT id,step,tool,args,decision FROM approvals WHERE run_id=?1 AND step BETWEEN ?2 AND ?3 ORDER BY step LIMIT 27")?;
         let approvals = stmt
-            .query_map([run_id], |r| {
+            .query_map(params![run_id, first_tool_step, last_tool_step], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, i64>(1)?,
@@ -600,6 +630,77 @@ fn bound_history(mut result: Value) -> rusqlite::Result<Value> {
 mod tests {
     use super::*;
     use std::{fs, os::unix::fs::DirBuilderExt};
+    #[test]
+    fn delegated_audit_filters_sibling_receipts_and_other_sessions() {
+        let dir = std::env::temp_dir().join(format!("sentinel-child-audit-{}", std::process::id()));
+        fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let mut audit = AgentStore::open(&dir).unwrap();
+        let goal = json!({"operation":"delegate-read","steps":[
+            {"task":{"operation":"inspect-file","path":"first.txt"},"dependsOn":[]},
+            {"task":{"operation":"inspect-file","path":"second.txt"},"dependsOn":[0]}
+        ]});
+        let goal = goal.to_string();
+        let plan = crate::agent::plan_metadata(&goal).unwrap();
+        let tx = audit.db.transaction().unwrap();
+        AgentStore::record_admission(
+            &tx,
+            &AgentAdmission {
+                run_id: "parent",
+                session_id: "session",
+                goal: &goal,
+                provider: "provider",
+                model: "model",
+                plan: Some(&plan),
+            },
+            false,
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        for (step, path) in [
+            (1, "first.txt"),
+            (1 + crate::agent::PLAN_TOOL_STEP_STRIDE, "second.txt"),
+        ] {
+            audit
+                .intention(
+                    "parent",
+                    step,
+                    "read-file",
+                    "dev-1",
+                    &json!({"path":path,"offset":1,"limit":2000}).to_string(),
+                )
+                .unwrap();
+            audit
+                .observe("parent", step, path, "evidence", true)
+                .unwrap();
+        }
+        let scope = ["session".to_owned()];
+        let result = audit
+            .history(&scope, "parent-child-2", "", "")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["child"]["parentRunId"], "parent");
+        assert_eq!(result["run"]["goalSummary"], "");
+        assert_eq!(result["steps"].as_array().unwrap().len(), 1);
+        assert_eq!(result["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(result["tools"][0]["resourceSummary"], "second.txt");
+        assert_eq!(result["evidence"].as_array().unwrap().len(), 1);
+        assert!(
+            audit
+                .history(&scope, "parent-child-3", "", "")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            audit
+                .history(&["other".to_owned()], "parent-child-2", "", "")
+                .unwrap()
+                .is_none()
+        );
+        drop(audit);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn history_filters_session_and_exposes_bounded_real_audit() {
         let dir =

@@ -2272,6 +2272,9 @@ impl State {
         session.seq += 1;
         let payload = if name == "agent.activity" {
             json!({"session_id":sid,"run_id":rid,"activity":phase,"step":step,"server_generation":self.generation,"event_sequence":session.seq})
+        } else if name == "subagent.activity" {
+            json!({"session_id":sid,"run_id":rid,"parent_run_id":rid,"subagent_id":format!("{rid}-child-{step}"),
+                "role":"delegated-read","state":phase,"server_generation":self.generation,"event_sequence":session.seq})
         } else {
             json!({"session_id":sid,"run_id":rid,"tool":tool,"detail":match phase { "requested" => "Tool requested", "running" => "Tool running", "completed" => "Tool completed", _ => "Tool failed; inspect authoritative run outcome" },"risk":crate::tool_registry::find(tool).map_or(0, |descriptor| descriptor.event_risk()),"resources":[],"tool_call_id":format!("{rid}-step-{step}"),"state":phase,"server_generation":self.generation,"event_sequence":session.seq})
         };
@@ -2279,6 +2282,8 @@ impl State {
             rid.to_owned(),
             if name == "agent.activity" {
                 json!({"activity":phase,"step":step})
+            } else if name == "subagent.activity" {
+                json!({"activity":format!("Delegated read {step}: {phase}"),"step":step})
             } else {
                 json!({"activity":payload["detail"],"step":step,"tool":tool})
             },
@@ -2526,6 +2531,7 @@ fn agent_worker(state: Arc<Mutex<State>>, job: Job) {
     let Some((workspace, goal)) = job.agent else {
         return;
     };
+    let delegated = crate::agent::is_delegated_read(&goal);
     let mutation_authorized = AtomicBool::new(false);
     let current_tool = Mutex::new(None::<(usize, String)>);
     if !job.cancel.load(Ordering::SeqCst)
@@ -2606,6 +2612,16 @@ fn agent_worker(state: Arc<Mutex<State>>, job: Job) {
                                 "",
                                 activity,
                             );
+                            if delegated {
+                                locked.agent_progress(
+                                    &job.session_id,
+                                    &job.run_id,
+                                    "subagent.activity",
+                                    step,
+                                    "",
+                                    status,
+                                );
+                            }
                         }
                         return result.is_ok();
                     }
@@ -2700,8 +2716,7 @@ fn agent_worker(state: Arc<Mutex<State>>, job: Job) {
                         step,
                         (tool, args),
                         &job.cancel,
-                        crate::agent::classified_inspect_goal(&goal).is_some()
-                            || crate::agent::is_delegated_read(&goal),
+                        crate::agent::classified_inspect_goal(&goal).is_some() || delegated,
                     );
                     if result.is_err()
                         && let Ok(mut locked) = state.lock()

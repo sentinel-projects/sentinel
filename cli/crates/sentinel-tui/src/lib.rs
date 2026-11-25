@@ -488,6 +488,19 @@ impl App {
                             self.refresh_picker(kind);
                         }
                     }
+                    "agent-audit" => {
+                        let history = value.get("history").unwrap_or(&value);
+                        if history["run"]["sessionId"].as_str() != Some(self.sid.as_str()) {
+                            self.notice =
+                                "The audit response belongs to a different session.".into();
+                        } else if let Ok(mut rendered) = serde_json::to_string_pretty(history) {
+                            if rendered.len() > 32_768 {
+                                rendered.truncate(rendered.floor_char_boundary(32_768));
+                                rendered.push_str("\n… audit preview truncated …");
+                            }
+                            self.show_view(rendered);
+                        }
+                    }
                     "changes" => {
                         self.busy = false;
                         self.changes = value["files"].as_array().cloned().unwrap_or_default();
@@ -833,7 +846,7 @@ impl App {
                         }
                     }
                     "subagent.activity" => {
-                        self.activity.push(format!(
+                        self.record_activity(format!(
                             "Subagent {} · {} · {} · parent {}",
                             event.payload["subagent_id"].as_str().unwrap_or("?"),
                             event.payload["role"].as_str().unwrap_or(""),
@@ -1284,6 +1297,14 @@ impl App {
                 } else {
                     self.search = Some(argument.into());
                 }
+            }
+            AgentAudit => {
+                self.request(
+                    worker,
+                    "agent.history",
+                    json!({"run_id":argument,"before_time":"","before_id":""}),
+                    "agent-audit",
+                );
             }
             Export | Rename | Archive => {
                 if command.id == Archive

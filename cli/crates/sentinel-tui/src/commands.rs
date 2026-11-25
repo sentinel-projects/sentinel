@@ -21,6 +21,7 @@ pub(crate) enum CommandId {
     Cancel,
     Details,
     History,
+    AgentAudit,
     Export,
     Rename,
     Archive,
@@ -429,6 +430,19 @@ pub(crate) const COMMANDS: &[Command] = &[
         "session.messages",
         "[query]",
         "/history error"
+    ),
+    cmd!(
+        AgentAudit,
+        "/agent-audit",
+        "Read the Agent audit for a parent run or delegated read",
+        [],
+        RequiredText,
+        Session,
+        Inspect,
+        [],
+        "agent.history",
+        "RUN_ID",
+        "/agent-audit RUN_ID"
     ),
     cmd!(
         Export,
