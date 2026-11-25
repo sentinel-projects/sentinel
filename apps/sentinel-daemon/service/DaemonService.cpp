@@ -61,6 +61,12 @@ bool DaemonService::initialize(const QString& socketPath) {
             QStandardPaths::writableLocation(QStandardPaths::AppDataLocation));
     }
 
+    if (!m_profileWriteLease.acquire(m_pathProvider)) {
+        qCritical() << "Qt profile is reserved for a Rust cutover.";
+        m_ipcServer.stopServer();
+        return false;
+    }
+
     m_settings = std::make_unique<sentinel::core::AppSettings>(
         std::make_unique<sentinel::core::DpapiEncryptedSettingsStore>(
             std::make_unique<sentinel::core::JsonSettingsStore>(

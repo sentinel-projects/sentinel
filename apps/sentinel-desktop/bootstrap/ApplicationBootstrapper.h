@@ -10,6 +10,7 @@
 #include "sentinel/core/app/AgentInspectorService.h"
 #include "sentinel/core/app/AppSettings.h"
 #include "sentinel/core/platform/StandardPathProvider.h"
+#include "sentinel/core/platform/ProfileWriteLease.h"
 #include "sentinel/desktop/DesktopRuntimeClient.h"
 #include "sentinel/desktop/DesktopShellViewModel.h"
 #include "sentinel/desktop/WindowStatePersistence.h"
@@ -49,6 +50,7 @@ private:
     bool m_safeMode{false};
 
     sentinel::core::StandardPathProvider m_pathProvider;
+    sentinel::core::ProfileWriteLease m_profileWriteLease;
     SingleInstanceGuard m_singleInstanceGuard;
     std::unique_ptr<sentinel::core::AppSettings> m_settings;
     std::unique_ptr<DaemonClient> m_daemonClient;

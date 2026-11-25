@@ -37,6 +37,12 @@ mod plugin_catalog;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod provider_catalog;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+mod qt_conversation_export;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod qt_cutover;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod qt_permission_inspection;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod qt_preview_import;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod qt_settings_import;

@@ -22,8 +22,19 @@ pub struct Row {
     pub revision: String,
     pub corrections: String,
 }
+#[derive(serde::Serialize)]
+pub struct ExcludedMemory {
+    pub legacy: u64,
+    pub project: u64,
+    pub personal: u64,
+    pub workspace_bound_sessions: u64,
+    pub legacy_index_present: bool,
+    pub scoped_index_present: bool,
+}
+
 pub struct Snapshot {
     pub rows: Vec<Row>,
+    pub excluded: ExcludedMemory,
     db: Connection,
     source: PathBuf,
     identity: fs::Metadata,
@@ -54,6 +65,15 @@ pub fn read(
     path: &Path,
     destination: &Path,
     known_sessions: &[String],
+) -> Result<Snapshot, Box<dyn Error>> {
+    read_preview(path, destination, known_sessions, false)
+}
+
+pub fn read_preview(
+    path: &Path,
+    destination: &Path,
+    known_sessions: &[String],
+    allow_exclusions: bool,
 ) -> Result<Snapshot, Box<dyn Error>> {
     let (source, identity) = import::checked_source(path, destination)?;
     let db = Connection::open_with_flags(
@@ -147,13 +167,40 @@ pub fn read(
         return Err(invalid("unsupported Qt memory columns").into());
     }
     drop(columns);
-    let legacy: i64 = db.query_row("SELECT count(*) FROM memory_entries", [], |r| r.get(0))?;
-    if legacy != 0 {
+    let legacy: u64 = db.query_row("SELECT count(*) FROM memory_entries", [], |r| r.get(0))?;
+    if legacy != 0 && !allow_exclusions {
         return Err(invalid("legacy memory unsupported").into());
     }
+    let mut excluded = ExcludedMemory {
+        legacy,
+        project: 0,
+        personal: 0,
+        workspace_bound_sessions: 0,
+        legacy_index_present: objects.iter().any(|(name, _)| name == "memory_entries_fts"),
+        scoped_index_present: objects
+            .iter()
+            .any(|(name, _)| name == "scoped_memory_search"),
+    };
+    if allow_exclusions {
+        let (project, personal, scoped_sessions, invalid_scopes): (u64, u64, u64, u64) = db.query_row(
+            "SELECT
+                COUNT(CASE WHEN scope=2 THEN 1 END),
+                COUNT(CASE WHEN scope=3 THEN 1 END),
+                COUNT(CASE WHEN scope=1 AND workspace_id!='' THEN 1 END),
+                COUNT(CASE WHEN scope IS NULL OR scope NOT IN (1,2,3) OR workspace_id IS NULL THEN 1 END)
+             FROM scoped_memory_entries",
+            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        if invalid_scopes != 0 {
+            return Err(invalid("unsupported memory scope").into());
+        }
+        excluded.project = project;
+        excluded.personal = personal;
+        excluded.workspace_bound_sessions = scoped_sessions;
+    }
     let known: HashSet<_> = known_sessions.iter().map(String::as_str).collect();
-    let mut statement=db.prepare("SELECT id,scope,owner_id,workspace_id,key,value,provenance,source_ref,created_at,updated_at,revision,corrections FROM scoped_memory_entries ORDER BY id LIMIT 10001")?;
-    let mut query = statement.query([])?;
+    let mut statement=db.prepare("SELECT id,scope,owner_id,workspace_id,key,value,provenance,source_ref,created_at,updated_at,revision,corrections FROM scoped_memory_entries WHERE NOT ?1 OR (scope=1 AND workspace_id='') ORDER BY id LIMIT 10001")?;
+    let mut query = statement.query([allow_exclusions])?;
     let mut rows = Vec::new();
     let mut per_session: HashMap<String, usize> = HashMap::new();
     let mut keys = HashSet::new();
@@ -248,6 +295,7 @@ pub fn read(
     drop(statement);
     let snapshot = Snapshot {
         rows,
+        excluded,
         db,
         source,
         identity,
@@ -315,6 +363,11 @@ mod tests {
             .unwrap();
         drop(db);
         assert!(read(&source, &target, &[session.to_owned()]).is_err());
+        let inventory = read_preview(&source, &target, &[session.to_owned()], true).unwrap();
+        assert!(inventory.rows.is_empty());
+        assert_eq!(inventory.excluded.project, 1);
+        drop(inventory);
+
         fs::remove_dir_all(source_dir).unwrap();
         fs::remove_dir_all(target_dir).unwrap();
     }

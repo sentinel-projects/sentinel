@@ -34,7 +34,9 @@ Before replacing a stopped Windows development profile, run
 The command requires the existing private lock and the same profile identity,
 file permissions, and snapshot limits enforced at startup. It acquires the
 lock exclusively and reports the snapshot version, session and run counts,
-any interrupted or pending runs, and whether a saved model binding exists.
+archived and pinned session counts, interrupted or pending runs, and whether
+a saved model binding exists. Snapshot v3 persists archive and pin flags.
+Startup upgrades v1/v2 snapshots; keep a pre-upgrade export for older binaries.
 It does not start the named pipe, contact a provider, repair files or print
 conversation contents. A pending staging file blocks the check until normal
 daemon startup handles recovery.
@@ -514,7 +516,12 @@ sentinel-daemon-dev --profile /tmp/NEW_PRIVATE_PROFILE \
 
 The rehearsal writes and validates the same temporary stores, reports import
 counts and discards the staging directory without publishing the destination.
-It also supports `--persistent-profile` when the persistent destination is absent.
+It also supports `--persistent-profile` when the persistent destination is absent. Append `--report-json` to
+either command for a versioned count report. It distinguishes migrated
+conversation, attachment and message-reference counts from ignored settings
+and domains outside the three supplied copies. Settings values, stored
+credentials, and conversation contents are absent from the report.
+
 Use the same quiescent copies for a later import. To publish the supported
 subset, use the explicit acknowledgement flag:
 
@@ -526,6 +533,26 @@ sentinel-daemon-dev --profile /tmp/NEW_PRIVATE_PROFILE \
   /tmp/PRIVATE_SOURCE/memory.sqlite3 \
   --acknowledge-preview-subset
 ```
+
+For an offline copy consisting of a SQLite main file and its matching WAL,
+append `--normalize-wal-copies`. Supply both files in the same private source
+directory with their original corresponding filenames. Supply the settings
+copy from the same quiescent capture. SHM and rollback-journal sidecars are
+rejected. The normalizer validates complete committed WAL frames and
+checkpoints a temporary copy. It requires a finished WAL and rejects torn
+or stale tails. Live cross-store capture remains a separate operation.
+
+The JSON receipt includes `source_id`. Pass that value as
+`--expect-source-id ID` on publication with the same options to require
+the same input bytes as the reviewed preflight.
+
+For Qt memory copies that contain legacy, project, personal, or
+workspace-bound session records, add `--allow-excluded-memory --report-json`
+to rehearse the session-only subset. The report counts excluded rows by
+scope and records the presence of the Qt search indexes. The import leaves
+these records and indexes in the original copies. To publish this subset,
+supply the same flags together with `--expect-source-id` from the rehearsal.
+Unknown scopes and orphaned eligible session memories still fail validation.
 
 The accepted conversation input is Qt conversation schema v6. It preserves
 supported conversation/message IDs, order, text, timestamps, status and
@@ -706,7 +733,7 @@ at that provider. Use `--cloud-attachment-root /absolute/path` on the daemon
 or launcher to allow explicit UTF-8, FODT, DOCX and text PDF attachments from
 one workspace. The provider receives extracted text for the current request.
 The root cannot contain the active profile or credential file. For an
-explicitly selected OpenAI vision model, add `--cloud-vision CONTEXT_TOKENS
+explicitly selected OpenAI, Claude or Gemini vision model, add `--cloud-vision CONTEXT_TOKENS
 IMAGE_TOKENS` to enable one bounded current-turn image from that root. The
 configured upper bound must cover the selected model's image cost. The
 vision budget is tied to the exact startup model. Cloud history continues
@@ -773,3 +800,57 @@ Child IDs and outcomes are recorded in the parent audit.
 On Windows, `agent-analyze` submits supplied text to the local provider. The
 daemon checks quoted evidence against the input before accepting the analysis.
 This mode does not grant filesystem or process access.
+
+## Offline Qt conversation export and migration prechecks
+
+Stop the Rust daemon before running
+`sentinel-daemon-dev --profile /tmp/RUST_PROFILE --export-qt-conversations /tmp/NEW_QT_COPY`.
+The command holds the Rust profile lock, opens the conversation database
+read-only, validates the output with the Qt v6 copy reader and publishes a new
+owner-only directory. Use `--persistent-profile` to select the standalone Rust
+profile. Existing destinations are refused. The JSON receipt lists session ID
+rewrites and inferred timestamps. This export includes the supported
+conversation subset. Add `--include-settings` for a `settings.json` copy
+containing the explicitly stored theme and response instructions. Add
+`--include-memory` for a Qt v7 `memory.sqlite3` copy of session memory. The
+memory owner IDs follow the exported conversation IDs. Other settings, memory
+scopes, audit and permission stores remain separate. Image snapshots outside the Qt reader's supported formats and
+profiles exceeding the existing copy limits cause export to fail before
+publication.
+
+Run `sentinel-daemon-dev --profile /tmp/UNUSED --check-qt-permission-copy /tmp/SOURCE/permissions.sqlite3`
+to count existing and plugin grants in a detached Qt permission copy. The
+report contains counts, with each grant requiring new approval in Rust.
+
+On macOS, `sentinel-daemon-dev --persistent-profile --check-cloud-keychain KIND ACCOUNT`
+checks the selected provider's existing Rust Keychain entry offline. The
+result contains the provider and availability only.
+
+## Coordinated Qt cutover on Linux and macOS
+
+Use Qt daemon, desktop and CLI builds that include the directory write lease.
+Stop all Qt writers gracefully before rehearsing. Older binaries ignore the
+lease and must remain stopped. The source must be one owner-controlled
+directory containing `conversations.sqlite3`, `settings.json`, and
+`memory.sqlite3`. The same-directory route supports the daemon profile layout.
+The target is a new Rust profile under `/tmp` or the absent persistent profile.
+
+```sh
+sentinel-daemon-dev --persistent-profile --check-qt-cutover /absolute/qt/profile
+sentinel-daemon-dev --persistent-profile --cutover-qt-profile /absolute/qt/profile --expect-source-id ID
+```
+
+The rehearsal holds an exclusive lease while copying and validating the
+supported stores. The cutover compares the bytes against the rehearsal ID,
+persists a Qt write reservation, then publishes the Rust profile atomically.
+Qt writers that participate in the lease refuse the reserved source. The
+source database files remain available for offline recovery. This command does
+not stop processes, start Rust, redirect service units, or adopt the legacy
+Qt socket. The receipt lists storage domains outside the supported subset.
+
+If publication is interrupted, the same source and target can retry against
+the same reservation while the target is absent. Use
+`--abort-qt-cutover /absolute/qt/profile --expect-source-id ID` to release an
+unpublished reservation. If a target exists, the abort refuses. An error
+after publication requires inspecting the target before retrying. This workflow
+does not provide reverse synchronization after Rust has accepted writes.

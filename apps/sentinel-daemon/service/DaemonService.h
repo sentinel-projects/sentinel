@@ -11,6 +11,7 @@
 #include "sentinel/core/app/AppSettings.h"
 #include "sentinel/core/app/ApplicationController.h"
 #include "sentinel/core/platform/StandardPathProvider.h"
+#include "sentinel/core/platform/ProfileWriteLease.h"
 #include "sentinel/core/resource/ResourceMonitor.h"
 
 #include <QObject>
@@ -40,6 +41,7 @@ private slots:
 private:
     void startResourceTelemetryIfEnabled();
     sentinel::core::StandardPathProvider m_pathProvider;
+    sentinel::core::ProfileWriteLease m_profileWriteLease;
     std::unique_ptr<sentinel::core::AppSettings> m_settings;
     std::unique_ptr<sentinel::core::ApplicationController> m_controller;
     DaemonIpcServer m_ipcServer;

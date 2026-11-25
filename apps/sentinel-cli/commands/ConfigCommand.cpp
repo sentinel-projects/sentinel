@@ -8,7 +8,9 @@
 #include "sentinel/core/memory/JsonSettingsStore.h"
 #include "sentinel/core/platform/DpapiEncryptedSettingsStore.h"
 #include "sentinel/core/platform/StandardPathProvider.h"
+#include "sentinel/core/platform/ProfileWriteLease.h"
 
+#include <QDebug>
 #include <iostream>
 
 namespace sentinel::cli {
@@ -17,6 +19,11 @@ int executeConfigCommand(const QStringList& args) {
     const QString sub = args.value(0, QStringLiteral("get"));
 
     sentinel::core::StandardPathProvider pathProvider;
+    sentinel::core::ProfileWriteLease profileWriteLease;
+    if (!profileWriteLease.acquire(pathProvider)) {
+        qCritical("Qt profile is reserved for a Rust cutover.");
+        return 1;
+    }
     sentinel::core::AppSettings settings(
         std::make_unique<sentinel::core::DpapiEncryptedSettingsStore>(
             std::make_unique<sentinel::core::JsonSettingsStore>(pathProvider.settingsFilePath())));

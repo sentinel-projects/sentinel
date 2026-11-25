@@ -18,6 +18,7 @@ struct Subset {
     provider: Option<String>,
     legacy_ollama_model: Option<String>,
     bindings: [LocalBindingFields; 3],
+    ignored_fields: usize,
 }
 
 #[derive(Default)]
@@ -75,6 +76,7 @@ impl BindingImport {
 pub struct SettingsImport {
     pub preferences: usize,
     pub skipped_theme: bool,
+    pub ignored_fields: usize,
     pub binding: BindingImport,
 }
 
@@ -167,6 +169,7 @@ impl<'de> DeserializeSeed<'de> for Seed {
                                 read_once(&mut result.bindings[index].endpoint, &mut map)?;
                             } else {
                                 let _: IgnoredAny = map.next_value()?;
+                                result.ignored_fields += 1;
                             }
                         }
                     }
@@ -384,6 +387,7 @@ fn import_subset(
     Ok(SettingsImport {
         preferences: values.len(),
         skipped_theme,
+        ignored_fields: subset.ignored_fields,
         binding,
     })
 }

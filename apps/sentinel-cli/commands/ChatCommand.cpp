@@ -10,7 +10,9 @@
 #include "sentinel/core/memory/JsonSettingsStore.h"
 #include "sentinel/core/platform/DpapiEncryptedSettingsStore.h"
 #include "sentinel/core/platform/StandardPathProvider.h"
+#include "sentinel/core/platform/ProfileWriteLease.h"
 
+#include <QDebug>
 #include <QCoreApplication>
 #include <QEventLoop>
 #include <QTextStream>
@@ -44,6 +46,11 @@ int executeChatCommand(const QStringList& args) {
     }
 
     sentinel::core::StandardPathProvider pathProvider;
+    sentinel::core::ProfileWriteLease profileWriteLease;
+    if (!profileWriteLease.acquire(pathProvider)) {
+        qCritical("Qt profile is reserved for a Rust cutover.");
+        return 1;
+    }
     sentinel::core::AppSettings settings(
         std::make_unique<sentinel::core::DpapiEncryptedSettingsStore>(
             std::make_unique<sentinel::core::JsonSettingsStore>(pathProvider.settingsFilePath())));

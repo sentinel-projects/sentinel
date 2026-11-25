@@ -629,7 +629,7 @@ pub fn run() -> io::Result<()> {
         profile_option.as_deref() == Some(std::ffi::OsStr::new("--persistent-profile"));
     if !persistent && profile_option.as_deref() != Some(std::ffi::OsStr::new("--profile")) {
         return Err(invalid(
-            "usage: sentinel-daemon-dev (--profile /tmp/PRIVATE_DIRECTORY | --persistent-profile) [--provider ORIGIN --model ID [--context-window-tokens N [--image-token-upper-bound N]] [--provider-kind ID] [--provider-config KIND ORIGIN MODEL]... [--agent-workspace PATH [--workspace ID PATH]... [--agent-approval required|workspace] [--agent-process]] [--speech-binary PATH --speech-binary-sha256 HEX --speech-model PATH --speech-model-sha256 HEX [--speech-execution]] | --cloud-provider KIND MODEL PRIVATE_KEY_FILE [--cloud-history] [--cloud-attachment-root PATH [--cloud-vision CONTEXT_TOKENS IMAGE_TOKENS]] | --cloud-keychain KIND MODEL ACCOUNT [--cloud-history] [--cloud-attachment-root PATH [--cloud-vision CONTEXT_TOKENS IMAGE_TOKENS]] | --import-qt-preview-subset CONVERSATIONS SETTINGS MEMORY --acknowledge-preview-subset | --check-qt-preview-subset CONVERSATIONS SETTINGS MEMORY | --import-qt-settings-copy /tmp/SOURCE/settings.json | --restore-dev-set /tmp/SOURCE/SET | --restore-dev-settings-copy /tmp/SOURCE/COPY.sqlite3 | --import-qt-copy /tmp/SOURCE/COPY.sqlite3 | --import-qt-memory-copy /tmp/SOURCE/COPY.sqlite3]",
+            "usage: sentinel-daemon-dev (--profile /tmp/PRIVATE_DIRECTORY | --persistent-profile) [--provider ORIGIN --model ID [--context-window-tokens N [--image-token-upper-bound N]] [--provider-kind ID] [--provider-config KIND ORIGIN MODEL]... [--agent-workspace PATH [--workspace ID PATH]... [--agent-approval required|workspace] [--agent-process]] [--speech-binary PATH --speech-binary-sha256 HEX --speech-model PATH --speech-model-sha256 HEX [--speech-execution]] | --cloud-provider KIND MODEL PRIVATE_KEY_FILE [--cloud-history] [--cloud-attachment-root PATH [--cloud-vision CONTEXT_TOKENS IMAGE_TOKENS]] | --cloud-keychain KIND MODEL ACCOUNT [--cloud-history] [--cloud-attachment-root PATH [--cloud-vision CONTEXT_TOKENS IMAGE_TOKENS]] | --import-qt-preview-subset CONVERSATIONS SETTINGS MEMORY --acknowledge-preview-subset | --check-qt-preview-subset CONVERSATIONS SETTINGS MEMORY | --check-qt-cutover QT_DIRECTORY | --cutover-qt-profile QT_DIRECTORY --expect-source-id ID | --abort-qt-cutover QT_DIRECTORY --expect-source-id ID | --check-cloud-keychain KIND ACCOUNT | --check-qt-permission-copy /tmp/SOURCE/COPY.sqlite3 | --export-qt-conversations /tmp/NEW_DIRECTORY [--include-settings] [--include-memory] | --import-qt-settings-copy /tmp/SOURCE/settings.json | --restore-dev-set /tmp/SOURCE/SET | --restore-dev-settings-copy /tmp/SOURCE/COPY.sqlite3 | --import-qt-copy /tmp/SOURCE/COPY.sqlite3 | --import-qt-memory-copy /tmp/SOURCE/COPY.sqlite3]",
         ));
     }
     let profile = if persistent {
@@ -651,9 +651,146 @@ pub fn run() -> io::Result<()> {
                 && arg != "--restore-dev-set"
                 && arg != "--import-qt-preview-subset"
                 && arg != "--check-qt-preview-subset"
+                && arg != "--export-qt-conversations"
+                && arg != "--check-qt-permission-copy"
+                && arg != "--check-qt-cutover"
+                && arg != "--cutover-qt-profile"
+                && arg != "--abort-qt-cutover"
+                && arg != "--check-cloud-keychain"
         })
     {
         return Err(invalid("option unavailable for persistent profiles"));
+    }
+    let cutover_check = next.as_deref() == Some(std::ffi::OsStr::new("--check-qt-cutover"));
+    let cutover_abort = next.as_deref() == Some(std::ffi::OsStr::new("--abort-qt-cutover"));
+    if cutover_check
+        || cutover_abort
+        || next.as_deref() == Some(std::ffi::OsStr::new("--cutover-qt-profile"))
+    {
+        let source = PathBuf::from(
+            args.next()
+                .ok_or_else(|| invalid("missing Qt profile directory"))?,
+        );
+        let expected_id = if cutover_check {
+            None
+        } else {
+            if args.next().as_deref() != Some(std::ffi::OsStr::new("--expect-source-id")) {
+                return Err(invalid(
+                    "cutover requires --expect-source-id from the rehearsal",
+                ));
+            }
+            Some(
+                args.next()
+                    .and_then(|value| value.into_string().ok())
+                    .filter(|value| {
+                        value.len() == 64
+                            && value
+                                .bytes()
+                                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                    })
+                    .ok_or_else(|| invalid("invalid cutover source ID"))?,
+            )
+        };
+        if args.next().is_some() {
+            return Err(invalid("unexpected Qt cutover argument"));
+        }
+        if cutover_abort {
+            let id = expected_id
+                .as_deref()
+                .ok_or_else(|| invalid("missing reservation source ID"))?;
+            let report = crate::qt_cutover::abort_unpublished(&source, id)
+                .map_err(|error| io::Error::other(format!("Qt cutover abort failed: {error}")))?;
+            println!("{report}");
+            return Ok(());
+        }
+        let destination = if persistent {
+            persistent_profile_path()?
+        } else {
+            profile
+        };
+        let report =
+            crate::qt_cutover::run(&source, &destination, persistent, expected_id.as_deref())
+                .map_err(|error| io::Error::other(format!("Qt cutover failed: {error}")))?;
+        println!("{report}");
+        return Ok(());
+    }
+    if next.as_deref() == Some(std::ffi::OsStr::new("--check-cloud-keychain")) {
+        #[cfg(target_os = "macos")]
+        {
+            let kind = args
+                .next()
+                .and_then(|value| value.into_string().ok())
+                .ok_or_else(|| invalid("missing cloud provider"))?;
+            let account = args
+                .next()
+                .and_then(|value| value.into_string().ok())
+                .ok_or_else(|| invalid("missing Keychain account"))?;
+            if args.next().is_some() {
+                return Err(invalid("unexpected Keychain argument"));
+            }
+            Config::check_cloud_keychain(&kind, &account)
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            println!(
+                "{}",
+                serde_json::json!({"provider":kind,"credential_available":true})
+            );
+            return Ok(());
+        }
+        #[cfg(not(target_os = "macos"))]
+        return Err(invalid("cloud Keychain credentials require macOS"));
+    }
+    if next.as_deref() == Some(std::ffi::OsStr::new("--check-qt-permission-copy")) {
+        let source = PathBuf::from(
+            args.next()
+                .ok_or_else(|| invalid("missing Qt permission copy"))?,
+        );
+        if args.next().is_some() {
+            return Err(invalid("unexpected permission inspection argument"));
+        }
+        let report = crate::qt_permission_inspection::inspect(&source).map_err(|error| {
+            io::Error::other(format!("Qt permission inspection failed: {error}"))
+        })?;
+        println!("{report}");
+        return Ok(());
+    }
+    if next.as_deref() == Some(std::ffi::OsStr::new("--export-qt-conversations")) {
+        let destination = PathBuf::from(
+            args.next()
+                .ok_or_else(|| invalid("missing Qt export directory"))?,
+        );
+        let mut include_settings = false;
+        let mut include_memory = false;
+        for option in args.by_ref() {
+            if option == "--include-settings" && !include_settings {
+                include_settings = true;
+            } else if option == "--include-memory" && !include_memory {
+                include_memory = true;
+            } else {
+                return Err(invalid("unexpected export argument"));
+            }
+        }
+        let source = if persistent {
+            let path = persistent_profile_path()?;
+            checked_profile_directory(&path)?;
+            profile_inventory(&path)?;
+            path
+        } else {
+            private_directory(&profile)?;
+            profile
+        };
+        if !fs::symlink_metadata(source.join("daemon-dev.lock"))?.is_file() {
+            return Err(invalid("missing regular Rust profile lock"));
+        }
+        let _lock = lock_profile(&source)?;
+        let report = crate::qt_conversation_export::export(
+            &source,
+            &destination,
+            include_settings,
+            include_memory,
+        )
+        .map_err(|error| io::Error::other(format!("Qt conversation export failed: {error}")))?;
+        println!("{report}");
+        return Ok(());
     }
     let check_preview = next.as_deref() == Some(std::ffi::OsStr::new("--check-qt-preview-subset"));
     if check_preview || next.as_deref() == Some(std::ffi::OsStr::new("--import-qt-preview-subset"))
@@ -674,8 +811,42 @@ pub fn run() -> io::Result<()> {
                 "preview import requires explicit subset acknowledgement",
             ));
         }
-        if args.next().is_some() {
-            return Err(invalid("unexpected preview argument"));
+        let mut json_report = false;
+        let mut normalize_wal = false;
+        let mut allow_excluded_memory = false;
+        let mut expected_source_id = None;
+        while let Some(option) = args.next() {
+            if option == "--report-json" && !json_report {
+                json_report = true;
+            } else if option == "--normalize-wal-copies" && !normalize_wal {
+                normalize_wal = true;
+            } else if option == "--allow-excluded-memory" && !allow_excluded_memory {
+                allow_excluded_memory = true;
+            } else if option == "--expect-source-id"
+                && !check_preview
+                && expected_source_id.is_none()
+            {
+                let id = args
+                    .next()
+                    .and_then(|value| value.into_string().ok())
+                    .filter(|value| {
+                        value.len() == 64
+                            && value
+                                .bytes()
+                                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                    })
+                    .ok_or_else(|| invalid("expected a lowercase 64-digit source ID"))?;
+                expected_source_id = Some(id);
+            } else {
+                return Err(invalid("unexpected preview argument"));
+            }
+        }
+        if allow_excluded_memory
+            && (!json_report || (!check_preview && expected_source_id.is_none()))
+        {
+            return Err(invalid(
+                "excluded memory requires a JSON report and a reviewed source ID for publication",
+            ));
         }
         let destination = if persistent {
             persistent_profile_path()?
@@ -693,8 +864,53 @@ pub fn run() -> io::Result<()> {
             } else {
                 crate::qt_preview_import::Mode::Publish
             },
+            normalize_wal,
+            expected_source_id.as_deref(),
+            allow_excluded_memory,
         )
         .map_err(|error| io::Error::other(format!("Qt preview import failed: {error}")))?;
+        if json_report {
+            let model_binding = match report.settings.binding {
+                crate::qt_settings_import::BindingImport::Absent => "absent",
+                crate::qt_settings_import::BindingImport::Imported => "included",
+                crate::qt_settings_import::BindingImport::Skipped => "skipped",
+            };
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema_version": 1,
+                    "outcome": if check_preview { "validated" } else { "published" },
+                    "source_id": report.source_id,
+                    "normalized_wal_copies": report.normalized_wal_copies,
+                    "included": {
+                        "conversations": report.conversations,
+                        "archived": report.archived,
+                        "pinned": report.pinned,
+                        "messages": report.messages,
+                        "attachments": report.attachments,
+                        "reply_references": report.reply_references,
+                        "replacement_references": report.replacement_references,
+                        "session_memory": report.memory,
+                        "preferences": report.settings.preferences,
+                        "local_model_binding": model_binding,
+                    },
+                    "excluded": {
+                        "ignored_settings_fields": report.settings.ignored_fields,
+                        "unsupported_theme": report.settings.skipped_theme,
+                        "qt_memory": report.excluded_memory,
+                        "domains_not_inspected": ["credentials", "agent", "permissions", "chat_history",
+                            "ipc_projections", "other_memory_stores", "other_search_indexes"],
+                    },
+                })
+            );
+            return Ok(());
+        }
+        if report.normalized_wal_copies > 0 {
+            println!(
+                "Normalized {} detached SQLite WAL copies.",
+                report.normalized_wal_copies
+            );
+        }
         if report.settings.skipped_theme {
             println!("Unsupported Qt theme was skipped; no theme approximation was applied.");
         }

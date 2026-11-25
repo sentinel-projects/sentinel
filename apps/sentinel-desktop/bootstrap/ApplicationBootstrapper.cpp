@@ -186,6 +186,10 @@ ApplicationBootstrapper::ApplicationBootstrapper(int argc, char* argv[], QObject
 ApplicationBootstrapper::~ApplicationBootstrapper() = default;
 
 bool ApplicationBootstrapper::ensureSingleInstance() {
+    if (!m_profileWriteLease.acquire(m_pathProvider)) {
+        qCritical() << "Qt profile is reserved for a Rust cutover.";
+        return false;
+    }
     return m_singleInstanceGuard.tryLockAndSetupIpc();
 }
 

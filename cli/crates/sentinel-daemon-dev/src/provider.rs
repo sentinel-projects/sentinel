@@ -163,6 +163,14 @@ impl Config {
         )
     }
 
+    #[cfg(target_os = "macos")]
+    pub fn check_cloud_keychain(kind: &str, account: &str) -> Result<(), ProviderError> {
+        let provider = Self::cloud_kind(kind)?;
+        crate::cloud::keychain_credential(provider, account)
+            .map(|_| ())
+            .map_err(|_| ProviderError::InvalidConfig("cloud Keychain credential unavailable"))
+    }
+
     #[cfg(unix)]
     fn cloud_kind(kind: &str) -> Result<crate::cloud::CloudProvider, ProviderError> {
         crate::cloud::CloudProvider::parse(kind)

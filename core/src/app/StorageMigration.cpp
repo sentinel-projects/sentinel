@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "sentinel/core/app/StorageMigration.h"
+#include "sentinel/core/platform/ProfileWriteLease.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -174,7 +175,16 @@ int migrateRoot(const QString& legacyPath, const QString& currentPath) {
         return 0;
     }
 
-    if (!QFileInfo::exists(currentPath)) {
+    const bool targetExists = QFileInfo::exists(currentPath);
+    ProfileWriteLease migrationLease;
+    const QStringList roots = targetExists ? QStringList{legacyPath, currentPath}
+                                           : QStringList{legacyPath};
+    if (!migrationLease.acquireDirectories(roots, true)) {
+        qWarning() << "Storage migration deferred because a profile is in use or reserved.";
+        return 0;
+    }
+
+    if (!targetExists) {
         QDir().mkpath(QFileInfo(currentPath).absolutePath());
         if (QDir().rename(legacyPath, currentPath)) {
             qInfo().noquote() << "Storage migration moved" << legacyPath << "to" << currentPath;
@@ -182,10 +192,7 @@ int migrateRoot(const QString& legacyPath, const QString& currentPath) {
             return 1;
         }
         qWarning().noquote() << "Storage migration could not move" << legacyPath << "to"
-                             << currentPath << "; merging entries instead.";
-    }
-
-    if (!QFileInfo::exists(currentPath)) {
+                             << currentPath << "; retrying requires leases on both directories.";
         return 0;
     }
 
