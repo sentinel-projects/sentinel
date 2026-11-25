@@ -2,6 +2,27 @@
 
 This developer experiment compares a Slint/Winit desktop client with the current Qt desktop. It uses the existing daemon and generated IPC contract. See [ADR-0005](../../docs/decisions/ADR-0005-rust-desktop-runtime-migration.md) for the migration plan.
 
+
+On Windows, pass `--socket` with the development daemon's named pipe and
+`--panel --global-shortcut` to register Ctrl+Alt+S. Add `--start-hidden` to
+show the panel on the first shortcut. Closing the panel hides it in shortcut
+mode. Ctrl+Shift+Q exits and releases the shortcut. The panel requests foreground activation and flashes the taskbar when Windows declines. The notification-area icon toggles the window and offers a Quit action.
+The app registers the icon again after Explorer restarts. Native Windows
+acceptance is pending.
+
+On Linux X11, `--panel --global-shortcut` registers Ctrl+Alt+S with the
+X server. `--start-hidden` is supported. The panel requests activation
+through the window manager. A conflicting grab or missing keyboard mapping
+reports an error. Wayland uses the desktop GlobalShortcuts portal instead. The portal must
+confirm the Sentinel binding. Its configured shortcut toggles the panel.
+If the portal includes an XDG activation token, Slint submits it for the panel
+surface. The compositor decides whether to raise the window. A desktop with a
+KDE-compatible StatusNotifier watcher can also show and hide the panel using
+the tray icon. Tray menus and native acceptance remain open.
+
+F5 reconnects when disconnected. F6 focuses the composer on Chat, Agent or
+Quick Panel.
+
 ## Run on macOS or Linux
 
 Use Rust 1.100, the toolchain used to lock this standalone workspace. Slint 1.19 requires at least Rust 1.95. This experiment leaves the CLI and TUI workspace on its current toolchain policy. Start a development C++ daemon with a disposable profile and a socket in an owner-only directory. Configure a model or local streaming fixture in that profile, then run:

@@ -14,3 +14,21 @@ slint = { version = "=1.19.0", default-features = false, features = ["std", "com
 
 [build-dependencies]
 slint-build = "=1.19.0"
+
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6"
+slint = { version = "=1.19.0", default-features = false, features = ["raw-window-handle-06"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+async-io = "2.6"
+futures-lite = "2.6"
+serde = "1"
+zbus = "5.19"
+libc = "0.2"
+raw-window-handle = "0.6"
+slint = { version = "=1.19.0", default-features = false, features = ["raw-window-handle-06"] }
+x11rb = "0.13.2"
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }

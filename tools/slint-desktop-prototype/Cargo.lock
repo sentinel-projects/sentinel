@@ -3812,10 +3812,21 @@ dependencies = [
 name = "sentinel-slint-prototype"
 version = "0.1.0"
 dependencies = [
+ "async-io",
+ "futures-lite",
+ "libc",
+ "raw-window-handle",
  "sentinel-ipc",
+ "serde",
  "serde_json",
  "slint",
  "slint-build",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "windows-sys 0.61.2",
+ "x11rb",
+ "zbus",
 ]
 
 [[package]]

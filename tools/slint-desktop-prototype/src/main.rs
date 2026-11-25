@@ -1,7 +1,17 @@
+#[cfg(target_os = "linux")]
+mod linux_tray;
 #[cfg(target_os = "macos")]
 mod macos_shortcut;
 #[cfg(target_os = "macos")]
 mod macos_tray;
+#[cfg(target_os = "linux")]
+mod wayland_activation;
+#[cfg(target_os = "linux")]
+mod wayland_shortcut;
+#[cfg(windows)]
+mod windows_shortcut;
+#[cfg(target_os = "linux")]
+mod x11_shortcut;
 
 use sentinel_ipc::{Client, Envelope, Error, contract::RequestPayload};
 use serde_json::Value;
@@ -39,6 +49,7 @@ enum Command {
     LoadMoreMemory,
     RefreshAgentHistory,
     LoadAgentRun(usize),
+    LoadAgentChild(usize),
     LoadOlderAgentRuns,
     RefreshWorkspaceFiles,
     RefreshAttachmentFiles,
@@ -227,6 +238,7 @@ struct View {
     agent_history_capable: bool,
     agent_runs: Vec<(String, String, String)>,
     agent_selected_run: String,
+    agent_children: Vec<String>,
     agent_history_view: String,
     agent_plan_lifecycle: String,
     agent_history_status: String,
@@ -468,6 +480,13 @@ impl PanelUpdates {
                             .position(|(id, _, _)| id == &view.agent_selected_run)
                             .map_or(-1, |index| index as i32),
                     );
+                    panel.set_agent_children(slint::ModelRc::new(slint::VecModel::from(
+                        view.agent_children
+                            .iter()
+                            .cloned()
+                            .map(slint::SharedString::from)
+                            .collect::<Vec<_>>(),
+                    )));
                     panel.set_agent_runs_has_more(view.agent_runs_has_more);
                     panel.set_agent_directory_mode(view.agent_directory_mode);
                     panel.set_agent_create_mode(view.agent_create_mode);
@@ -800,6 +819,11 @@ fn refresh_workspace_files(
         return Ok(());
     }
     view.workspace_files_status = "Loading authorized workspace snapshot…".into();
+    let previous_session = view.attachment_files_session_id.clone();
+    let previous_root = view.attachment_files_root.clone();
+    let previous_workspace = view.attachment_files_workspace_id.clone();
+    let mut previous_attachments = std::mem::take(&mut view.attachments);
+    let previous_selection = view.selected_attachment;
     clear_attachments(view, "Loading the authorized file list…");
     let identity = request(client, RequestPayload::TerminalState {}).and_then(|state| {
         let current = &state["workspace"];
@@ -852,18 +876,19 @@ fn refresh_workspace_files(
             view.workspace_files_root = root;
             view.workspace_files_view = display;
             view.workspace_files_truncated = truncated;
+            if previous_session == session.id
+                && previous_root == expected_root
+                && previous_workspace == workspace_id
+            {
+                previous_attachments.retain(|path| files.contains(path));
+                view.attachments = previous_attachments;
+                view.selected_attachment =
+                    previous_selection.min(view.attachments.len().saturating_sub(1));
+            }
             view.attachment_files = files;
-            view.attachment_files_session_id = session.id.clone();
+            view.attachment_files_session_id.clone_from(&session.id);
             view.attachment_files_root = expected_root;
             view.attachment_files_workspace_id = workspace_id;
-            view.attachments
-                .retain(|path| view.attachment_files.contains(path));
-            if view.selected_attachment_candidate >= view.attachment_files.len() {
-                view.selected_attachment_candidate = 0;
-            }
-            if view.selected_attachment >= view.attachments.len() {
-                view.selected_attachment = 0;
-            }
             view.workspace_files_status = if truncated {
                 "Snapshot loaded; results are truncated.".into()
             } else {
@@ -877,8 +902,9 @@ fn refresh_workspace_files(
                 "Choose from the visible authorized files; the snapshot is truncated.".into()
             } else {
                 format!(
-                    "{} authorized workspace files available. Text-only attachments: up to 4 files, 8 KiB each, 32 KiB total.",
-                    view.attachment_files.len()
+                    "{} authorized workspace files available. {} attached.",
+                    view.attachment_files.len(),
+                    view.attachments.len()
                 )
             };
             Ok(())
@@ -1376,6 +1402,7 @@ fn save_provider_endpoint(
 }
 
 fn refresh_models(client: &mut Client, view: &mut View) -> Result<(), Error> {
+    refresh_cloud_attachment_formats(client, view);
     if view.local_provider_catalog {
         let state = request(client, RequestPayload::TerminalState {})?;
         view.local_providers = state["providers"]
@@ -2578,13 +2605,15 @@ fn select_model(client: &mut Client, index: usize, view: &mut View) -> Result<()
     };
     let provider = provider.clone();
     let model = model.clone();
-    let selected = match request(
+    let selection = request(
         client,
         RequestPayload::ModelSelect {
             provider_id: provider.clone(),
             model_id: model.clone(),
         },
-    ) {
+    );
+    refresh_cloud_attachment_formats(client, view);
+    let selected = match selection {
         Ok(selected) => selected,
         Err(error) => {
             match request(client, RequestPayload::ModelCurrent {}) {
@@ -2926,6 +2955,7 @@ fn clear_memory_selection(view: &mut View, message: &str) {
 fn clear_agent_history(view: &mut View, message: &str) {
     view.agent_runs.clear();
     view.agent_selected_run.clear();
+    view.agent_children.clear();
     view.agent_history_view.clear();
     view.agent_plan_lifecycle.clear();
     view.agent_runs_before_time.clear();
@@ -2933,6 +2963,55 @@ fn clear_agent_history(view: &mut View, message: &str) {
     view.agent_runs_has_more = false;
     view.agent_history_status = message.into();
 }
+fn refresh_cloud_attachment_formats(client: &mut Client, view: &mut View) {
+    if !view.cloud_chat
+        || !client
+            .capabilities()
+            .iter()
+            .any(|value| value == "terminal-state")
+    {
+        return;
+    }
+    let cloud_image_input = request(client, RequestPayload::TerminalState {})
+        .ok()
+        .and_then(|state| state["properties"]["cloudImageInput"].as_bool())
+        .unwrap_or_default();
+    update_attachment_formats(client.capabilities(), cloud_image_input, view);
+}
+
+fn update_attachment_formats(capabilities: &[String], cloud_image_input: bool, view: &mut View) {
+    let mut formats = vec!["UTF-8 text"];
+    if cloud_image_input
+        || (!view.cloud_chat
+            && capabilities
+                .iter()
+                .any(|value| value == "chat-image-jpeg-webp"))
+    {
+        formats.push("PNG, JPEG and static WebP with an image-enabled model");
+    } else if !view.cloud_chat && capabilities.iter().any(|value| value == "chat-image-png") {
+        formats.push("PNG with an image-enabled model");
+    }
+    if capabilities
+        .iter()
+        .any(|value| value == "chat-attachments-fodt")
+    {
+        formats.push("Flat OpenDocument Text (.fodt)");
+    }
+    if capabilities
+        .iter()
+        .any(|value| value == "chat-attachments-docx")
+    {
+        formats.push("Word document (.docx)");
+    }
+    if capabilities
+        .iter()
+        .any(|value| value == "chat-attachments-pdf-text")
+    {
+        formats.push("Text PDF (.pdf)");
+    }
+    view.attachment_formats = formats.join(", ");
+}
+
 fn apply_capabilities(capabilities: &[String], view: &mut View) {
     view.agent_text_analysis = capabilities
         .iter()
@@ -2958,34 +3037,13 @@ fn apply_capabilities(capabilities: &[String], view: &mut View) {
     view.ollama_helper_advertised = capabilities
         .iter()
         .any(|value| value == "ollama-model-operations");
-    let mut formats = vec!["UTF-8 text"];
-    if capabilities
-        .iter()
-        .any(|value| value == "chat-image-jpeg-webp")
-    {
-        formats.push("PNG, JPEG and static WebP with an image-enabled model");
-    } else if capabilities.iter().any(|value| value == "chat-image-png") {
-        formats.push("PNG with an image-enabled model");
-    }
-    if capabilities
-        .iter()
-        .any(|value| value == "chat-attachments-fodt")
-    {
-        formats.push("Flat OpenDocument Text (.fodt)");
-    }
-    if capabilities
-        .iter()
-        .any(|value| value == "chat-attachments-docx")
-    {
-        formats.push("Word document (.docx)");
-    }
-    if capabilities
-        .iter()
-        .any(|value| value == "chat-attachments-pdf-text")
-    {
-        formats.push("Text PDF (.pdf)");
-    }
-    view.attachment_formats = formats.join(", ");
+    update_attachment_formats(
+        capabilities,
+        capabilities
+            .iter()
+            .any(|value| value == "dev-cloud-image-attachments"),
+        view,
+    );
     view.desktop_settings_capable = capabilities.iter().any(|value| value == "desktop-settings");
     view.dev_backup_capable = capabilities
         .iter()
@@ -3163,6 +3221,7 @@ fn apply_capabilities(capabilities: &[String], view: &mut View) {
     if !view.agent_history_capable {
         view.agent_runs.clear();
         view.agent_selected_run.clear();
+        view.agent_children.clear();
         view.agent_history_view.clear();
         view.agent_plan_lifecycle.clear();
         view.agent_history_status = "Agent audit history is not advertised by this daemon.".into();
@@ -4284,6 +4343,7 @@ fn load_agent_run_history(client: &mut Client, view: &mut View, index: usize) ->
         return Err(Error::Usage("Select an Agent run first.".into()));
     };
     let run_id = run_id.clone();
+    view.agent_children.clear();
     view.agent_plan_lifecycle =
         "Loading persisted plan steps; missing or legacy records will remain unknown.".into();
     let response = request(
@@ -4316,9 +4376,27 @@ fn load_agent_run_history(client: &mut Client, view: &mut View, index: usize) ->
             .push_str("\nDelegated read tasks\n");
         for child in children.iter().take(4) {
             let id = catalog_text(child["runId"].as_str(), 128);
+            if child["parentRunId"].as_str() == Some(view.agent_selected_run.as_str())
+                && child["runId"].as_str() == Some(id.as_str())
+                && !id.is_empty()
+            {
+                view.agent_children.push(id.clone());
+            }
             let state = catalog_text(child["state"].as_str(), 64);
-            view.agent_plan_lifecycle
-                .push_str(&format!("• {id} · {state}\n"));
+            let reason = catalog_text(child["terminalReason"].as_str(), 128);
+            let receipt_count = history["tools"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|receipt| receipt["childRunId"].as_str() == child["runId"].as_str())
+                .count();
+            view.agent_plan_lifecycle.push_str(&format!(
+                "• {id} · {state} · {receipt_count} visible tool receipts"
+            ));
+            if !reason.is_empty() {
+                view.agent_plan_lifecycle.push_str(&format!(" · {reason}"));
+            }
+            view.agent_plan_lifecycle.push('\n');
         }
     }
 
@@ -4328,6 +4406,40 @@ fn load_agent_run_history(client: &mut Client, view: &mut View, index: usize) ->
     } else {
         "Loaded persisted Agent audit: run, tools, approvals, and evidence.".into()
     };
+    Ok(())
+}
+
+fn load_agent_child_history(
+    client: &mut Client,
+    view: &mut View,
+    index: usize,
+) -> Result<(), Error> {
+    let id = view
+        .agent_children
+        .get(index)
+        .ok_or_else(|| Error::Usage("Select a delegated read first.".into()))?;
+    let response = request(
+        client,
+        RequestPayload::AgentHistory {
+            run_id: id.clone(),
+            before_time: String::new(),
+            before_id: String::new(),
+        },
+    )?;
+    let history = response.get("history").unwrap_or(&response);
+    if history["child"]["runId"].as_str() != Some(id.as_str())
+        || history["run"]["runId"].as_str() != Some(view.agent_selected_run.as_str())
+    {
+        return Err(Error::Protocol("Delegated audit identity mismatch.".into()));
+    }
+    let mut rendered = serde_json::to_string_pretty(history)
+        .map_err(|error| Error::Protocol(error.to_string()))?;
+    if rendered.len() > 32_768 {
+        rendered.truncate(rendered.floor_char_boundary(32_768));
+        rendered.push_str("\n… audit preview truncated by the desktop client …");
+    }
+    view.agent_history_view = rendered;
+    view.agent_history_status = format!("Loaded delegated audit for {id}.");
     Ok(())
 }
 
@@ -5413,6 +5525,7 @@ fn worker(path: PathBuf, commands: Receiver<Command>, updates: PanelUpdates) {
                     | Command::RespondApproval(_)
                     | Command::RefreshAgentHistory
                     | Command::LoadAgentRun(_)
+                    | Command::LoadAgentChild(_)
                     | Command::LoadOlderAgentRuns
             ) || (view.agent_mode && matches!(&command, Command::Send { .. }));
             let mut clear_draft = false;
@@ -5430,6 +5543,7 @@ fn worker(path: PathBuf, commands: Receiver<Command>, updates: PanelUpdates) {
                         page.as_str(),
                         "chat"
                             | "models"
+                            | "dashboard"
                             | "agent"
                             | "settings"
                             | "memory"
@@ -5465,7 +5579,7 @@ fn worker(path: PathBuf, commands: Receiver<Command>, updates: PanelUpdates) {
                             .as_mut()
                             .ok_or(Error::Disconnected)
                             .and_then(|client| refresh_ollama_helper(client, &mut view))
-                    } else if view.active_page == "settings" {
+                    } else if matches!(view.active_page.as_str(), "settings" | "dashboard") {
                         client
                             .as_mut()
                             .ok_or(Error::Disconnected)
@@ -5751,6 +5865,10 @@ fn worker(path: PathBuf, commands: Receiver<Command>, updates: PanelUpdates) {
                     .as_mut()
                     .ok_or(Error::Disconnected)
                     .and_then(|client| load_agent_run_history(client, &mut view, index)),
+                Command::LoadAgentChild(index) => client
+                    .as_mut()
+                    .ok_or(Error::Disconnected)
+                    .and_then(|client| load_agent_child_history(client, &mut view, index)),
                 Command::RespondApproval(allow) => client
                     .as_mut()
                     .ok_or(Error::Disconnected)
@@ -6039,7 +6157,7 @@ fn submit(panel: &slint::Weak<Panel>, sender: &SyncSender<Command>, command: Com
             Command::RefreshAgentHistory | Command::LoadOlderAgentRuns => {
                 panel.set_agent_history_status("Loading persisted Agent run history…".into())
             }
-            Command::LoadAgentRun(_) => {
+            Command::LoadAgentRun(_) | Command::LoadAgentChild(_) => {
                 panel.set_agent_history_status("Loading persisted run details…".into())
             }
             Command::RenameSession(_) => {
@@ -6149,11 +6267,14 @@ fn submit(panel: &slint::Weak<Panel>, sender: &SyncSender<Command>, command: Com
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 fn queue_window_toggle(weak: slint::Weak<Panel>, quick_panel: bool) {
     if let Err(error) = slint::invoke_from_event_loop(move || {
         if let Some(panel) = weak.upgrade() {
-            if panel.window().is_visible() && (!quick_panel || panel.get_compact()) {
+            if panel.window().is_visible()
+                && !panel.window().is_minimized()
+                && (!quick_panel || panel.get_compact())
+            {
                 if let Err(error) = panel.hide() {
                     eprintln!("Could not hide Quick Panel: {error}");
                 }
@@ -6161,15 +6282,23 @@ fn queue_window_toggle(weak: slint::Weak<Panel>, quick_panel: bool) {
                 if quick_panel && !panel.get_compact() {
                     panel.invoke_toggle_shell_mode();
                 }
+                #[cfg(target_os = "macos")]
                 if let Err(error) = macos_shortcut::activate_application() {
                     eprintln!("Could not activate Quick Panel: {error}");
                 }
                 if let Err(error) = panel.show() {
                     eprintln!("Could not show Quick Panel: {error}");
-                } else if panel.get_compact()
-                    || matches!(panel.get_active_page().as_str(), "chat" | "agent")
-                {
-                    panel.invoke_focus_composer();
+                } else {
+                    if panel.window().is_minimized() {
+                        panel.window().set_minimized(false);
+                    }
+                    #[cfg(windows)]
+                    windows_shortcut::request_foreground(panel.window());
+                    if panel.get_compact()
+                        || matches!(panel.get_active_page().as_str(), "chat" | "agent")
+                    {
+                        panel.invoke_focus_composer();
+                    }
                 }
             }
         }
@@ -6217,7 +6346,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if global_shortcut && !compact {
         return Err("--global-shortcut requires --panel".into());
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
     if global_shortcut {
         return Err("global shortcut is unavailable on this platform".into());
     }
@@ -6314,6 +6443,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let queue = sender.clone();
     panel.on_reconnect(move || submit(&weak, &queue, Command::Reconnect));
     let weak = panel.as_weak();
+    panel.on_exit_app(|| {
+        let _ = slint::quit_event_loop();
+    });
     panel.on_quit_app(move || {
         if global_shortcut {
             if let Some(panel) = weak.upgrade() {
@@ -6531,6 +6663,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     panel.on_load_older_agent_runs(move || submit(&weak, &queue, Command::LoadOlderAgentRuns));
     let weak = panel.as_weak();
     let queue = sender.clone();
+    panel.on_select_agent_child(move |index| {
+        if let Ok(index) = usize::try_from(index) {
+            submit(&weak, &queue, Command::LoadAgentChild(index));
+        }
+    });
+    let weak = panel.as_weak();
+    let queue = sender.clone();
     panel.on_respond_approval(move |allow| {
         submit(&weak, &queue, Command::RespondApproval(allow));
     });
@@ -6591,6 +6730,149 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .on_close_requested(|| slint::CloseRequestResponse::HideWindow);
         if start_hidden {
             panel.hide()?;
+        }
+        slint::run_event_loop_until_quit()?;
+        return Ok(());
+    }
+    #[cfg(windows)]
+    if global_shortcut {
+        let weak = panel.as_weak();
+        let _shortcut = windows_shortcut::Shortcut::register(move |action| match action {
+            windows_shortcut::Action::Shortcut => queue_window_toggle(weak.clone(), true),
+            windows_shortcut::Action::Toggle => queue_window_toggle(weak.clone(), false),
+            windows_shortcut::Action::Quit => {
+                let _ = slint::invoke_from_event_loop(|| {
+                    let _ = slint::quit_event_loop();
+                });
+            }
+        })
+        .map_err(|error| {
+            std::io::Error::other(format!(
+                "Could not initialize Windows Quick Panel integration: {error}"
+            ))
+        })?;
+        panel
+            .window()
+            .on_close_requested(|| slint::CloseRequestResponse::HideWindow);
+        if !start_hidden {
+            panel.show()?;
+            panel.invoke_focus_composer();
+        }
+        slint::run_event_loop_until_quit()?;
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    let _tray = if global_shortcut {
+        let weak = std::sync::Mutex::new(panel.as_weak());
+        Some(linux_tray::Tray::spawn(move || {
+            if let Ok(weak) = weak.lock() {
+                queue_window_toggle(weak.clone(), false);
+            }
+        })?)
+    } else {
+        None
+    };
+    #[cfg(target_os = "linux")]
+    if global_shortcut
+        && (std::env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty())
+            || std::env::var_os("XDG_SESSION_TYPE").is_some_and(|value| value == "wayland"))
+    {
+        let weak = panel.as_weak();
+        let _shortcut = wayland_shortcut::Shortcut::register(move |token| {
+            let weak = weak.clone();
+            if let Err(error) = slint::invoke_from_event_loop(move || {
+                let Some(panel) = weak.upgrade() else { return };
+                if panel.window().is_visible()
+                    && !panel.window().is_minimized()
+                    && panel.get_compact()
+                {
+                    if let Err(error) = panel.hide() {
+                        eprintln!("Could not hide Quick Panel: {error}");
+                    }
+                    return;
+                }
+                if !panel.get_compact() {
+                    panel.invoke_toggle_shell_mode();
+                }
+                if let Err(error) = panel.show() {
+                    eprintln!("Could not show Quick Panel: {error}");
+                    return;
+                }
+                panel.window().set_minimized(false);
+                panel.invoke_focus_composer();
+                if let Some(token) = token {
+                    let weak = panel.as_weak();
+                    slint::Timer::single_shot(Duration::ZERO, move || {
+                        if let Some(panel) = weak.upgrade()
+                            && panel.window().is_visible()
+                            && let Err(error) = wayland_activation::request(panel.window(), token)
+                        {
+                            eprintln!("Could not request Wayland foreground activation: {error}");
+                        }
+                    });
+                }
+            }) {
+                eprintln!("Could not queue Wayland Quick Panel activation: {error}");
+            }
+        })
+        .map_err(|error| {
+            std::io::Error::other(format!(
+                "Could not bind the Wayland Quick Panel shortcut: {error}"
+            ))
+        })?;
+        panel
+            .window()
+            .on_close_requested(|| slint::CloseRequestResponse::HideWindow);
+        if !start_hidden {
+            panel.show()?;
+            panel.invoke_focus_composer();
+        }
+        let result = slint::run_event_loop_until_quit();
+        wayland_activation::clear();
+        result?;
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    if global_shortcut {
+        let weak = panel.as_weak();
+        let _shortcut = x11_shortcut::Shortcut::register(move |activation| {
+            let weak = weak.clone();
+            if let Err(error) = slint::invoke_from_event_loop(move || {
+                let Some(panel) = weak.upgrade() else { return };
+                let window = panel.window();
+                if window.is_visible() && !window.is_minimized() && panel.get_compact() {
+                    if let Err(error) = panel.hide() {
+                        eprintln!("Could not hide Quick Panel: {error}");
+                    }
+                    return;
+                }
+                if !panel.get_compact() {
+                    panel.invoke_toggle_shell_mode();
+                }
+                if let Err(error) = panel.show() {
+                    eprintln!("Could not show Quick Panel: {error}");
+                    return;
+                }
+                if window.is_minimized() {
+                    window.set_minimized(false);
+                }
+                if let Err(error) = activation.request_foreground(window) {
+                    eprintln!("Could not request X11 foreground activation: {error}");
+                }
+                panel.invoke_focus_composer();
+            }) {
+                eprintln!("Could not queue X11 Quick Panel activation: {error}");
+            }
+        })
+        .map_err(|error| {
+            std::io::Error::other(format!("Could not register X11 Ctrl+Alt+S: {error}"))
+        })?;
+        panel
+            .window()
+            .on_close_requested(|| slint::CloseRequestResponse::HideWindow);
+        if !start_hidden {
+            panel.show()?;
+            panel.invoke_focus_composer();
         }
         slint::run_event_loop_until_quit()?;
         return Ok(());

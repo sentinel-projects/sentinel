@@ -134,6 +134,7 @@ export component Panel inherits Window {
     in property <string> agent-history-view;
     in property <string> agent-plan-lifecycle;
     in property <[string]> agent-runs;
+    in property <[string]> agent-children;
     in property <int> selected-agent-run: -1;
     in property <bool> agent-runs-has-more;
     in property <bool> agent-directory-mode;
@@ -169,6 +170,7 @@ export component Panel inherits Window {
 
     callback reconnect();
     callback quit-app();
+    callback exit-app();
     callback toggle-shell-mode();
     callback navigate(string);
     callback set-theme(int);
@@ -220,6 +222,7 @@ export component Panel inherits Window {
     callback set-agent-work-plan-mode(bool);
     callback refresh-agent-history();
     callback select-agent-run(int);
+    callback select-agent-child(int);
     callback load-older-agent-runs();
     callback respond-approval(bool);
     callback new-session();
@@ -284,11 +287,20 @@ export component Panel inherits Window {
                     root.new-session();
                 }
                 EventResult.accept
+            } else if (event.modifiers.control || event.modifiers.meta) && event.modifiers.shift && (event.text == "q" || event.text == "Q") {
+                root.exit-app();
+                EventResult.accept
             } else if (event.modifiers.control || event.modifiers.meta) && event.text == "w" {
                 root.quit-app();
                 EventResult.accept
             } else if (event.modifiers.control || event.modifiers.meta) && event.text == Key.Return && root.can-send {
                 root.send(root.submission-text);
+                EventResult.accept
+            } else if event.text == Key.F5 && !root.connected && !root.waiting {
+                root.reconnect();
+                EventResult.accept
+            } else if event.text == Key.F6 && (root.active-page == "chat" || root.active-page == "agent" || root.compact) {
+                root.focus-composer();
                 EventResult.accept
             } else if event.text == Key.Escape && root.connected && root.running && !root.waiting {
                 root.stop();
@@ -314,6 +326,7 @@ export component Panel inherits Window {
         if !root.compact && root.width >= 820px : HorizontalLayout {
             spacing: 8px;
             Text { text: "SENTINEL"; font-size: 18px; color: Palette.foreground; vertical-alignment: center; }
+            Button { text: "Dashboard"; clicked => { root.navigate("dashboard"); } }
             Button { text: "Chat"; clicked => { root.navigate("chat"); } }
             Button { text: "Models"; clicked => { root.navigate("models"); } }
             Button { text: "Agent"; enabled: root.agent-capable || root.agent-history-capable; clicked => { root.navigate("agent"); } }
@@ -327,13 +340,14 @@ export component Panel inherits Window {
             Button { text: "Settings"; clicked => { root.navigate("settings"); } }
             Rectangle { horizontal-stretch: 1; }
             Text { text: root.connected ? "Connected" : "Disconnected"; vertical-alignment: center; }
-            Button { text: "Reconnect"; enabled: !root.waiting; clicked => { root.reconnect(); } }
+            Button { text: "Reconnect"; accessible-label: "Reconnect to daemon (F5 when disconnected)"; enabled: !root.waiting; clicked => { root.reconnect(); } }
         }
         if !root.compact && root.width < 820px : VerticalLayout {
             spacing: 4px;
             HorizontalLayout {
                 spacing: 6px;
                 Text { text: "SENTINEL"; font-size: 16px; color: Palette.foreground; vertical-alignment: center; }
+                Button { text: "Dashboard"; clicked => { root.navigate("dashboard"); } }
                 Button { text: "Chat"; clicked => { root.navigate("chat"); } }
                 Button { text: "Models"; clicked => { root.navigate("models"); } }
                 Button { text: "Agent"; enabled: root.agent-capable || root.agent-history-capable; clicked => { root.navigate("agent"); } }
@@ -350,11 +364,11 @@ export component Panel inherits Window {
                 Button { text: "Settings"; clicked => { root.navigate("settings"); } }
                 Rectangle { horizontal-stretch: 1; }
                 Text { text: root.connected ? "Connected" : "Disconnected"; vertical-alignment: center; }
-                Button { text: "Reconnect"; enabled: !root.waiting; clicked => { root.reconnect(); } }
+                Button { text: "Reconnect"; accessible-label: "Reconnect to daemon (F5 when disconnected)"; enabled: !root.waiting; clicked => { root.reconnect(); } }
             }
         }
         if !root.compact : Text {
-            text: root.active-page == "chat" ? "Chat"
+            text: root.active-page == "dashboard" ? "Dashboard" : root.active-page == "chat" ? "Chat"
                 : (root.active-page == "models" ? "Models"
                 : (root.active-page == "agent" ? "Agent"
                 : (root.active-page == "workspace" ? "Workspace"
@@ -886,6 +900,36 @@ export component Panel inherits Window {
                 toggled => { root.set-agent-include-hidden(self.checked); }
             }
         }
+        if root.active-page == "dashboard" && !root.compact : VerticalLayout {
+            spacing: 10px;
+            Text { text: "Runtime readiness"; font-size: 18px; }
+            Text { text: root.connected ? root.runtime-projection-status : "Connect to the daemon to see runtime readiness."; wrap: word-wrap; }
+            TextEdit {
+                text: root.connected ? root.runtime-projection-view : "";
+                placeholder-text: "Runtime details are unavailable.";
+                read-only: true;
+                min-height: 84px;
+                max-height: 160px;
+                wrap: word-wrap;
+                accessible-label: "Runtime provider, model and readiness";
+            }
+            if root.workspace-runtime-capable : VerticalLayout {
+                spacing: 6px;
+                Text { text: "Workspace"; font-size: 18px; }
+                Text { text: root.connected ? root.workspace-runtime-status : "Workspace status is unavailable while disconnected."; wrap: word-wrap; }
+                Text { text: root.connected ? root.workspace-runtime-view : ""; wrap: word-wrap; }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Button {
+                    text: "Refresh dashboard";
+                    enabled: root.connected && !root.waiting && (root.runtime-projection-capable || root.workspace-runtime-capable);
+                    clicked => { root.refresh-settings-status(); }
+                }
+                Button { text: "Open Chat"; clicked => { root.navigate("chat"); } }
+                Button { text: "Open Models"; clicked => { root.navigate("models"); } }
+            }
+        }
         if root.active-page == "settings" && !root.compact : VerticalLayout {
             spacing: 8px;
             HorizontalLayout {
@@ -948,7 +992,7 @@ export component Panel inherits Window {
                         enabled: root.connected && !root.waiting && (root.runtime-projection-capable || root.workspace-runtime-capable);
                         clicked => { root.refresh-settings-status(); }
                     }
-                    Button { text: "Reconnect"; enabled: !root.waiting; clicked => { root.reconnect(); } }
+                    Button { text: "Reconnect"; accessible-label: "Reconnect to daemon (F5 when disconnected)"; enabled: !root.waiting; clicked => { root.reconnect(); } }
                 }
             }
             if root.settings-category == "chat" : VerticalLayout {
@@ -1067,6 +1111,24 @@ export component Panel inherits Window {
                 }
                 Button { text: "Refresh runs"; enabled: root.connected && !root.waiting; clicked => { root.refresh-agent-history(); } }
                 Button { text: "Load older"; enabled: root.connected && !root.waiting && root.agent-runs-has-more; clicked => { root.load-older-agent-runs(); } }
+            }
+            if root.agent-children.length > 0 : HorizontalLayout {
+                spacing: 8px;
+                child-choice := ComboBox {
+                    model: root.agent-children;
+                    accessible-label: "Delegated reads";
+                    enabled: root.connected && !root.running && !root.waiting;
+                }
+                Button {
+                    text: "Open delegated audit";
+                    enabled: child-choice.enabled && child-choice.current-index >= 0;
+                    clicked => { root.select-agent-child(child-choice.current-index); }
+                }
+                Button {
+                    text: "Open parent audit";
+                    enabled: child-choice.enabled && root.selected-agent-run >= 0;
+                    clicked => { root.select-agent-run(root.selected-agent-run); }
+                }
             }
             Text { text: "Plan step lifecycle"; font-size: 16px; }
             TextEdit {
@@ -1282,7 +1344,7 @@ export component Panel inherits Window {
         }
         if root.compact || root.active-page == "chat" || (root.active-page == "agent" && root.agent-capable) : HorizontalLayout {
             spacing: 8px;
-            if root.compact : Button { text: "Reconnect"; enabled: !root.waiting; clicked => { root.reconnect(); } }
+            if root.compact : Button { text: "Reconnect"; accessible-label: "Reconnect to daemon (F5 when disconnected)"; enabled: !root.waiting; clicked => { root.reconnect(); } }
             Rectangle { horizontal-stretch: 1; }
             Button {
                 text: root.approval-pending ? "Cancel request" : "Stop";
