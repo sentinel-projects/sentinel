@@ -36,7 +36,12 @@ pub fn message_part(message: &Value) -> Value {
     } else {
         "user"
     };
-    json!({"role":role,"parts":[{"text":message["content"]}]})
+    let parts = if message["content"].is_array() {
+        message["content"].clone()
+    } else {
+        json!([{"text":message["content"]}])
+    };
+    json!({"role":role,"parts":parts})
 }
 
 pub fn body(messages: Vec<Value>, max_tokens: usize) -> Value {

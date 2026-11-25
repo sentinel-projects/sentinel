@@ -50,7 +50,7 @@ mod unix {
         /// Explicit workspace root for text and document attachments in cloud Chat.
         #[arg(long, conflicts_with = "provider")]
         cloud_attachment_root: Option<PathBuf>,
-        /// Opt into OpenAI image input with explicit context and image token limits.
+        /// Opt into supported cloud image input with explicit context and image token limits.
         #[arg(long, num_args = 2, value_names = ["CONTEXT_TOKENS", "IMAGE_TOKENS"], requires = "cloud_attachment_root")]
         cloud_vision: Vec<usize>,
         /// Existing private isolated development profile directly under /tmp.
@@ -362,8 +362,11 @@ mod unix {
             command.arg("--cloud-attachment-root").arg(root);
         }
         if let [context, image] = args.cloud_vision.as_slice() {
-            if cloud_kind != "openai" || *image == 0 || image >= context {
-                return Err("cloud vision requires OpenAI and a positive image budget below the context limit".into());
+            if !matches!(cloud_kind, "openai" | "claude" | "gemini")
+                || *image == 0
+                || image >= context
+            {
+                return Err("cloud vision requires OpenAI, Claude or Gemini and an image budget below the context limit".into());
             }
             command
                 .arg("--cloud-vision")

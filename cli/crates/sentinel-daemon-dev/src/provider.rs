@@ -193,6 +193,10 @@ impl Config {
         false
     }
 
+    pub fn supports_cloud_vision(&self) -> bool {
+        self.is_cloud() && matches!(self.provider_id.as_str(), "openai" | "claude" | "gemini")
+    }
+
     pub fn valid_persisted_selection(endpoint: &str, provider: &str, model: &str) -> bool {
         #[cfg(unix)]
         if let Ok(kind) = Self::cloud_kind(provider) {
@@ -358,7 +362,7 @@ pub fn prepare_with_images(
     profile: &str,
 ) -> Result<PreparedRequest, ProviderError> {
     if config.is_cloud()
-        && ((!images.is_empty() && config.provider_id != "openai")
+        && ((!images.is_empty() && !config.supports_cloud_vision())
             || !profile.is_empty()
             || (!config.cloud_history && !turns.is_empty())
             || turns.iter().any(|turn| !turn.images.is_empty()))
@@ -385,6 +389,23 @@ pub fn prepare_with_images(
     let user_message = |text: &str, images: &[ChatImage]| {
         if images.is_empty() {
             json!({"role":"user","content":text})
+        } else if config.is_cloud() && config.provider_id == "claude" {
+            let mut content = vec![json!({"type":"text","text":text})];
+            content.extend(images.iter().map(|image| {
+                json!({
+                    "type":"image",
+                    "source":{"type":"base64","media_type":image.mime.as_str(),"data":image.base64}
+                })
+            }));
+            json!({"role":"user","content":content})
+        } else if config.is_cloud() && config.provider_id == "gemini" {
+            let mut parts = vec![json!({"text":text})];
+            parts.extend(images.iter().map(|image| {
+                json!({
+                    "inlineData":{"mimeType":image.mime.as_str(),"data":image.base64}
+                })
+            }));
+            json!({"role":"user","content":parts})
         } else if config.provider_id == "ollama" {
             let binary = images
                 .iter()
@@ -1401,6 +1422,47 @@ mod tests {
         );
         config.model = "different-model".into();
         assert!(prepare_with_images(&config, "describe", &images, &[], "").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_cloud_vision_uses_provider_parts_after_text_history() {
+        for (kind, expected) in [
+            (
+                crate::cloud::CloudProvider::Claude,
+                json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"AQID"}}),
+            ),
+            (
+                crate::cloud::CloudProvider::Gemini,
+                json!({"inlineData":{"mimeType":"image/png","data":"AQID"}}),
+            ),
+        ] {
+            let mut config = Config::cloud_authorized(
+                kind,
+                "fixture-vision",
+                reqwest::header::HeaderValue::from_static("fixture"),
+            )
+            .unwrap()
+            .with_vision_budget(100)
+            .unwrap();
+            config.cloud_history = true;
+            let history = [Turn {
+                user: "earlier question".into(),
+                assistant: "earlier answer".into(),
+                images: vec![],
+            }];
+            let image = ChatImage {
+                mime: ImageMime::Png,
+                base64: "AQID".into(),
+            };
+            let request = prepare_with_images(&config, "describe", &[image], &history, "").unwrap();
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            if kind == crate::cloud::CloudProvider::Gemini {
+                assert_eq!(body["contents"][2]["parts"][1], expected);
+            } else {
+                assert_eq!(body["messages"][2]["content"][1], expected);
+            }
+        }
     }
 
     #[test]

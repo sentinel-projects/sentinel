@@ -1097,7 +1097,7 @@ pub fn run() -> io::Result<()> {
                 return Err(invalid("cloud attachment root must be absolute"));
             }
             agent_workspace = Some(root);
-        } else if flag == "--cloud-vision" && !cloud_vision && config.provider_id == "openai" {
+        } else if flag == "--cloud-vision" && !cloud_vision && config.supports_cloud_vision() {
             let mut tokens = || {
                 args.next()
                     .and_then(|value| value.to_str()?.parse::<usize>().ok())

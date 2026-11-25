@@ -829,7 +829,7 @@ impl State {
                     .unwrap_or_else(|| json!({}));
                 typed(
                     "terminal.state",
-                    json!({"properties":{"agent_tools":if !self.storage_failed && self.has_agent() && self.current_workspace().is_ok() {
+                    json!({"properties":{"cloudImageInput":self.has_cloud_provider() && self.has_image_attachments(),"agent_tools":if !self.storage_failed && self.has_agent() && self.current_workspace().is_ok() {
                         crate::tool_registry::catalog(self.has_process(), self.approval_required)
                     } else { vec![] }},"providers":self.configured_providers.iter().map(|config| json!({
                         "provider_id":config.provider_id,"endpoint":config.endpoint,"local":!config.is_cloud(),
@@ -1585,7 +1585,7 @@ impl State {
                     crate::attachment::parts(&text, &encoded).map_err(|_| "invalid-attachments")?;
                 if config.is_cloud()
                     && !images.is_empty()
-                    && (config.provider_id != "openai" || config.vision_tokens().is_none())
+                    && (!config.supports_cloud_vision() || config.vision_tokens().is_none())
                 {
                     return Err("cloud-image-attachments-unavailable");
                 }
