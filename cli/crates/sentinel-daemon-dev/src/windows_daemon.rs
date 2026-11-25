@@ -430,6 +430,8 @@ fn serve(
         json!("sessions"),
         json!("session-messages"),
         json!("session-management"),
+        json!("session-flags"),
+        json!("agent-history"),
     ]);
     dispatcher.set_capabilities(capabilities);
     let deadline = peer.deadline;

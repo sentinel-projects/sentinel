@@ -18,7 +18,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const SNAPSHOT_VERSION: u32 = 2;
+const SNAPSHOT_VERSION: u32 = 3;
 const MAX_SESSIONS: usize = 32;
 const MAX_TURNS: usize = 16;
 const MAX_PROMPT_BYTES: usize = 8192;
@@ -59,6 +59,10 @@ struct Session {
     id: String,
     title: String,
     created_at: String,
+    #[serde(default, skip_serializing_if = "inactive")]
+    archived: bool,
+    #[serde(default, skip_serializing_if = "inactive")]
+    pinned: bool,
     #[serde(skip)]
     sequence: u64,
     runs: Vec<Run>,
@@ -214,6 +218,78 @@ impl State {
         Ok(())
     }
 
+    fn agent_history(
+        &self,
+        peer: &Arc<Peer>,
+        run_id: &str,
+        before_time: &str,
+        before_id: &str,
+    ) -> Result<ResponsePayload, &'static str> {
+        if before_time.is_empty() != before_id.is_empty()
+            || run_id.len() > 128
+            || before_id.len() > 128
+            || (!run_id.is_empty() && !before_id.is_empty())
+        {
+            return Err("invalid-payload");
+        }
+        let cursor = if before_time.is_empty() {
+            None
+        } else {
+            Some((
+                before_time.parse::<u128>().map_err(|_| "invalid-payload")?,
+                before_id,
+            ))
+        };
+        let scope = Arc::downgrade(peer);
+        let mut runs: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|session| {
+                session
+                    .peers
+                    .iter()
+                    .any(|candidate| candidate.ptr_eq(&scope))
+            })
+            .flat_map(|session| {
+                session
+                    .runs
+                    .iter()
+                    .filter(|run| run.agent)
+                    .map(move |run| (session, run))
+            })
+            .collect();
+        let key = |session: &Session| session.created_at.parse::<u128>().unwrap_or_default();
+        runs.sort_by(|(left, a), (right, b)| (key(right), &b.id).cmp(&(key(left), &a.id)));
+        let summary = |session: &Session, run: &Run, limit: usize| {
+            let preview = |text: &str| text.chars().take(limit).collect::<String>();
+            json!({"runId":run.id,"sessionId":session.id,"runType":"agent","state":run.state,
+                "goalSummary":preview(&run.prompt),"finalAnswer":preview(&run.output),
+                "providerId":run.provider_id,"modelId":run.model_id,"terminalReason":run.detail,
+                "confirmed":run.state == "completed","cursorTime":session.created_at})
+        };
+        let history = if run_id.is_empty() {
+            let mut page = runs
+                .into_iter()
+                .filter(|(session, run)| {
+                    cursor.is_none_or(|cursor| (key(session), run.id.as_str()) < cursor)
+                })
+                .take(27)
+                .map(|(session, run)| summary(session, run, 240))
+                .collect::<Vec<_>>();
+            let truncated = page.len() > 26;
+            page.truncate(26);
+            json!({"runs":page,"truncated":truncated})
+        } else {
+            let (session, run) = runs
+                .into_iter()
+                .find(|(_, run)| run.id == run_id)
+                .ok_or("unknown-run")?;
+            json!({"run":summary(session, run, 4096),"steps":[],"tools":[],"authorizations":[],
+                "claims":[],"evidence":[],"children":[],"truncated":run.output.chars().count() > 4096 || run.prompt.chars().count() > 4096})
+        };
+        Ok(ResponsePayload::AgentHistory { history })
+    }
+
     pub fn dispatch(
         &mut self,
         request: RequestPayload,
@@ -268,6 +344,11 @@ impl State {
                     model_id: config.model.clone(),
                 })
             }
+            RequestPayload::AgentHistory {
+                run_id,
+                before_time,
+                before_id,
+            } => self.agent_history(peer, &run_id, &before_time, &before_id),
             RequestPayload::TerminalState {} => Ok(ResponsePayload::TerminalState {
                 properties: json!({
                     "agentExecutionMode": if self.config.is_some() && !self.storage_failed { "text-analysis" } else { "unavailable" }
@@ -289,21 +370,23 @@ impl State {
                 workspace: json!({}),
                 workspaces: Vec::new(),
             }),
-            RequestPayload::SessionList {} => Ok(ResponsePayload::SessionList {
-                sessions: self
-                    .sessions
-                    .iter()
-                    .rev()
+            RequestPayload::SessionList {} => {
+                let mut ordered: Vec<_> = self.sessions.iter().rev().collect();
+                ordered.sort_by_key(|session| (session.archived, !session.pinned));
+                let sessions = ordered
+                    .into_iter()
                     .map(|session| {
                         json!({
                             "session_id":session.id,
                             "title":session.title,
                             "created_at":session.created_at,
+                            "archived":session.archived,"pinned":session.pinned,
                             "state":session.runs.last().map_or("idle", |run| run.state.as_str()),
                         })
                     })
-                    .collect(),
-            }),
+                    .collect();
+                Ok(ResponsePayload::SessionList { sessions })
+            }
             RequestPayload::SessionCreate { title } => {
                 if self.active.is_some() {
                     return Err("runtime-busy");
@@ -328,6 +411,8 @@ impl State {
                     id,
                     title,
                     created_at,
+                    archived: false,
+                    pinned: false,
                     sequence: 0,
                     runs: vec![],
                     peers: vec![],
@@ -369,6 +454,7 @@ impl State {
                         "output":run.map_or("", |run| run.output.as_str()),
                         "run_id":run.map_or("", |run| run.id.as_str()),"server_generation":self.generation,
                         "event_sequence":session.sequence,"created_at":session.created_at,
+                        "archived":session.archived,"pinned":session.pinned,
                         "provider_id":run.map(|run| run.provider_id.as_str()),
                         "model_id":run.map(|run| run.model_id.as_str()),
                         "detail":run.map(|run| run.detail.as_str()),
@@ -381,7 +467,12 @@ impl State {
                 session_id,
             } if matches!(
                 action.as_str(),
-                "renameConversation" | "requestPermanentDeleteConversation"
+                "renameConversation"
+                    | "requestPermanentDeleteConversation"
+                    | "archiveConversation"
+                    | "unarchiveConversation"
+                    | "pinConversation"
+                    | "unpinConversation"
             ) =>
             {
                 if self.active.is_some() {
@@ -416,6 +507,38 @@ impl State {
                             self.sessions[index].title = previous;
                             self.storage_failed = true;
                             return Err("storage-failure");
+                        }
+                    }
+                    (
+                        "archiveConversation"
+                        | "unarchiveConversation"
+                        | "pinConversation"
+                        | "unpinConversation",
+                        [_],
+                    ) => {
+                        let update_archive = matches!(
+                            action.as_str(),
+                            "archiveConversation" | "unarchiveConversation"
+                        );
+                        let enabled =
+                            matches!(action.as_str(), "archiveConversation" | "pinConversation");
+                        let session = &mut self.sessions[index];
+                        let previous = (session.archived, session.pinned);
+                        if update_archive {
+                            session.archived = enabled;
+                        } else {
+                            session.pinned = enabled;
+                        }
+                        if previous != (session.archived, session.pinned) {
+                            if let Err(error) = self.save() {
+                                let session = &mut self.sessions[index];
+                                (session.archived, session.pinned) = previous;
+                                if error.kind() == io::ErrorKind::FileTooLarge {
+                                    return Err("limit-exceeded");
+                                }
+                                self.storage_failed = true;
+                                return Err("storage-failure");
+                            }
                         }
                     }
                     ("requestPermanentDeleteConversation", [_]) => {
@@ -475,12 +598,15 @@ impl State {
                 if self.active.is_some() {
                     return Err("runtime-busy");
                 }
-                let config = self.config.clone().ok_or("provider-unavailable")?;
                 let session = self
                     .sessions
                     .iter()
                     .find(|session| session.id == session_id)
                     .ok_or("unknown-session")?;
+                if session.archived {
+                    return Err("session-archived");
+                }
+                let config = self.config.clone().ok_or("provider-unavailable")?;
                 let used: usize = session
                     .runs
                     .iter()
@@ -623,7 +749,8 @@ pub fn inspect_snapshot(profile: &crate::windows_profile::ProfileGuard) -> io::R
     let Some((version, sessions)) = read_snapshot(profile)? else {
         return Ok(json!({
             "present":false,"snapshot_version":null,"sessions":0,"runs":0,
-            "agent_runs":0,"interrupted_runs":0,"pending_runs":0,"requires_upgrade":false
+            "agent_runs":0,"interrupted_runs":0,"pending_runs":0,"archived_sessions":0,
+            "pinned_sessions":0,"requires_upgrade":false
         }));
     };
     let runs = || sessions.iter().flat_map(|session| &session.runs);
@@ -631,6 +758,8 @@ pub fn inspect_snapshot(profile: &crate::windows_profile::ProfileGuard) -> io::R
         "present":true,
         "snapshot_version":version,
         "sessions":sessions.len(),
+        "archived_sessions":sessions.iter().filter(|session| session.archived).count(),
+        "pinned_sessions":sessions.iter().filter(|session| session.pinned).count(),
         "runs":runs().count(),
         "agent_runs":runs().filter(|run| run.agent).count(),
         "interrupted_runs":runs().filter(|run| run.state == "interrupted").count(),
@@ -648,7 +777,9 @@ fn validate_snapshot(snapshot: Snapshot) -> io::Result<Vec<Session>> {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
     };
-    if !matches!(snapshot.version, 1 | SNAPSHOT_VERSION) || snapshot.sessions.len() > MAX_SESSIONS {
+    if !matches!(snapshot.version, 1 | 2 | SNAPSHOT_VERSION)
+        || snapshot.sessions.len() > MAX_SESSIONS
+    {
         return Err(invalid_snapshot());
     }
     let mut ids = HashSet::new();
@@ -659,6 +790,7 @@ fn validate_snapshot(snapshot: Snapshot) -> io::Result<Vec<Session>> {
             || session.title.len() > 1024
             || session.title.contains('\0')
             || session.created_at.parse::<u128>().is_err()
+            || (snapshot.version < 3 && (session.archived || session.pinned))
             || session.runs.len() > MAX_TURNS
         {
             return Err(invalid_snapshot());
