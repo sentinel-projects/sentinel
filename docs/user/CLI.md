@@ -48,7 +48,15 @@ All major commands have offline `--help`. Omitting a command retains the histori
 | `workspace create NAME --template Coding` | Create a custom workspace through WorkspaceService |
 | `workspace root ID PATH` | Attach an existing readable directory to a custom workspace; built-in roots are immutable |
 | `workspace select ID` | Select a known non-archived workspace; rejected during active work |
-| `sessions` | Daemon-owned session titles, identifiers, mode, state and binding metadata |
+| `sessions [--filter active\|archived\|pinned]` | List daemon-owned sessions. Active means unarchived. Filtering requires session flag support |
+| `session show ID` | Read the current session and its latest run snapshot |
+| `cancel RUN_ID` | Request cancellation. Use the session snapshot to observe the final state |
+| `session create TITLE` | Create an empty conversation and return its ID |
+| `session history ID` | Read stored messages for the specified conversation |
+| `session rename ID TITLE` | Rename an existing conversation |
+| `session archive ID [--undo]` | Archive or restore a conversation |
+| `session pin ID [--undo]` | Pin or unpin a conversation |
+| `session delete ID --confirm ID` | Permanently delete a conversation and associated records |
 | `chat [TEXT…]` | Chat Mode, with repeatable `--attach PATH` on the Rust development daemon |
 | `agent [TEXT…]`, `run [TEXT…]` | AgentRuntime execution only |
 | `chat\|agent\|run --session ID [TEXT…]` | Continue an existing conversation |
@@ -60,6 +68,14 @@ All major commands have offline `--help`. Omitting a command retains the histori
 | `update verify-stage DIR [--lockfile PATH]` | Offline SHA-256 integrity check of a development-evaluation stage; never installs, executes or authenticates staged files |
 | `completions zsh\|bash\|fish` | Write shell completion source to stdout |
 | `shutdown` | Request daemon shutdown explicitly |
+
+The session commands use the connected daemon's advertised capabilities. The
+Unix and Windows Rust development daemons support the session management
+operations above. Use
+`sentinel sessions --output json` to inspect IDs and any archive or pin flags
+returned by the daemon. The create command prints the ID as a JSON string in
+text mode. Deletion requires repeating the exact target ID and returns success
+only after the daemon confirms it.
 
 For a new local provider, configure its endpoint, explicitly select the provider, refresh discovery, inspect `models`, then explicitly select the model. On the Rust development daemon, configure the provider kind at daemon startup before editing its endpoint. Endpoint changes only accept numeric loopback HTTP origins, restore only for the original configured origin, and clear the active catalog. Cloud credential configuration remains in the existing Sentinel settings surface. Secrets are not accepted or printed by terminal diagnostics.
 
@@ -124,6 +140,11 @@ For zsh, place `_sentinel` in a directory on `fpath` before `compinit`. For bash
 Change review observes authorized text state since a run began, including possible concurrent external edits. It labels changes **Applied**, does not attribute every edit to Agent, does not offer accept/revert, and explicitly reports truncation. Baselines are bounded (8 sessions, 32 files, 8192 characters per file, 32768 characters per baseline), exclude hidden/denied/binary/oversized resources, and do not survive daemon restart. Deleted/unreadable resources are omitted rather than inferred. Diffs use a valid whole-file replacement hunk, not a minimal Git diff.
 
 ## TUI V3 workflow consistency
+
+Use `/agent-audit RUN_ID` in an attached session to inspect a persisted Agent
+run. The parent audit lists delegated reads and their IDs. Pass one of those
+IDs to the same command to open the child’s steps, tool receipts, approvals
+and evidence on the Unix Rust development daemon.
 
 `sentinel tui` and existing attach/model/workspace/session CLI commands retain their flags and script behavior. TUI slash commands reuse existing IPC semantics; they are not new shell subcommands. `/status` uses daemon status, `/doctor` inspects safe terminal diagnostics, `/model` selects an accepted daemon binding, and `/resume` attaches an existing conversation. See [TUI commands](TUI.md) and the [complete registry](../development/TUI_V3_COMMAND_SPEC.md). Unsupported Plan/rollback/compaction commands do not imply corresponding CLI functionality.
 

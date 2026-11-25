@@ -1,4 +1,5 @@
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use sentinel_ipc::contract::{RequestPayload, ResponsePayload};
 use sentinel_ipc::{Client, Error, default_socket_path};
 use serde_json::{Value, json};
 mod update_stage;
@@ -43,7 +44,18 @@ enum Commands {
         command: ModelCommand,
     },
     /// List resumable daemon-owned conversations
-    Sessions,
+    Sessions {
+        /// Filter by a conversation flag advertised by the daemon
+        #[arg(long, value_enum)]
+        filter: Option<SessionFilter>,
+    },
+    /// Request cancellation of an active run by its exact ID
+    Cancel { run_id: String },
+    /// Create, inspect or manage daemon-owned conversations
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
+    },
     /// List, select or attach a root through daemon-owned workspace authority
     Workspace {
         #[command(subcommand)]
@@ -113,6 +125,53 @@ enum Commands {
     /// Request authoritative daemon shutdown
     Shutdown,
 }
+#[derive(Clone, Copy, ValueEnum)]
+enum SessionFilter {
+    Active,
+    Archived,
+    Pinned,
+}
+impl SessionFilter {
+    fn includes(self, row: &Value) -> bool {
+        match self {
+            Self::Active => row["archived"].as_bool() == Some(false),
+            Self::Archived => row["archived"].as_bool() == Some(true),
+            Self::Pinned => row["pinned"].as_bool() == Some(true),
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum SessionCommand {
+    /// Create an empty conversation and print its ID
+    Create { title: String },
+    /// Read the current session and its latest run snapshot
+    Show { session_id: String },
+    /// Read a conversation's stored messages
+    History { session_id: String },
+    /// Change a conversation's title
+    Rename { session_id: String, title: String },
+    /// Archive a conversation or restore it with --undo
+    Archive {
+        session_id: String,
+        #[arg(long)]
+        undo: bool,
+    },
+    /// Pin a conversation or unpin it with --undo
+    Pin {
+        session_id: String,
+        #[arg(long)]
+        undo: bool,
+    },
+    /// Permanently delete a conversation and its associated records
+    Delete {
+        session_id: String,
+        /// Repeat the session ID to confirm permanent deletion
+        #[arg(long, value_name = "SESSION_ID")]
+        confirm: String,
+    },
+}
+
 #[derive(Subcommand)]
 enum VoiceCommand {
     /// Inspect daemon voice readiness
@@ -314,6 +373,9 @@ fn emit(value: Value, output: Output, name: &str) {
                     );
                 }
             }
+            "run.cancel" => {
+                println!("Cancellation requested. Check the run snapshot for the final state.")
+            }
             "session.list" => {
                 for row in value["sessions"].as_array().into_iter().flatten() {
                     println!(
@@ -401,6 +463,144 @@ fn validate_new_destination(destination: &Path) -> Result<PathBuf, Error> {
         ))),
     }
 }
+fn session_request(command: &SessionCommand) -> Result<(RequestPayload, &'static str), Error> {
+    let validate_title = |title: &str| {
+        if title.len() > 1024 || title.contains('\0') {
+            return Err(Error::Usage(
+                "Session titles are limited to 1,024 UTF-8 bytes and cannot contain NUL.".into(),
+            ));
+        }
+        Ok(())
+    };
+    let action = |name: &str, id: &str, title: Option<&str>| {
+        let mut arguments = vec![json!(id)];
+        arguments.extend(title.map(|title| json!(title)));
+        RequestPayload::DesktopAction {
+            action: name.into(),
+            arguments,
+            session_id: id.into(),
+        }
+    };
+    Ok(match command {
+        SessionCommand::Create { title } => {
+            validate_title(title)?;
+            (
+                RequestPayload::SessionCreate {
+                    title: title.clone(),
+                },
+                "sessions",
+            )
+        }
+        SessionCommand::Show { session_id } => (
+            RequestPayload::SessionAttach {
+                session_id: session_id.clone(),
+            },
+            "sessions",
+        ),
+        SessionCommand::History { session_id } => (
+            RequestPayload::SessionMessages {
+                session_id: session_id.clone(),
+            },
+            "session-messages",
+        ),
+        SessionCommand::Rename { session_id, title } => {
+            validate_title(title)?;
+            (
+                action("renameConversation", session_id, Some(title)),
+                "session-management",
+            )
+        }
+        SessionCommand::Archive { session_id, undo } => (
+            action(
+                if *undo {
+                    "unarchiveConversation"
+                } else {
+                    "archiveConversation"
+                },
+                session_id,
+                None,
+            ),
+            "session-flags",
+        ),
+        SessionCommand::Pin { session_id, undo } => (
+            action(
+                if *undo {
+                    "unpinConversation"
+                } else {
+                    "pinConversation"
+                },
+                session_id,
+                None,
+            ),
+            "session-flags",
+        ),
+        SessionCommand::Delete {
+            session_id,
+            confirm,
+        } => {
+            if session_id.is_empty() || session_id != confirm {
+                return Err(Error::Usage(
+                    "Pass the exact session ID to --confirm.".into(),
+                ));
+            }
+            (
+                action("requestPermanentDeleteConversation", session_id, None),
+                "session-management",
+            )
+        }
+    })
+}
+
+fn manage_session(
+    client: &mut Client,
+    request: RequestPayload,
+    required_capability: &str,
+    output: Output,
+) -> Result<(), Error> {
+    if !client
+        .capabilities()
+        .iter()
+        .any(|value| value == required_capability)
+    {
+        return Err(Error::Remote("unsupported-capability".into()));
+    }
+    let session_id = match &request {
+        RequestPayload::SessionMessages { session_id }
+        | RequestPayload::SessionAttach { session_id } => Some(session_id.clone()),
+        _ => None,
+    };
+    let mut frame =
+        serde_json::to_value(request).map_err(|error| Error::Protocol(error.to_string()))?;
+    let payload = frame["payload"].take();
+    let name = frame["name"]
+        .as_str()
+        .ok_or_else(|| Error::Protocol("Missing session request name.".into()))?;
+    let reply = client.request(name, payload)?;
+    let operation: ResponsePayload = serde_json::from_value(json!({"name":name,"payload":&reply}))
+        .map_err(|error| Error::Protocol(error.to_string()))?;
+    match operation {
+        ResponsePayload::SessionCreate { session_id, .. } if !session_id.is_empty() => {
+            if output == Output::Text {
+                println!("{}", Value::String(session_id));
+                return Ok(());
+            }
+        }
+        ResponsePayload::SessionMessages { session_id: id, .. }
+        | ResponsePayload::SessionAttach { session_id: id, .. }
+            if session_id.as_deref() == Some(id.as_str()) => {}
+        ResponsePayload::DesktopAction {
+            accepted: true,
+            result,
+        } if result["value"] == true => {}
+        ResponsePayload::DesktopAction { .. } => {
+            return Err(Error::Remote("operation-rejected".into()));
+        }
+        _ => return Err(Error::Protocol("Unexpected session response.".into())),
+    }
+    emit(reply, output, name);
+    Ok(())
+}
+
 fn run(cli: Cli) -> Result<(), Error> {
     let output = cli.output;
     let socket = if cli.persistent_profile {
@@ -545,6 +745,11 @@ fn run(cli: Cli) -> Result<(), Error> {
     } else {
         None
     };
+    if let Commands::Session { command } = &command {
+        let (request, capability) = session_request(command)?;
+        let mut client = Client::connect(&socket, "sentinel-cli")?;
+        return manage_session(&mut client, request, capability, output);
+    }
     let mut client = Client::connect(&socket, "sentinel-cli")?;
     if let Commands::Chat(chat) = &command
         && !chat.attach.is_empty()
@@ -694,7 +899,18 @@ fn run(cli: Cli) -> Result<(), Error> {
             command: VoiceCommand::State,
         } => Some(("voice.state", json!({}))),
         Commands::Models => Some(("model.list", json!({}))),
-        Commands::Sessions => Some(("session.list", json!({}))),
+        Commands::Sessions { filter } => {
+            if filter.is_some()
+                && !client
+                    .capabilities()
+                    .iter()
+                    .any(|value| value == "session-flags")
+            {
+                return Err(Error::Remote("unsupported-capability".into()));
+            }
+            Some(("session.list", json!({})))
+        }
+        Commands::Cancel { run_id } => Some(("run.cancel", json!({"run_id":run_id}))),
         Commands::Workspace {
             command: WorkspaceCommand::List,
         }
@@ -758,19 +974,28 @@ fn run(cli: Cli) -> Result<(), Error> {
         _ => None,
     };
     if let Some((name, payload)) = request {
-        let response = client.request(name, payload)?;
-        let operation: sentinel_ipc::contract::ResponsePayload =
+        let mut response = client.request(name, payload)?;
+        let operation: ResponsePayload =
             serde_json::from_value(json!({"name":name,"payload":&response}))
                 .map_err(|error| Error::Protocol(error.to_string()))?;
         if matches!(
-            operation,
-            sentinel_ipc::contract::ResponsePayload::DesktopSetting { accepted: false }
-                | sentinel_ipc::contract::ResponsePayload::DesktopAction {
+            &operation,
+            ResponsePayload::RunCancel { accepted: false }
+                | ResponsePayload::DesktopSetting { accepted: false }
+                | ResponsePayload::DesktopAction {
                     accepted: false,
                     ..
                 }
         ) {
             return Err(Error::Remote("operation-rejected".into()));
+        }
+        if let Commands::Sessions {
+            filter: Some(filter),
+        } = &command
+            && let ResponsePayload::SessionList { mut sessions } = operation
+        {
+            sessions.retain(|row| filter.includes(row));
+            response["sessions"] = Value::Array(sessions);
         }
         emit(response, output, name);
         return Ok(());
