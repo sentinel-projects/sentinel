@@ -43,6 +43,11 @@ enum Commands {
         #[command(subcommand)]
         command: ModelCommand,
     },
+    /// Read or update supported daemon configuration
+    Config {
+        #[command(subcommand)]
+        command: Option<ConfigCommand>,
+    },
     /// List resumable daemon-owned conversations
     Sessions {
         /// Filter by a conversation flag advertised by the daemon
@@ -248,11 +253,51 @@ struct Task {
 }
 #[derive(Subcommand)]
 enum ModelCommand {
+    /// List models through the connected daemon
+    List,
+    /// Request an Ollama model download
+    Pull { model: String },
+    /// Inspect the latest Ollama model operation
+    PullStatus,
     /// Inspect current selection
     Current,
     /// Select an installed/discovered model; unavailable selections are rejected
     Select { provider: String, model: String },
 }
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// Print the supported values or one explicitly selected setting
+    Get { key: Option<SettingKey> },
+    /// Update one supported setting through the daemon
+    Set { key: SettingKey, value: String },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum SettingKey {
+    #[value(name = "ollamaEndpoint")]
+    OllamaEndpoint,
+    #[value(name = "themeName")]
+    ThemeName,
+    #[value(name = "responseProfileInstructions")]
+    ResponseProfileInstructions,
+}
+
+impl SettingKey {
+    const EXPOSED: [Self; 3] = [
+        Self::OllamaEndpoint,
+        Self::ThemeName,
+        Self::ResponseProfileInstructions,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::OllamaEndpoint => "ollamaEndpoint",
+            Self::ThemeName => "themeName",
+            Self::ResponseProfileInstructions => "responseProfileInstructions",
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum WorkspaceCommand {
     List,
@@ -750,7 +795,28 @@ fn run(cli: Cli) -> Result<(), Error> {
         let mut client = Client::connect(&socket, "sentinel-cli")?;
         return manage_session(&mut client, request, capability, output);
     }
+    if let Commands::Model {
+        command: ModelCommand::Pull { model },
+    } = &command
+        && (model.trim().is_empty() || model.len() > 256 || model.chars().any(char::is_control))
+    {
+        return Err(Error::Usage(
+            "Model ID must contain 1–256 UTF-8 bytes without control characters.".into(),
+        ));
+    }
     let mut client = Client::connect(&socket, "sentinel-cli")?;
+    if matches!(
+        &command,
+        Commands::Model {
+            command: ModelCommand::Pull { .. } | ModelCommand::PullStatus
+        }
+    ) && !client
+        .capabilities()
+        .iter()
+        .any(|capability| capability == "ollama-model-operations")
+    {
+        return Err(Error::Remote("unsupported-capability".into()));
+    }
     if let Commands::Chat(chat) = &command
         && !chat.attach.is_empty()
         && !client
@@ -893,12 +959,57 @@ fn run(cli: Cli) -> Result<(), Error> {
         emit(history, output, "agent.history");
         return Ok(());
     }
+    if let Commands::Config { command: config } = &command {
+        let requested = match config {
+            Some(ConfigCommand::Set { .. }) => None,
+            Some(ConfigCommand::Get { key }) => Some(*key),
+            None => Some(None),
+        };
+        if let Some(key) = requested {
+            let reply = client.request("desktop.settings", json!({}))?;
+            let Some(values) = reply["values"].as_object() else {
+                return Err(Error::Protocol("Invalid daemon settings response.".into()));
+            };
+            let mut selected = serde_json::Map::new();
+            for setting in SettingKey::EXPOSED {
+                if key.is_some_and(|key| key.name() != setting.name()) {
+                    continue;
+                }
+                if let Some(value) = values.get(setting.name()) {
+                    let Some(value) = value.as_str() else {
+                        return Err(Error::Protocol("Invalid setting value.".into()));
+                    };
+                    selected.insert(setting.name().into(), json!(value));
+                }
+            }
+            if key.is_some() && selected.is_empty() {
+                return Err(Error::Remote("unsupported-capability".into()));
+            }
+            emit(json!({"values":selected}), output, "desktop.settings");
+            return Ok(());
+        }
+    }
     let request = match &command {
         Commands::Status => Some(("daemon.status", json!({}))),
         Commands::Voice {
             command: VoiceCommand::State,
         } => Some(("voice.state", json!({}))),
-        Commands::Models => Some(("model.list", json!({}))),
+        Commands::Models
+        | Commands::Model {
+            command: ModelCommand::List,
+        } => Some(("model.list", json!({}))),
+        Commands::Model {
+            command: ModelCommand::Pull { model },
+        } => Some((
+            "model.helper_action",
+            json!({"component":"ollamaPuller", "action":"pull", "value":model}),
+        )),
+        Commands::Model {
+            command: ModelCommand::PullStatus,
+        } => Some((
+            "model.helper_state",
+            json!({"component":"ollamaPuller", "offset":0, "retain_models":false}),
+        )),
         Commands::Sessions { filter } => {
             if filter.is_some()
                 && !client
@@ -961,6 +1072,9 @@ fn run(cli: Cli) -> Result<(), Error> {
             "desktop.setting",
             json!({"key":provider.setting(),"value":url}),
         )),
+        Commands::Config {
+            command: Some(ConfigCommand::Set { key, value }),
+        } => Some(("desktop.setting", json!({"key":key.name(),"value":value}))),
         Commands::Shutdown => Some(("daemon.shutdown", json!({}))),
         Commands::Model {
             command: ModelCommand::Current,
@@ -980,7 +1094,8 @@ fn run(cli: Cli) -> Result<(), Error> {
                 .map_err(|error| Error::Protocol(error.to_string()))?;
         if matches!(
             &operation,
-            ResponsePayload::RunCancel { accepted: false }
+            ResponsePayload::ModelHelperAction { accepted: false }
+                | ResponsePayload::RunCancel { accepted: false }
                 | ResponsePayload::DesktopSetting { accepted: false }
                 | ResponsePayload::DesktopAction {
                     accepted: false,
@@ -997,7 +1112,18 @@ fn run(cli: Cli) -> Result<(), Error> {
             sessions.retain(|row| filter.includes(row));
             response["sessions"] = Value::Array(sessions);
         }
-        emit(response, output, name);
+        if output == Output::Text
+            && matches!(
+                &command,
+                Commands::Model {
+                    command: ModelCommand::Pull { .. }
+                }
+            )
+        {
+            println!("Download requested. Run sentinel model pull-status to inspect its outcome.");
+        } else {
+            emit(response, output, name);
+        }
         return Ok(());
     }
     if matches!(command, Commands::Doctor) {

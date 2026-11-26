@@ -37,6 +37,11 @@ All major commands have offline `--help`. Omitting a command retains the histori
 | --- | --- |
 | `status` | Connection, daemon version, IPC version, uptime, endpoint, generation and active run/session counts |
 | `models` | ModelService's discovered model catalog; an empty catalog is legitimate |
+| `model list` | Alias for daemon-backed model discovery |
+| `model pull MODEL` | Ask the Rust daemon to start an Ollama download |
+| `model pull-status` | Inspect the latest Ollama model operation and any uncertain outcome |
+| `config get [KEY]` | Inspect supported daemon settings |
+| `config set KEY VALUE` | Update a supported setting through the daemon |
 | `model current` | Current global selection; workspace overrides are shown in doctor |
 | `model select PROVIDER MODEL` | Explicit discovered-model selection; rejected during active work |
 | `provider list` | Provider readiness, selected workspace and safe service diagnostics |
@@ -76,6 +81,11 @@ operations above. Use
 returned by the daemon. The create command prints the ID as a JSON string in
 text mode. Deletion requires repeating the exact target ID and returns success
 only after the daemon confirms it.
+
+The Rust development daemon's Ollama helper acknowledges a download request
+before the transfer completes. Use `model pull-status` to inspect its progress.
+The configuration commands support `ollamaEndpoint`, `themeName`, and
+`responseProfileInstructions` when exposed by the connected daemon.
 
 For a new local provider, configure its endpoint, explicitly select the provider, refresh discovery, inspect `models`, then explicitly select the model. On the Rust development daemon, configure the provider kind at daemon startup before editing its endpoint. Endpoint changes only accept numeric loopback HTTP origins, restore only for the original configured origin, and clear the active catalog. Cloud credential configuration remains in the existing Sentinel settings surface. Secrets are not accepted or printed by terminal diagnostics.
 
