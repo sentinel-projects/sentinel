@@ -24,7 +24,7 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graph
 async-io = "2.6"
 futures-lite = "2.6"
 serde = "1"
-zbus = "5.19"
+zbus = "6.3"
 libc = "0.2"
 raw-window-handle = "0.6"
 slint = { version = "=1.19.0", default-features = false, features = ["raw-window-handle-06"] }
