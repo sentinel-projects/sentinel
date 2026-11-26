@@ -308,9 +308,9 @@ mod unix {
                 }
                 (daemon, desktop)
             };
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         if args.global_shortcut {
-            return Err("global shortcut is only available on macOS".into());
+            return Err("global shortcut is available on Linux and macOS".into());
         }
         let interrupted = Arc::new(AtomicBool::new(false));
         let signal = interrupted.clone();

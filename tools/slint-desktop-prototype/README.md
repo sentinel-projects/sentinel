@@ -38,7 +38,7 @@ the prototype does not replace another application's binding. Closing the
 window hides it while the shortcut and status menu remain active. Select
 Quit in the status menu to exit. Add `--start-hidden` to start in the background.
 The shortcut opens Quick Panel even when the full desktop was previously active.
-Linux and Windows provide platform-specific shortcut routes as described above.
+On Linux, the staged Rust launcher also accepts `--panel --global-shortcut` and optional `--start-hidden`. On Windows, pass those flags directly to the Slint executable.
 
 For disposable LaunchServices testing, build the desired profile first and wrap
 it in a new local unsigned bundle:
