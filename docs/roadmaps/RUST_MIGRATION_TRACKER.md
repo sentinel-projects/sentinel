@@ -111,6 +111,7 @@ oturumda yeni çalışmanın başlamamasıdır.
 - [x] Windows Quick Panel tepsi simgesi, göster/gizle, çıkış ve Explorer yeniden başlayınca simgeyi geri kaydetme.
 - [ ] Windows üretim uygulaması ve paket yaşam döngüsü.
 - [x] Slint Dashboard içinde daemon sağlayıcı/model hazırlığı, çalışma alanı durumu ve çevrimdışı görünüm.
+- [x] Slint geniş masaüstünde kalıcı gezinme ve sohbet geçmişi kenar çubuğu. Dar görünüm ve Quick Panel ayrı yerleşim kullanır.
 - [ ] Qt'de kalan ekranlar, yerel dosya/medya seçicileri ve eksik ayarlar.
 - [x] Slint'te F5 ile bağlantı kurtarma ve F6 ile yazma alanına odaklanma. Dosya listesi yenilenince yalnızca aynı oturum ve çalışma alanında yeniden doğrulanan ekler korunur.
 - [ ] Kalan klavye, ekran okuyucu, yüksek DPI, tema ve hata/kurtarma durumları.
@@ -125,6 +126,7 @@ kısayol serbest kalır. Meşgul kısayol kayıt hatası verir. Wayland oturumu
 XWayland üzerinden küresel kısayol denemez. Pencere yöneticisinin ön plan
 kararı yerel doğrulama kapsamındadır.
 
+- [x] Rust CLI üzerinden daemon yönetimli model listeleme, Ollama indirmesi başlatma ve durum sorgulama, desteklenen ayar okuma/yazma.
 - [ ] Eski C++ CLI komutları, betik girişleri, çıktı/çıkış kodu eşdeğerliği ve emeklilik.
 
 AC-P6-01 oturum komutları için kabul ölçütü: geçici profilde oluşturulan boş
@@ -146,8 +148,11 @@ gönderilmez. JSON çıktı modları yalnızca yapılandırılmış veri döndü
 ## Paketleme ve üretim
 
 - [x] Qt'siz Linux/macOS aday iş akışı ve macOS arm64 aday paketinin yerel paket doğrulaması.
+- [x] Windows x64 için Qt'siz Rust masaüstü adayını üretip PE mimarisi, doğrudan Qt bağımlılıkları ve dosya özetleriyle doğrulayan PowerShell hazırlama yolu ve manuel CI işi.
 - [ ] Yerel Linux paketleri, macOS üretim paketi ve Windows kurucusu.
 - [ ] Paket imzası, güvenilen anahtarlar, güvenli güncelleme ve paket geri dönüşü.
+- [x] Qt keşfi ve C++ hedefleri olmadan Rust adayını yapılandıran CMake girişi. Aday CI aynı girişi kullanır. macOS arm64 aday paketi bu girişten derlenip doğrulandı.
+- [x] Aday paketindeki Core Warden çalışma zamanı dosyalarının kaynak ağacındaki dosyalarla SHA-256 karşılaştırması.
 - [ ] Üretim giriş noktaları, servis ve profil devri.
 - [ ] Qt/C++ üretim daemon'u, QML arayüzü, eski CLI ve Qt paketleme girişlerinin emekliye ayrılması.
 
