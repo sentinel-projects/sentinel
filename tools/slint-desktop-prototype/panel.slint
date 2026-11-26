@@ -1,4 +1,4 @@
-import { Button, CheckBox, ComboBox, LineEdit, Palette, ScrollView, TextEdit } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, ListView, Palette, ScrollView, TextEdit } from "std-widgets.slint";
 
 export component Panel inherits Window {
     title: root.compact ? "Sentinel Quick Panel" : "Sentinel";
@@ -263,6 +263,10 @@ export component Panel inherits Window {
         }
     }
 
+    property <bool> navigation-rail-visible: !root.compact && root.width >= 1000px;
+    property <length> navigation-rail-width: root.navigation-rail-visible ? 196px : 0px;
+    property <length> content-width: root.width - root.navigation-rail-width;
+
     property <bool> can-send: root.connected && !root.running && !root.waiting && !root.selected-session-archived
         && (root.compact || (root.active-page == "chat" && !root.agent-mode)
             || (root.active-page == "agent" && root.agent-capable))
@@ -283,7 +287,6 @@ export component Panel inherits Window {
         capture-key-pressed(event) => {
             if (event.modifiers.control || event.modifiers.meta) && event.text == "n" {
                 if root.connected && !root.running && !root.waiting {
-                    root.navigate("chat");
                     root.new-session();
                 }
                 EventResult.accept
@@ -309,10 +312,76 @@ export component Panel inherits Window {
                 EventResult.reject
             }
         }
+        if root.navigation-rail-visible : Rectangle {
+            x: 0;
+            y: 0;
+            width: root.navigation-rail-width;
+            height: parent.height;
+            background: Palette.background;
+            border-width: 1px;
+            border-color: Palette.border;
+            VerticalLayout {
+                padding: 12px;
+                spacing: 7px;
+                Text { text: "Sentinel"; font-size: 21px; color: Palette.foreground; }
+                Button { text: root.active-page == "dashboard" ? "• Dashboard" : "Dashboard"; clicked => { root.navigate("dashboard"); } }
+                Button { text: root.active-page == "chat" ? "• Chat" : "Chat"; clicked => { root.navigate("chat"); } }
+                Button { text: root.active-page == "models" ? "• Models" : "Models"; clicked => { root.navigate("models"); } }
+                Button {
+                    text: root.active-page == "agent" ? "• Agent" : "Agent";
+                    enabled: root.agent-capable || root.agent-history-capable;
+                    clicked => { root.navigate("agent"); }
+                }
+                if root.workspace-files-capable || root.workspace-changes-capable || root.workspace-selection-capable : Button {
+                    text: root.active-page == "workspace" ? "• Workspace" : "Workspace";
+                    enabled: root.connected && !root.running && !root.waiting;
+                    clicked => { root.navigate("workspace"); }
+                }
+                Button {
+                    text: root.active-page == "memory" ? "• Memory" : "Memory";
+                    enabled: root.memory-capable;
+                    clicked => { root.navigate("memory"); }
+                }
+                if root.extension-catalog-capable : Button {
+                    text: root.active-page == "extensions" ? "• Extensions" : "Extensions";
+                    clicked => { root.navigate("extensions"); }
+                }
+                Button { text: root.active-page == "settings" ? "• Settings" : "Settings"; clicked => { root.navigate("settings"); } }
+                Text { text: "Conversations"; color: Palette.foreground; font-size: 14px; }
+                Button {
+                    text: "New conversation";
+                    enabled: root.connected && !root.running && !root.waiting;
+                    clicked => { root.new-session(); }
+                }
+                if root.sessions.length == 0 : Text {
+                    text: root.connected ? "No conversations" : "Conversation list unavailable";
+                    wrap: word-wrap;
+                }
+                ListView {
+                    vertical-stretch: 1;
+                    for title[index] in root.sessions : Button {
+                        text: index == root.selected-session ? "• " + title : title;
+                        accessible-label: index == root.selected-session ? "Current conversation: " + title : title;
+                        enabled: root.connected && !root.running && !root.waiting;
+                        clicked => { root.select-session(index); }
+                    }
+                }
+                Text {
+                    text: root.connected ? "Daemon connected" : "Daemon disconnected";
+                    wrap: word-wrap;
+                    color: Palette.foreground;
+                }
+                Button {
+                    text: "Reconnect";
+                    enabled: !root.waiting;
+                    clicked => { root.reconnect(); }
+                }
+            }
+        }
         body-scroll := ScrollView {
-        x: 0;
+        x: root.navigation-rail-width;
         y: 0;
-        width: parent.width;
+        width: root.content-width;
         height: parent.height;
         VerticalLayout {
         x: 0;
@@ -323,7 +392,7 @@ export component Panel inherits Window {
         padding-right: root.compact ? 16px : 20px;
         spacing: root.compact ? 8px : 12px;
 
-        if !root.compact && root.width >= 820px : HorizontalLayout {
+        if !root.compact && !root.navigation-rail-visible && root.content-width >= 820px : HorizontalLayout {
             spacing: 8px;
             Text { text: "SENTINEL"; font-size: 18px; color: Palette.foreground; vertical-alignment: center; }
             Button { text: "Dashboard"; clicked => { root.navigate("dashboard"); } }
@@ -342,7 +411,7 @@ export component Panel inherits Window {
             Text { text: root.connected ? "Connected" : "Disconnected"; vertical-alignment: center; }
             Button { text: "Reconnect"; accessible-label: "Reconnect to daemon (F5 when disconnected)"; enabled: !root.waiting; clicked => { root.reconnect(); } }
         }
-        if !root.compact && root.width < 820px : VerticalLayout {
+        if !root.compact && !root.navigation-rail-visible && root.content-width < 820px : VerticalLayout {
             spacing: 4px;
             HorizontalLayout {
                 spacing: 6px;
@@ -422,7 +491,7 @@ export component Panel inherits Window {
             }
             Text { text: root.selected-session-archived ? "Unarchive to send messages." : ""; wrap: word-wrap; }
         }
-        if root.active-page == "chat" && !root.compact && root.session-management-capable && root.width >= 820px : HorizontalLayout {
+        if root.active-page == "chat" && !root.compact && root.session-management-capable && root.content-width >= 820px : HorizontalLayout {
             spacing: 8px;
             LineEdit {
                 text <=> root.session-title;
@@ -439,7 +508,7 @@ export component Panel inherits Window {
             }
             Button { text: "Delete permanently"; enabled: root.connected && !root.running && !root.waiting && root.selected-session >= 0 && root.session-delete-confirmation == "DELETE"; clicked => { root.delete-session(root.session-delete-confirmation); } }
         }
-        if root.active-page == "chat" && !root.compact && root.session-management-capable && root.width < 820px : VerticalLayout {
+        if root.active-page == "chat" && !root.compact && root.session-management-capable && root.content-width < 820px : VerticalLayout {
             spacing: 6px;
             LineEdit {
                 text <=> root.session-title;
@@ -461,7 +530,7 @@ export component Panel inherits Window {
             Text { text: "Attachments"; font-size: 18px; }
             Text { text: "Choose up to 4 files from the authorized workspace. Supported formats: " + root.attachment-formats + ". The daemon validates each file before sending."; wrap: word-wrap; }
             Text { text: root.attachment-status; wrap: word-wrap; }
-            if root.width >= 820px : HorizontalLayout {
+            if root.content-width >= 820px : HorizontalLayout {
                 spacing: 8px;
                 ComboBox {
                     model: root.attachment-files;
@@ -482,7 +551,7 @@ export component Panel inherits Window {
                 Button { text: "Remove"; enabled: root.connected && !root.running && !root.waiting && root.selected-attachment >= 0; clicked => { root.remove-attachment(); } }
                 Button { text: "Clear"; enabled: root.connected && !root.running && !root.waiting && root.attachments.length > 0; clicked => { root.clear-attachments(); } }
             }
-            if root.width < 820px : VerticalLayout {
+            if root.content-width < 820px : VerticalLayout {
                 spacing: 6px;
                 ComboBox {
                     model: root.attachment-files;

@@ -4016,6 +4016,7 @@ dependencies = [
  "i-slint-renderer-software",
  "once_cell",
  "pin-weak",
+ "raw-window-handle",
  "slint-macros",
  "vtable",
 ]

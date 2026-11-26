@@ -5879,12 +5879,19 @@ fn worker(path: PathBuf, commands: Receiver<Command>, updates: PanelUpdates) {
                         client
                             .as_mut()
                             .ok_or(Error::Disconnected)
-                            .and_then(|client| select_session(client, &id, &mut session, &mut view))
+                            .and_then(|client| {
+                                select_session(client, &id, &mut session, &mut view)?;
+                                view.active_page =
+                                    if view.agent_mode { "agent" } else { "chat" }.into();
+                                Ok(())
+                            })
                     } else {
                         Err(Error::Usage("Session is no longer available.".into()))
                     }
                 }
                 Command::New if !view.running => {
+                    let _ = set_agent_mode(&mut view, false);
+                    view.active_page = "chat".into();
                     session = Session::default();
                     view.selected_id.clear();
                     clear_attachments(
