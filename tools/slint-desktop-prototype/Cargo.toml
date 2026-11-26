@@ -28,7 +28,7 @@ zbus = "5.19"
 libc = "0.2"
 raw-window-handle = "0.6"
 slint = { version = "=1.19.0", default-features = false, features = ["raw-window-handle-06"] }
-x11rb = "0.13.2"
+x11rb = "0.14.0"
 wayland-client = "0.31"
 wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
