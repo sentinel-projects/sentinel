@@ -15,6 +15,13 @@ if(SENTINEL_APP_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+-[A-Za-z]+\\.([0-9]+)$
     set(SENTINEL_BUILD_NUMBER "${CMAKE_MATCH_1}")
 endif()
 
+option(SENTINEL_RUST_ONLY "Expose the native Qt-free Rust candidate build" OFF)
+if(SENTINEL_RUST_ONLY)
+    project(SentinelRust VERSION ${SENTINEL_PROJECT_VERSION} LANGUAGES NONE)
+    include(apps/RustApplications.cmake)
+    return()
+endif()
+
 project(Sentinel
     VERSION ${SENTINEL_PROJECT_VERSION}
     DESCRIPTION "Sentinel local-first AI desktop assistant"

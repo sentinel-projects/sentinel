@@ -7,11 +7,14 @@ import os
 from pathlib import Path
 import re
 import stat
+import struct
 import subprocess
 import tempfile
 
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 TARGETS = {"x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "aarch64-apple-darwin"}
+WINDOWS_MACHINES = {"x86_64-pc-windows-msvc": 0x8664, "aarch64-pc-windows-msvc": 0xAA64}
+TARGETS.update(WINDOWS_MACHINES)
 ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 
 
@@ -75,21 +78,48 @@ def verify_assets(root):
                  "terminal/share/sentinel/core-warden/state-contract.json",
                  "terminal/share/sentinel/core-warden/animations/manifest.json"):
         required_path(root, path, 16 * 1024 * 1024)
-    assets = root / "terminal/share/sentinel/core-warden"
-    count = total = 0
+    return runtime_asset_inventory(root / "terminal/share/sentinel/core-warden")
+
+
+def runtime_asset_inventory(assets):
+    animations = assets / "animations"
+    if assets.is_symlink() or animations.is_symlink() or not animations.is_dir():
+        raise ValueError("invalid Core Warden asset directory")
+
+    files = {"state-contract.json": required_path(assets, "state-contract.json", 16 * 1024 * 1024)}
+    total = files["state-contract.json"].stat().st_size
+
     def fail_walk(error):
         raise error
-    for directory, subdirs, files in os.walk(assets, followlinks=False, onerror=fail_walk):
+
+    for directory, subdirs, names in os.walk(animations, followlinks=False, onerror=fail_walk):
         for name in subdirs:
-            if (Path(directory) / name).is_symlink():
+            path = Path(directory) / name
+            if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
                 raise ValueError("asset tree contains a directory link")
-        for name in files:
+        for name in names:
             path = Path(directory) / name
             metadata = path.lstat()
-            count += 1
             total += metadata.st_size
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or count > 10000 or total > 512 * 1024 * 1024:
+            if (not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or
+                    not 0 < metadata.st_size <= 16 * 1024 * 1024 or
+                    len(files) >= 10000 or total > 512 * 1024 * 1024):
                 raise ValueError("unsafe or oversized asset tree")
+            files[path.relative_to(assets).as_posix()] = path
+    if "animations/manifest.json" not in files:
+        raise ValueError("missing Core Warden animation manifest")
+    return files
+
+
+def compare_runtime_assets(stage, expected):
+    expected_files = runtime_asset_inventory(expected)
+    if stage.keys() != expected_files.keys():
+        raise ValueError("Core Warden runtime asset inventory differs from the source")
+    for name, staged in stage.items():
+        with open_regular(staged, 16 * 1024 * 1024) as actual, \
+                open_regular(expected_files[name], 16 * 1024 * 1024) as source:
+            if hashlib.file_digest(actual, "sha256").digest() != hashlib.file_digest(source, "sha256").digest():
+                raise ValueError(f"Core Warden runtime asset differs from the source: {name}")
 
 
 def verify_signature(manifest, key_path, signature_path, openssl_path):
@@ -125,7 +155,72 @@ def verify_signature(manifest, key_path, signature_path, openssl_path):
     return hashlib.sha256(key).hexdigest()
 
 
-def verify(stage, version, signature_inputs=None):
+def verify_pe(stream, size, target):
+    """Check bounded PE headers and normal/delay-load dependency names."""
+    def read(offset, length):
+        if offset < 0 or offset + length > size:
+            raise ValueError("truncated PE structure")
+        stream.seek(offset)
+        data = stream.read(length)
+        if len(data) != length:
+            raise ValueError("truncated PE structure")
+        return data
+
+    header = read(0, 64)
+    if header[:2] != b"MZ":
+        raise ValueError("missing PE DOS signature")
+    pe = struct.unpack_from("<I", header, 60)[0]
+    coff = read(pe, 24)
+    machine, sections = struct.unpack_from("<HH", coff, 4)
+    optional_size = struct.unpack_from("<H", coff, 20)[0]
+    if (coff[:4] != b"PE\0\0" or machine != WINDOWS_MACHINES[target]
+            or not 1 <= sections <= 96 or not 112 <= optional_size <= 4096):
+        raise ValueError("invalid PE architecture or header")
+    optional = read(pe + 24, optional_size)
+    if struct.unpack_from("<H", optional)[0] != 0x20B:
+        raise ValueError("expected 64-bit PE optional header")
+    count = struct.unpack_from("<I", optional, 108)[0]
+    if count > (optional_size - 112) // 8:
+        raise ValueError("invalid PE data-directory count")
+    section_table = read(pe + 24 + optional_size, sections * 40)
+    layout = [struct.unpack_from("<III", section_table, index * 40 + 12)
+              for index in range(sections)]
+
+    def mapped(rva, length):
+        for address, raw_size, start in layout:
+            relative = rva - address
+            if 0 <= relative and relative + length <= raw_size:
+                return start + relative, raw_size - relative
+        raise ValueError("PE address outside file-backed sections")
+
+    for directory, stride, name_field in ((1, 20, 12), (13, 32, 4)):
+        if directory >= count:
+            continue
+        rva, length = struct.unpack_from("<II", optional, 112 + directory * 8)
+        if rva == 0 and length == 0:
+            continue
+        if rva == 0 or not stride <= length <= 65536:
+            raise ValueError("invalid PE import-directory bounds")
+        table, _ = mapped(rva, length)
+        for relative in range(0, length - stride + 1, stride):
+            entry = read(table + relative, stride)
+            if not any(entry):
+                break
+            name_rva = struct.unpack_from("<I", entry, name_field)[0]
+            if directory == 13 and struct.unpack_from("<I", entry)[0] != 1:
+                raise ValueError("expected RVA-based PE delay imports")
+            address, available = mapped(name_rva, 1)
+            raw = read(address, min(available, 260))
+            name, separator, _ = raw.partition(b"\0")
+            if not separator or not name:
+                raise ValueError("invalid PE dependency name")
+            if re.fullmatch(rb"(?:lib)?qt[0-9][a-z0-9_.-]*\.dll", name.lower()):
+                raise ValueError("unexpected Qt dependency in PE executable")
+        else:
+            raise ValueError("unterminated PE import directory")
+
+
+def verify(stage, version, signature_inputs=None, runtime_assets_source=None):
     root = Path(stage)
     if root.is_symlink() or not root.is_dir():
         raise ValueError("stage must be a real directory")
@@ -161,9 +256,15 @@ def verify(stage, version, signature_inputs=None):
             or terminal.get("lockfile_sha256") != desktop["cli_lockfile_sha256"]
             or terminal.get("assets_integrity") != "not-verified"):
         raise ValueError("terminal stage identity mismatch")
+    windows = desktop["target"] in WINDOWS_MACHINES
+    desktop_artifacts = ({"bin/sentinel-slint-prototype.exe"} if windows
+                         else {"bin/sentinel-dev-launch", "bin/sentinel-slint-prototype"})
+    terminal_artifacts = {"bin/sentinel", "bin/sentinel-daemon-dev"}
+    if windows:
+        terminal_artifacts = {name + ".exe" for name in terminal_artifacts}
     for manifest, prefix, expected in (
-        (desktop, "", {"bin/sentinel-dev-launch", "bin/sentinel-slint-prototype"}),
-        (terminal, "terminal/", {"bin/sentinel", "bin/sentinel-daemon-dev"}),
+        (desktop, "", desktop_artifacts),
+        (terminal, "terminal/", terminal_artifacts),
     ):
         items = manifest.get("artifacts")
         if not isinstance(items, list) or len(items) != len(expected):
@@ -175,10 +276,13 @@ def verify(stage, version, signature_inputs=None):
                 raise ValueError("invalid artifact descriptor")
             remaining_paths.remove(item["path"])
             path = required_path(root, prefix + item["path"], 512 * 1024 * 1024)
-            if not path.stat().st_mode & 0o111:
+            if not windows and not path.stat().st_mode & 0o111:
                 raise ValueError("required artifact is not executable")
             with open_regular(path, 512 * 1024 * 1024) as stream:
                 initial = os.fstat(stream.fileno())
+                if windows:
+                    verify_pe(stream, initial.st_size, desktop["target"])
+                    stream.seek(0)
                 digest = hashlib.sha256()
                 remaining_bytes = initial.st_size
                 while remaining_bytes:
@@ -193,7 +297,9 @@ def verify(stage, version, signature_inputs=None):
                 actual = digest.hexdigest()
             if actual != item["sha256"]:
                 raise ValueError("artifact digest mismatch")
-    verify_assets(root)
+    stage_assets = verify_assets(root)
+    if runtime_assets_source is not None:
+        compare_runtime_assets(stage_assets, runtime_assets_source)
     return desktop, fingerprint
 
 
@@ -203,6 +309,7 @@ def main():
     parser.add_argument("--expected-version", help="Expected application version (default: this checkout's canonical version)")
     parser.add_argument("--cli-lockfile", type=Path, help="Optional expected CLI Cargo.lock")
     parser.add_argument("--desktop-lockfile", type=Path, help="Optional expected desktop Cargo.lock")
+    parser.add_argument("--runtime-assets-source", type=Path, help="Compare staged Core Warden runtime assets against a trusted checkout")
     parser.add_argument("--trusted-key", type=Path, help="Pinned Ed25519 public key in DER SubjectPublicKeyInfo form")
     parser.add_argument("--signature", type=Path, help="Detached 64-byte signature over exact desktop-manifest.json bytes")
     parser.add_argument("--openssl", type=Path, help="Absolute path to trusted OpenSSL 3.x or later")
@@ -214,7 +321,10 @@ def main():
         supplied = (args.trusted_key, args.signature, args.openssl)
         if any(value is not None for value in supplied) and not all(value is not None for value in supplied):
             raise ValueError("--trusted-key, --signature and --openssl must be supplied together")
-        data, fingerprint = verify(args.stage, version, supplied if all(value is not None for value in supplied) else None)
+        data, fingerprint = verify(
+            args.stage, version, supplied if all(value is not None for value in supplied) else None,
+            args.runtime_assets_source,
+        )
         for path, key in ((args.cli_lockfile, "cli_lockfile_sha256"), (args.desktop_lockfile, "desktop_lockfile_sha256")):
             if path is not None:
                 with open_regular(path, 64 * 1024 * 1024) as stream:
@@ -222,10 +332,12 @@ def main():
                         raise ValueError("lockfile digest mismatch")
     except (OSError, ValueError, TypeError, KeyError) as error:
         parser.exit(2, str(error) + "\n")
+    asset_result = ("Core Warden assets match the supplied source"
+                    if args.runtime_assets_source is not None else "asset contents remain unverified")
     if fingerprint:
-        print(f"Development desktop stage signature and executable hashes verified for {data['target']} with supplied key SHA-256 {fingerprint}; assets and native acceptance remain unverified.")
+        print(f"Development desktop stage signature and executable hashes verified for {data['target']} with supplied key SHA-256 {fingerprint}; {asset_result}; native acceptance remains unverified.")
     else:
-        print(f"Development desktop stage verified for {data['target']}; hashes do not establish authenticity, asset integrity or native acceptance.")
+        print(f"Development desktop stage verified for {data['target']}; {asset_result}; authenticity and native acceptance remain unverified.")
 
 
 if __name__ == "__main__":

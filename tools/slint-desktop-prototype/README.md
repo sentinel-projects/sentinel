@@ -38,7 +38,7 @@ the prototype does not replace another application's binding. Closing the
 window hides it while the shortcut and status menu remain active. Select
 Quit in the status menu to exit. Add `--start-hidden` to start in the background.
 The shortcut opens Quick Panel even when the full desktop was previously active.
-Linux and Windows do not provide this shortcut mode.
+Linux and Windows provide platform-specific shortcut routes as described above.
 
 For disposable LaunchServices testing, build the desired profile first and wrap
 it in a new local unsigned bundle:
@@ -102,13 +102,21 @@ Add `--panel` to the command above to run an opt-in Release `settings_ui_certifi
 
 The Qt fixture includes a hidden Main and an in-process test controller and services; it does not measure the production Qt desktop executable. It also requests a full desktop runtime projection, while Slint connects without creating a session. Features, work performed, window layers, and rendering composition differ. These observations cannot attribute the difference to the UI toolkit or satisfy ADR-0005's matched-workload acceptance.
 
-On the same macOS arm64 machine, three alternating connected-idle trials on 2026-11-16 recorded median-of-trial-median physical footprints of 147.80 MiB for the Qt fixture, 55.06 MiB for Slint femtovg and 34.63 MiB for Slint software. Whole-interval CPU ranged from 11.36–12.62%, 0.69–0.91% and 2.37–2.83% of one core, respectively. The original samples, windows and binary hashes are in ignored `build/slint-phase1/macos-panel-bfm9pzzc.json` on the measurement machine. Each trial waited for its connected marker, then warmed up for five seconds and sampled over five seconds. Linux Wayland/X11 and Windows runs are not available on this host; the current harness and sampler support macOS only. The prototype lacks Windows named-pipe transport.
+On the same macOS arm64 machine, three alternating connected-idle trials on 2026-11-16 recorded median-of-trial-median physical footprints of 147.80 MiB for the Qt fixture, 55.06 MiB for Slint femtovg and 34.63 MiB for Slint software. Whole-interval CPU ranged from 11.36–12.62%, 0.69–0.91% and 2.37–2.83% of one core, respectively. The original samples, windows and binary hashes are in ignored `build/slint-phase1/macos-panel-bfm9pzzc.json` on the measurement machine. Each trial waited for its connected marker, then warmed up for five seconds and sampled over five seconds. Linux Wayland/X11 and Windows runs are not available on this host; the current harness and sampler support macOS only. The cited benchmark used the macOS transport.
 
 ### Isolated desktop evaluation stage
 
 The manually dispatched [Qt-free Rust desktop release candidate](../../.github/workflows/rust-release-candidate.yml) workflow creates Linux x86_64 and macOS arm64 stages as unsigned CI artifacts. The production release workflow remains separate.
 
 `tools/slint-desktop-prototype/stage-desktop.sh NATIVE_TARGET_TRIPLE /absolute/new/stage` builds a private local desktop evaluation stage for a supported native macOS or Linux host. It places the launcher and Slint binary under `bin/` with their own `desktop-manifest.json`, and keeps the existing CLI/daemon stage and its unchanged verifier contract under `terminal/`. Run `python3 tools/slint-desktop-prototype/verify-desktop-stage.py /absolute/new/stage` to check the four executable hashes, expected application version, required files, bounded link-free asset tree, and consistent manifest identities without running an artifact. Pass `--cli-lockfile cli/Cargo.lock --desktop-lockfile tools/slint-desktop-prototype/Cargo.lock` to also compare lockfile hashes; `--expected-version` overrides this checkout’s canonical version. The terminal CLI can separately verify `terminal/` with `sentinel update verify-stage` on a matching target.
+
+On a native Windows MSVC host, run
+`tools/slint-desktop-prototype/stage-desktop.ps1 x86_64-pc-windows-msvc C:\path\to\new-stage`.
+The Windows stage contains the Slint executable and nested CLI/daemon stage.
+Start the isolated daemon separately, then connect Slint to its named pipe
+with `--socket`. The same Python verifier checks PE architecture, regular
+and delay-load Qt imports, and manifest hashes. The manual candidate workflow
+includes Windows x64 alongside Linux and macOS.
 
 Staging inspects all four executables with `readelf` on Linux and `otool` on macOS. It fails before writing the desktop manifest if native inspection fails or an executable declares a direct Qt library or framework dependency. This is a static check of declared native imports. Native operation, dynamically loaded libraries, and transitive dependencies require platform acceptance.
 

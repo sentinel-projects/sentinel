@@ -70,6 +70,23 @@ The helper strips only CMake PCH flags, preserves other compile arguments and re
 
 ## Rust development artifact staging
 
+### Configure the native Rust desktop candidate
+
+Run these commands with a native Rust toolchain and the platform staging tools
+available on `PATH`. The CMake configuration routes staging through Cargo.
+It neither discovers Qt nor enables the legacy C++ targets. Select a fresh
+stage destination for each build.
+
+```sh
+cmake -S . -B build/rust-only -DSENTINEL_RUST_ONLY=ON
+cmake --build build/rust-only --target sentinel-rust-stage
+```
+
+The default output is `build/rust-only/sentinel-rust-stage`. Override it with
+`-DSENTINEL_RUST_STAGE=/absolute/new/directory`. This is the native unsigned
+candidate route used by GitHub CI. The standard production presets still
+build the current Qt product.
+
 ### Build the standalone Rust clients
 
 Build the daemon-connected CLI and isolated development daemon from the repository

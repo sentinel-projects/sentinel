@@ -3,3 +3,6 @@ blender/*.blend[0-9]*
 blender/*.log
 blender/*.crash.txt
 __pycache__/
+
+# Local Finder metadata
+.DS_Store

@@ -1,5 +1,13 @@
 # Core Warden CW-01
 
+
+The Rust TUI and desktop candidate packaging use the runtime catalog under
+`animations/` and `state-contract.json`. Keep their relative paths intact.
+Blender masters, reference sheets, previews, renders and authoring scripts
+are source assets. The Rust staging scripts package the runtime catalog
+without bundling the authoring files. Desktop candidate staging compares each
+packaged runtime asset with the checkout by SHA-256.
+
 - `reference/Core_Warden_Original_Reference.png`: existing approved concept sheet; preserved.
 - `scripts/build_cw01.py`: deterministic procedural mesh/material/stage builder.
 - `scripts/validate_cw01.py`: reopen validation, independent mesh and RGBA checks.
